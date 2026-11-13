@@ -3,6 +3,21 @@
 > 规矩：**改了 `harness/` 里的执行器就要在这里记一笔**，并注明"要不要回灌上游原件（案例 A，见 README「案例与来源」）"。
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
+## 0.4.1（未发布）· 观测稳定性闸：命令链路补上最大的一处没有检查的环节
+
+> 0.4.0 把观测来源放宽到"一条命令的 stdout"，但**一张闸都没装**。截图链路一直有 `freeze.verify=strict`（同 URL 连拍两张逐字节比，比不过就报错）；命令链路什么都没有。
+> 后果不是"偶尔难看"，而是**假最优**：命令一旦有随机性（时间戳 / 并发 / 浮点不确定性 / 真实接口抖动），搜索会学会在噪声里挑"看起来更好"的点，而证据包长得跟真的一样 —— 曲线在降、hash 也对。
+
+- **adapter 新增 `observe.stability`**：`{ "repeat": 3, "maxSpread": 0.02 }`。**不写也生效**（默认值就该是安全的那一档）。语义写死：**起点已评估、活性预检之前、花预算的搜索之前**，用起点参数把命令连跑 `repeat` 次，对每条指标算 `spread = (max - min) / max(|mean|, 1e-9)`；任一 `spread > maxSpread` → **中文硬错**（点名指标 / spread 值 / 阈值 / `repeat` 次原始值），**不静默降级、不自动取平均**。`repeat: 1` 是唯一的"关掉"姿势，且必须打一条中文 warn（`本次不验证观测稳定性…收敛结果不可信`）；`repeat < 1` 或非整数、`maxSpread ∉ (0,1]` 一律中文硬错（不给"0 = 关掉"这种含糊状态）。
+- **成本记账诚实**：起点那一次算第 1 次采样，于是默认只多花 `repeat-1 = 2` 次评估，且**记进预算**（`evaluations.stability` 计数，原始输出照样落 `outputs/`）；预算不够时硬错并给出两条出路（提高 `--budget` / 显式 `repeat: 1`），**绝不"这次就不验了"**。
+- **证据包**：`best.json` 增 `stability: {repeat, maxSpread, ok, spreads, values, checked, spend}`；`report.md` 增"观测稳定性闸（搜索前必过）"一节（逐次采样 × 指标的小表 + 一句结论），摘要表与评估次数行也带上闸的结论与花费。指纹里只放闸的**配置**（`repeat`/`maxSpread`/`checked`），**不放采样数值** —— 换阈值该换 hash，同 seed 同参数的重跑仍必须同 hash。
+- **`core/adapter.js` / `lib/index.js`**：`parseAdapter` 解析 `observe.stability`（默认值补齐、非法值只 warning"cmdloop.mjs 会硬错"，保持"体检口不执行"的分工）；probe 的 `observe` 块新增 `stability.{repeat,maxSpread}`（**新键进 `required`**），渲染文本对命令观测多打一行"稳定性：repeat=N · maxSpread=…"。截图链路恒为 `0/0`（那套的等价物是 `freeze.verify`）。
+- **新增 7 条测试（`test/command.test.mjs`，现在 55 + 12 + 18）**：⑪-1 稳定命令 + 不写 stability → 默认生效、过闸、`best.stability.ok === true`、report 有表、`evaluations.stability === 2`；⑪-2 不稳定命令（确定性 ±5% 抖动的 demo 脚本）→ 硬错且点名指标/spread/阈值/原始值、且不产出 `best.json`；⑪-3 `repeat: 1` → 有 warn + `checked:false`（report 写"未验证"）；⑪-4 非法配置三连（`repeat:0` / `maxSpread:0` / `maxSpread:1.5`）各自中文硬错；⑪-5 预算不够跑闸 → 硬错；⑫-1/⑫-2 两条**弄坏能红**（`CMDLOOP_MUTANT=stableAlways` 判定恒真 → ⑪-2 的硬错断言必塌；`CMDLOOP_MUTANT=noStability` 整段删掉 → ⑪-1 的 stability 字段断言必塌）。
+- **`test/command.test.mjs` ⑩ 的预算 1 → 4（不是放宽）**：闸要 2 次额外评估，`--budget 1` 连起点都只能跑一次，那条用例测的是"取数方式"而不是预算边界；预算不够的表现由新增的 ⑪-5 单独钉住。
+- **文档**：`skills/selfloop/references/command-observe.md` 新增 §6「稳定性闸」（为什么 / 默认值 / 跑在哪花多少 / 判定口径与硬错原文 / 证据包长什么样 / **怎么造一个确定性抖动 demo 自测** / 这道闸不管什么），原 §6 常见坑顺延为 §7 并补两行；`harness/适配层-说明.md` §6.2 字段表与 §6.3 硬错表补 `stability`，§6.4/§6.5 补证据包与预算提示。
+- **硬约束**：`harness/iter.ps1` 一个字节没动；截图链路行为不变；`--strategy random` 的随机源、判据 `score.js` 也都没动。
+- **回灌提醒**：改的是 `harness/cmdloop.mjs` / `harness/cmdlib.mjs` / `core/adapter.js` / `lib/index.js` —— 前两者是包内新增文件（上游原件没有对应物），后两者与上游原件（案例 A）已分叉，回灌时按改动点手动改。
+
 ## 0.4.0（未发布）· 观测来源可以是一条命令的输出
 
 > 前三版证明的是「渲染类目标可调」。这一版补的是**「任何可测目标可调」里最难的那半步**：观测不必是截图。

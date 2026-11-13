@@ -124,7 +124,7 @@ references 一览：
 - `references/metrics.md` —— 指标定义、跨工具换算、底噪、档位表
 - `references/pitfalls.md` —— 按症状查坑（构建 / 参数 / 测量 / 传递）
 - `references/host-adaptation.md` —— 新宿主怎么接：五步改造、阈值实测、冻帧协议怎么选、反证要求
-- `references/command-observe.md` —— **观测是一条命令的输出**：给非图形目标（耗时/延迟/日志计数/残差）写 adapter、`observe` 字段表、哪些口径是复用哪些是照抄、常见坑
+- `references/command-observe.md` —— **观测是一条命令的输出**：给非图形目标（耗时/延迟/日志计数/残差）写 adapter、`observe` 字段表、**稳定性闸**（默认连跑 3 次、离散度 >0.02 就拒跑）、哪些口径是复用哪些是照抄、常见坑
 - `references/domains-vfx.md` —— vfx-render 领域：现场怎么接、三份 adapter、进程卫生、题目外的话
 
 ## 两条执行器（选一个）

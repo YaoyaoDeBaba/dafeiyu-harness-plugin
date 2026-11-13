@@ -21,10 +21,12 @@ import { fileURLToPath } from 'node:url';
 import {
   MUTANT,
   OUTPUT_CAP_BYTES,
+  assertStability,
   capOutputDoc,
   evaluate,
   ensureOutDir,
   keyOf,
+  measureStability,
   newVector,
   readJson,
   resolveCommandPlan,
@@ -44,7 +46,11 @@ const USAGE = `用法：
   --max-stagnant N    连续几轮没改进就停（默认 2）
   --strategy S        coordinate（默认）| random
   --params a,b=3      覆盖 adapter.params.list（name 取基线现值，name=值 显式起跑）
-  --help              这份说明`;
+  --help              这份说明
+
+观测稳定性闸（0.4.1）：搜索前先用起点参数把命令连跑 observe.stability.repeat 次（默认 3），
+任一指标相对离散度 (max-min)/max(|mean|,1e-9) 超过 maxSpread（默认 0.02）就中文硬错。
+这几次是真实评估、记进预算（默认多花 2 次）；预算不够会硬错提示提高 --budget 或显式 repeat=1。`;
 
 function parseArgs(argv) {
   const a = {
@@ -160,7 +166,7 @@ function run(args) {
   const outDir = ensureOutDir(args.out);
   for (const sub of ['params', 'outputs']) mkdirSync(join(outDir, sub), { recursive: true });
 
-  const usage = { used: 0, target: 0, start: 0, precheck: 0, search: 0, cache: 0 };
+  const usage = { used: 0, target: 0, start: 0, stability: 0, precheck: 0, search: 0, cache: 0 };
   const evals = [];
   const cache = new Map();
   const outputs = new Map(); // seq -> 写进 outputs/ 的相对路径
@@ -174,14 +180,9 @@ function run(args) {
   log(`[init] 判据 ${plan.scoreText}`);
   log(`[init] Out=${outDir}  budget=${args.budget} seed=${args.seed} step=${args.stepRatio * 100}% strategy=${args.strategy}`);
 
-  // 一次评估（带缓存与预算闸）；返回 { seq, eval } 或 null（预算耗尽）
-  const evaluateCached = (params, meta) => {
-    const key = keyOf(params, plan.wl);
-    if (cache.has(key)) {
-      usage.cache += 1;
-      return { seq: cache.get(key), cached: true };
-    }
-    if (usage.used >= args.budget) return null;
+  // 真正跑一次命令并把它记进证据包（**不查缓存、也不写缓存**）。
+  // 稳定性闸要拿同一组参数连跑 repeat 次：走缓存的话第 2 次就"命中"了，等于什么都没验。
+  const runEval = (params, meta) => {
     const seq = evals.length + 1;
     const res = evaluate(plan, { params, outDir, seq, trow });
     usage.used += 1;
@@ -206,7 +207,6 @@ function run(args) {
       pen: res.dist ? res.dist.penSum : 0,
     };
     evals.push(rec);
-    cache.set(key, seq);
     const doc = {
       seq,
       id: rec.id,
@@ -228,7 +228,20 @@ function run(args) {
     const rel = join('outputs', 'e' + String(seq).padStart(3, '0') + '.json');
     writeFileSync(join(outDir, rel), capped.text, 'utf8');
     outputs.set(seq, rel);
-    return { seq, cached: false };
+    return { seq, rec, cached: false };
+  };
+
+  // 一次评估（带缓存与预算闸）；返回 { seq, rec } 或 null（预算耗尽）
+  const evaluateCached = (params, meta) => {
+    const key = keyOf(params, plan.wl);
+    if (cache.has(key)) {
+      usage.cache += 1;
+      return { seq: cache.get(key), rec: evals[cache.get(key) - 1], cached: true };
+    }
+    if (usage.used >= args.budget) return null;
+    const got = runEval(params, meta);
+    cache.set(key, got.seq);
+    return got;
   };
 
   // ---------------------------------------------------------------- 目标
@@ -269,6 +282,55 @@ function run(args) {
   const startDist = startRec.dist;
   const baseParams = { ...plan.startParams };
   log(`[start] d=${startDist.toFixed(4)}  ${keyOf(baseParams, plan.wl)}`);
+
+  // ---------------------------------------------------------------- 观测稳定性闸（0.4.1）
+  // 位置有讲究：起点已评估（它那一次就是第 1 次采样）→ **活性预检之前**（噪声会把参数误判成 dead/alive，
+  // 判错了这个参数就再也进不了搜索轴）→ 一定在花预算的搜索之前。
+  // 截图链路的等价物是 freeze.verify=strict（同 URL 连拍两张逐字节比）；命令链路原来什么都没有，这是最大的洞。
+  const stabCfg = plan.observe.stability;
+  let stability = null;
+  if (MUTANT === 'noStability') {
+    log('[stability][mutant] noStability：整段稳定性检查被跳过（只为证明测试断言有牙，正常跑不会到这里）');
+  } else if (stabCfg.repeat <= 1) {
+    stability = {
+      repeat: 1,
+      maxSpread: stabCfg.maxSpread,
+      checked: false,
+      ok: false,
+      spreads: {},
+      values: {},
+      spend: 0,
+      reason: 'repeat=1：显式关闭观测稳定性检查',
+    };
+    log(
+      '[stability][warn] 本次不验证观测稳定性（observe.stability.repeat=1 显式关掉了检查）：命令若有随机性，收敛结果不可信 —— 这个 run 的"最优"不能当结论。',
+    );
+  } else {
+    const need = stabCfg.repeat - 1;
+    if (usage.used + need > args.budget) {
+      throw new Error(
+        `[命令观测] 预算太小：稳定性检查要在起点参数上再连跑 ${need} 次（repeat=${stabCfg.repeat}，起点那一次算第 1 次采样），` +
+          `但 --budget ${args.budget} 只剩 ${args.budget - usage.used} 次。提高 --budget，或在 adapter 里显式写 observe.stability.repeat=1 关掉检查（会 warn）`,
+      );
+    }
+    log(`[stability] 用起点参数连跑 ${stabCfg.repeat} 次（起点那一次已跑过），任一指标相对离散度 > ${stabCfg.maxSpread} 就硬错`);
+    const vals = {};
+    for (const id of plan.observe.metricIds) vals[id] = [startRec.row[id]];
+    for (let i = 1; i < stabCfg.repeat; i += 1) {
+      const got = runEval(baseParams, { id: 'stab' + (i + 1), round: 0, note: 'stability:' + (i + 1), phase: 'stability' });
+      for (const id of plan.observe.metricIds) vals[id].push(got.rec.row[id]);
+    }
+    const st = measureStability(vals, stabCfg);
+    for (const id of plan.observe.metricIds) {
+      const sp = st.spreads[id];
+      log(
+        `[stability] ${id}: ${st.values[id].map((v) => num(v)).join(' / ')}  spread=${sp === null ? 'n/a' : Number(sp).toFixed(6)}  ${st.okById[id] ? 'ok' : '超阈值'}`,
+      );
+    }
+    assertStability(st, plan.observe.metricIds); // 不稳定 → 中文硬错（不降级、不平均）
+    stability = { ...st, checked: true, spend: need };
+    log(`[stability] 通过：repeat=${stabCfg.repeat} maxSpread=${stabCfg.maxSpread}，花掉 ${need} 次评估（已记进预算）`);
+  }
 
   // ---------------------------------------------------------------- 活性预检（照抄 iter.ps1 §5.3）
   log('[precheck] 每个参数改一档（+1 步），Δd=0 记 dead 并跳过');
@@ -394,7 +456,7 @@ function run(args) {
   }
 
   log(
-    `[budget] 已用 ${usage.used} 次评估 / 上限 ${args.budget}（目标 ${usage.target} + 起点 ${usage.start} + 预检 ${usage.precheck} + 搜索 ${usage.search}，缓存命中 ${usage.cache}）`,
+    `[budget] 已用 ${usage.used} 次评估 / 上限 ${args.budget}（目标 ${usage.target} + 起点 ${usage.start} + 稳定性 ${usage.stability} + 预检 ${usage.precheck} + 搜索 ${usage.search}，缓存命中 ${usage.cache}）`,
   );
   log(`[stop] ${stopReason}  ${stopDetail}`);
 
@@ -413,6 +475,9 @@ function run(args) {
     cmd: plan.observe.cmdRaw,
     parse: plan.observe.parse,
     timeoutMs: plan.observe.timeoutMs,
+    // 稳定性闸的**配置**进指纹（换阈值/换样数本来就该换 hash）；
+    // 采样到的**数值**不进指纹 —— 那是观测，不是决策（同 seed 同参数的重跑必须还是一个 hash）。
+    stability: { repeat: stabCfg.repeat, maxSpread: stabCfg.maxSpread, checked: stability ? stability.checked : false },
     whitelist: plan.wl.map((k) => k + ':' + r6(baseParams[k])),
     base: plan.baseSha256,
     metricsCfg: { metrics: JSON.stringify(plan.scoreCfg.metrics ?? plan.observe.metrics), score: JSON.stringify(plan.scoreCfg) },
@@ -463,6 +528,9 @@ function run(args) {
       parse: plan.observe.parse,
       timeoutMs: plan.observe.timeoutMs,
     },
+    // 观测稳定性闸（0.4.1）：repeat 次的指标原值 / 每条指标的 spread / 判定结论。
+    // 这个字段缺席 = 这一步根本没跑（正常跑不会缺席，只有变异体 noStability 会）。
+    ...(stability ? { stability } : {}),
     seed: args.seed,
     stepRatio: args.stepRatio,
     budget: args.budget,
@@ -517,9 +585,9 @@ function run(args) {
   writeFileSync(join(outDir, 'best.json'), JSON.stringify(bestJson, null, 2), 'utf8');
 
   // ---------------------------------------------------------------- report.md
-  writeFileSync(join(outDir, 'report.md'), buildReport({ plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams, dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outputs, outDir, startedAt, endedAt }), 'utf8');
+  writeFileSync(join(outDir, 'report.md'), buildReport({ plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams, dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outputs, outDir, startedAt, endedAt, stability, stabCfg }), 'utf8');
 
-  const summary = `HASH ${hash}\nstart=${r6(startDist)} best=${r6(bestDist)} drop=${dropPct === null ? 'n/a' : dropPct + '%'} stop=${stopReason} used=${usage.used}/${args.budget} elapsed=${elapsedSec}s`;
+  const summary = `HASH ${hash}\nstart=${r6(startDist)} best=${r6(bestDist)} drop=${dropPct === null ? 'n/a' : dropPct + '%'} stability=${stability ? (stability.checked ? 'ok' : 'off') : 'skipped'} stop=${stopReason} used=${usage.used}/${args.budget} elapsed=${elapsedSec}s`;
   log(summary);
   return { hash, startDist, bestDist, dropPct, stopReason, usage, elapsedSec, outDir, plan, evals, precheckRows, alive, dead, bestJson };
 }
@@ -545,6 +613,7 @@ function buildReport(ctx) {
   const {
     plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams,
     dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outDir, startedAt, endedAt,
+    stability,
   } = ctx;
   const WL = plan.wl;
   const MID = plan.observe.metricIds;
@@ -582,6 +651,53 @@ function buildReport(ctx) {
   })();
 
   const md = [];
+  // 稳定性闸的一句话结论（表格行 + 专门那一节都要用）
+  const stabWorst = stability
+    ? MID.map((id) => stability.spreads[id]).filter((s) => Number.isFinite(s)).reduce((a, b) => Math.max(a, b), -Infinity)
+    : null;
+  const stabWorstTxt = Number.isFinite(stabWorst) ? Number(stabWorst).toFixed(6) : 'n/a';
+  const stabLine = !stability
+    ? '**没有这一步**（整段被跳过，执行器被动过？）'
+    : !stability.checked
+      ? '**未验证**：`observe.stability.repeat=1` 显式关闭（命令若有随机性，本次"最优"不可信）'
+      : '`repeat=' + stability.repeat + '` · `maxSpread=' + stability.maxSpread + '` · **通过**（额外花 ' + stability.spend + ' 次评估，最差指标 spread ' + stabWorstTxt + '）';
+  const stabBlock = [];
+  // 整段没跑（只有变异体）→ 报告里连标题都不留：证据包里"看不出这一步跑过"，正是没这道闸时的样子
+  if (stability) {
+    stabBlock.push('## 观测稳定性闸（搜索前必过）');
+    stabBlock.push('');
+    if (!stability.checked) {
+      stabBlock.push(
+        '**未验证**：`observe.stability.repeat=1` 显式关掉了检查。命令只要有随机性（时间戳 / 并发 / 浮点不确定性 / 真实接口抖动），这个 run 的"最优"就是噪声里的偶然点，不能当结论。',
+      );
+      stabBlock.push('');
+    } else {
+      stabBlock.push(
+        '口径与截图链路的 `freeze.verify=strict`（同一个 URL 连拍两张、逐字节比）同构：**用起点参数把命令连跑 ' +
+          stability.repeat +
+          ' 次**（起点那一次算第 1 次采样，额外花 ' +
+          stability.spend +
+          ' 次评估、**已记进预算**），对每条指标算相对离散度 `spread=(max-min)/max(|mean|,1e-9)`；任一超过 `maxSpread=' +
+          stability.maxSpread +
+          '` 就硬错（不降级、不自动取平均）。',
+      );
+      stabBlock.push('');
+      const heads = Array.from({ length: stability.repeat }, (_, i) => '第 ' + (i + 1) + ' 次');
+      stabBlock.push('| 指标 | ' + heads.join(' | ') + ' | spread | 上限 | 判定 |');
+      stabBlock.push('|---|' + heads.map(() => '---').join('|') + '|---|---|---|');
+      for (const id of MID) {
+        const vals = stability.values[id] ?? [];
+        const cells = heads.map((_, i) => num(vals[i]));
+        const sp = stability.spreads[id];
+        stabBlock.push(
+          '| `' + id + '` | ' + cells.join(' | ') + ' | ' + (sp === null || sp === undefined ? 'n/a' : Number(sp).toFixed(6)) + ' | ' + stability.maxSpread + ' | ' + (stability.okById[id] ? '通过' : '**超阈值**') + ' |',
+        );
+      }
+      stabBlock.push('');
+      stabBlock.push('**结论：通过**（最差指标 spread ' + stabWorstTxt + ' ≤ ' + stability.maxSpread + '）。后面的每一条"变好/变差"都落在这个抖动之上，至少能说清"不是噪声"。');
+      stabBlock.push('');
+    }
+  }
   md.push('# 命令观测 · 参数搜索证据包');
   md.push('');
   md.push(`**run hash: \`${hash}\`**`);
@@ -593,6 +709,7 @@ function buildReport(ctx) {
   md.push(
     '| 观测来源 | `command` — `' + plan.observe.cmdRaw + '`（parse=' + plan.observe.parse + '，timeout=' + plan.observe.timeoutMs + 'ms） |',
   );
+  md.push('| 观测稳定性 | ' + stabLine + ' |');
   md.push(
     '| 目标 | ' +
       (targetInfo.kind === 'metrics'
@@ -607,13 +724,14 @@ function buildReport(ctx) {
   md.push('| 起始 / 最佳距离 | ' + d4(startDist) + ' / **' + d4(bestDist) + '** |');
   md.push('| 降幅 | **' + (dropPct === null ? 'n/a' : dropPct.toFixed(1) + '%') + '**（绝对 ' + d4(dropAbs) + '） |');
   md.push(
-    '| 评估次数 | **' + usage.used + ' / 上限 ' + args.budget + '**（目标 ' + usage.target + ' + 起点 ' + usage.start + ' + 预检 ' + usage.precheck + ' + 搜索 ' + usage.search + '，缓存命中 ' + usage.cache + '） |',
+    '| 评估次数 | **' + usage.used + ' / 上限 ' + args.budget + '**（目标 ' + usage.target + ' + 起点 ' + usage.start + ' + 稳定性 ' + usage.stability + ' + 预检 ' + usage.precheck + ' + 搜索 ' + usage.search + '，缓存命中 ' + usage.cache + '） |',
   );
   md.push('| 终止原因 | `' + stopReason + '`' + (stopDetail ? ' — ' + stopDetail : '') + ' |');
   md.push('| 搜索策略 | `' + args.strategy + '`（步长 ±' + args.stepRatio * 100 + '%，maxRounds ' + args.maxRounds + ' / maxStagnant ' + args.maxStagnant + '） |');
   md.push('| 种子 | `' + args.seed + '` |');
   md.push('| 总耗时 | ' + elapsedSec + 's（单次评估 ' + msPerEval + 'ms 中位数） |');
   md.push('');
+  md.push(...stabBlock);
   md.push('## 1. 参数活性预检');
   md.push('');
   md.push('口径与 `iter.ps1` §5.3 一致：对每个参数在起始点基础上 +1 步，与起点比 `Δd`。`Δd==0` → `dead`（`输出同` 列说明是"命令输出逐字节相同"还是"输出变了但判据没动"）。');
@@ -708,7 +826,8 @@ function buildReport(ctx) {
   md.push('- **random 策略不跨执行器可比**：`cmdloop.mjs` 用自己的伪随机（`iter.ps1` 是 .NET `[Random]`），同 seed 只在同一个执行器里可复现；`coordinate` 两边口径一致。');
   md.push('- **只认标量指标**：命令输出里取到的必须是数（数组型指标要 metrics2.js 的提取器，那是浏览器链路）。');
   md.push('- **判据只做粗筛**：它能把候选排序、把坏掉的报警；"这个数好不好"不能问它。');
-  md.push('- **命令必须是确定性的**：同一个参数跑两次给不同的数，那就不是观测、是噪声（本执行器不做重复采样去噪）。');
+  md.push('- **命令必须是确定性的**：同一个参数跑两次给不同的数，那就不是观测、是噪声。0.4.1 起**先验一遍再搜**（观测稳定性闸：起点参数连跑 `observe.stability.repeat` 次，任一指标相对离散度 > `maxSpread` 就硬错），比"跑完再解释为什么结果怪"省事得多。');
+  md.push('- **稳定性闸只看"同一个参数重复跑"**：它证明观测可重复，不证明**判据**本身有意义；而且相对离散度在指标接近 0 时会放大（分母兜底 1e-9），0 附近的指标请自己看一眼 spread 的绝对值。');
   md.push('- **本次统计**：' + evals.length + ' 个评估点，`outputs/` ' + ctx.outputs.size + ' 份原始输出。');
   md.push('');
   md.push(`生成时间：${ctx.startedAt} → ${ctx.endedAt}；输出目录：\`${ctx.outDir}\`。`);

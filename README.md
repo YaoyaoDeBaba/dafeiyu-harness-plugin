@@ -53,7 +53,7 @@
 
 ### `selfloop_probe { adapter? }`
 
-解析一份 adapter.json 描述的现场，返回：`domain`（所属领域）/ `observe`（观测来源：`type` 空串 = 浏览器截图；`command` = 跑一条命令、`cmd` / `cwd` / `timeoutMs` / `parse` / 取数指标）/ `clientRoot` / 配置文件路径与是否存在 / 参数块 / 冻帧协议（`noloop-step` | `url-time`，含 clock、步长、冻结时刻、seed）/ 视口档位 / 端口 / **判据口径**（每条指标 = 提取器 + 权重 + 归一区间 + 是否启用）/ 距离公式与惩罚项 / 目标与白名单来源（`target` / `params`；命令观测还认 `target.mode=metrics`）/ `template`（是不是字段模板）/ `guard`（`protectPaths` + `enforced`）/ 包内 harness 是否齐全 / `warnings`。
+解析一份 adapter.json 描述的现场，返回：`domain`（所属领域）/ `observe`（观测来源：`type` 空串 = 浏览器截图；`command` = 跑一条命令、`cmd` / `cwd` / `timeoutMs` / `parse` / 取数指标 / `stability`（连跑几次、离散度上限，默认 3 次 / 0.02，超了拒跑））/ `clientRoot` / 配置文件路径与是否存在 / 参数块 / 冻帧协议（`noloop-step` | `url-time`，含 clock、步长、冻结时刻、seed）/ 视口档位 / 端口 / **判据口径**（每条指标 = 提取器 + 权重 + 归一区间 + 是否启用）/ 距离公式与惩罚项 / 目标与白名单来源（`target` / `params`；命令观测还认 `target.mode=metrics`）/ `template`（是不是字段模板）/ `guard`（`protectPaths` + `enforced`）/ 包内 harness 是否齐全 / `warnings`。
 
 - `adapter`：adapter.json 的**绝对路径**；省略时读包内 `domains/vfx-render/adapters/fire-ray.json`
 - `clientRoot`：可选，**绝对路径**，直接盖掉 adapter 里的 `clientRoot` / `%VFX_LOOP_CLIENT%`。宿主进程常常继承不到那条环境变量（用户在自己 shell 里设的），这个参数就是为它准备的——省掉「设变量 + 重启宿主」；必须真实存在，相对路径和不存在都直接报错。

@@ -425,6 +425,30 @@ export function parseAdapter(file, harnessDir, opts = {}) {
   const observeCwd = observeRaw.cwd ? resolveFrom(adapterDir, String(observeRaw.cwd), 'observe.cwd') : adapterDir
   const observeTimeout = observeRaw.timeoutMs === undefined || observeRaw.timeoutMs === null ? 30000 : num(observeRaw.timeoutMs)
   const observeParse = String(observeRaw.parse ?? (isCommandObserve ? 'json' : ''))
+  // 观测稳定性闸（0.4.1）：命令链路在搜索前用起点参数连跑 repeat 次，任一指标相对离散度
+  // (max-min)/max(|mean|,1e-9) 超过 maxSpread 就硬错。默认 repeat=3 / maxSpread=0.02 —— **不写也生效**。
+  // 这里只做"说得出来 + 不合法先吼一声"（体检口），真正拒跑在 harness/cmdlib.mjs 的 resolveStability。
+  const stabilityRaw = observeRaw.stability
+  const stabRepeatRaw = stabilityRaw?.repeat === undefined || stabilityRaw?.repeat === null ? 3 : stabilityRaw.repeat
+  const stabRepeat = Number.isInteger(stabRepeatRaw) ? stabRepeatRaw : 0
+  const stabSpreadRaw =
+    stabilityRaw?.maxSpread === undefined || stabilityRaw?.maxSpread === null ? 0.02 : Number(stabilityRaw.maxSpread)
+  const stabSpread = Number.isFinite(stabSpreadRaw) ? stabSpreadRaw : 0
+  // 截图链路没有这道闸（它的等价物是 freeze.verify=strict），这里恒为 0 = 不适用
+  const observeStability = { repeat: isCommandObserve ? stabRepeat : 0, maxSpread: isCommandObserve ? stabSpread : 0 }
+  if (isCommandObserve) {
+    if (stabRepeat < 1) {
+      warnings.push(
+        `adapter.observe.stability.repeat=${JSON.stringify(stabRepeatRaw)} 不是 ≥1 的整数：cmdloop.mjs 会硬错（要关掉检查只能显式写 1，会 warn）`,
+      )
+    } else if (stabRepeat === 1) {
+      warnings.push('adapter.observe.stability.repeat=1：显式关闭观测稳定性检查（命令有随机性时，收敛结果不可信）')
+    }
+    if (!(stabSpread > 0) || stabSpread > 1) {
+      warnings.push(`adapter.observe.stability.maxSpread=${JSON.stringify(stabSpreadRaw)} 不在 (0,1] 里：cmdloop.mjs 会硬错（1 = 100%）`)
+    }
+  }
+
   if (isCommandObserve) {
     if (!['json', 'number', 'line:k=v'].includes(observeParse)) {
       warnings.push(`adapter.observe.parse=${observeParse} 不认识（只认 json | number | line:k=v）：cmdloop.mjs 会硬错`)
@@ -556,6 +580,7 @@ export function parseAdapter(file, harnessDir, opts = {}) {
       cwd: observeCwd,
       timeoutMs: observeTimeout,
       parse: observeParse,
+      stability: observeStability,
       metricsCount: isCommandObserve ? metrics.length : 0,
       metrics: isCommandObserve
         ? metrics.map((it) => ({

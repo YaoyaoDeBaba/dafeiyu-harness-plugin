@@ -32,9 +32,17 @@ const score = require('./score.js');
 // ---------------------------------------------------------------- 常量 / 变异开关
 export const DEFAULT_TIMEOUT_MS = 30000;
 export const PARSE_MODES = ['json', 'number', 'line:k=v'];
+// 观测稳定性闸的默认值：**不写也要生效**（默认值就应该是安全的那一档）。
+// repeat=3 是"能看出抖动、又不至于把预算吃光"的最小可行样数（2 次只能比出一对差，3 次看得出趋势）。
+// maxSpread=2% 来自实测口径：命令链路的指标多是耗时/计数/残差，2% 以内的抖动通常来自调度与计时，
+// 超过 2% 就很难说清"这点改进是参数带来的还是噪声"。
+export const DEFAULT_STABILITY = { repeat: 3, maxSpread: 0.02 };
 // 变异开关：**只给测试用**，不设时行为完全正常。用它是为了证明断言"弄坏能红"（skill 硬规则 ④）：
-//   flatZero  —— 距离恒 0（把"能收敛"这条断言弄成恒真），收敛断言必须变红；
-//   noTimeout —— 超时当正常（把硬错降级成"静默的 0"），超时断言必须变红。
+//   flatZero     —— 距离恒 0（把"能收敛"这条断言弄成恒真），收敛断言必须变红；
+//   noTimeout    —— 超时当正常（把硬错降级成"静默的 0"），超时断言必须变红；
+//   stableAlways —— 稳定性判定恒真（阈值形同虚设），"不稳定必须硬错"那条断言必须变红；
+//   noStability  —— 整段稳定性闸删掉（不跑、不记账、证据包里没有 stability），
+//                    "best.json 里有 stability 且 ok:true"那条断言必须变红。
 export const MUTANT = String(process.env.CMDLOOP_MUTANT || '');
 
 const HARD = '[命令观测] ';
@@ -277,6 +285,88 @@ export function rowFromFields(fields, metrics) {
   return row;
 }
 
+// ---------------------------------------------------------------- 观测稳定性闸（0.4.1）
+// 截图链路的等价物是 freeze.verify=strict（同一个 URL 连拍两张、逐字节比，比不过就报错）。
+// 命令链路原来什么都没有：命令一旦有随机性（时间戳、并发、浮点不确定性、真实接口抖动），
+// 搜索会学会**在噪声里挑"看起来更好"的点**，最后交付一个假的最优。这一节就是补那个洞。
+//
+// 三件事分开写，是为了每件都能被单独测：
+//   resolveStability —— 配置怎么读（默认值 / 非法值硬错）；
+//   measureStability —— 怎么算离散度（纯函数，给一组数就出结论）；
+//   assertStability  —— 判不稳定就中文硬错（报指标 / spread / 阈值 / repeat 次原始值）。
+export function resolveStability(raw) {
+  if (raw === undefined || raw === null) return { ...DEFAULT_STABILITY };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    die(`adapter.observe.stability 要是一个对象（例：{"repeat":3,"maxSpread":0.02}），收到 ${JSON.stringify(raw)}`);
+  }
+  const repeat = raw.repeat === undefined || raw.repeat === null ? DEFAULT_STABILITY.repeat : raw.repeat;
+  // repeat=0 会被读成"关掉检查"这种含糊状态 —— 想关就显式写 1（那条会 warn），别用 0 表达"不要"。
+  if (!Number.isInteger(repeat) || repeat < 1) {
+    die(
+      `adapter.observe.stability.repeat 必须是 ≥1 的整数（收到 ${JSON.stringify(raw.repeat)}）—— ` +
+        `要关掉稳定性检查只能显式写 1（会打一条 warn 说明"本次不验证观测稳定性"）`,
+    );
+  }
+  const maxSpread = raw.maxSpread === undefined || raw.maxSpread === null ? DEFAULT_STABILITY.maxSpread : Number(raw.maxSpread);
+  if (!Number.isFinite(maxSpread) || !(maxSpread > 0) || maxSpread > 1) {
+    die(
+      `adapter.observe.stability.maxSpread 必须是 (0, 1] 的数（收到 ${JSON.stringify(raw.maxSpread)}）—— ` +
+        `它是相对离散度 (max-min)/max(|mean|,1e-9) 的上限，1 = 100%`,
+    );
+  }
+  return { repeat, maxSpread };
+}
+
+// spread = (max - min) / max(|mean|, 1e-9)；分母兜底 1e-9 是刻意的：
+// 指标在 0 附近时，绝对抖动再小、相对也是爆炸的 —— 那种情况本来就该报"不稳定"，
+// 而不是因为"除以 0 算不出来"就悄悄放过。
+// 返回 { repeat, maxSpread, ok, spreads:{id:spread}, values:{id:[...]} }；
+// ok 是**总判定**，spreads/ok 都按指标给，方便 report 逐条列。
+export function measureStability(values, cfg) {
+  const spreads = {};
+  const okById = {};
+  const kept = {};
+  for (const [id, rawArr] of Object.entries(values)) {
+    const v = (Array.isArray(rawArr) ? rawArr : []).map(Number);
+    kept[id] = v.map((x) => round6(x));
+    if (!v.length || v.some((x) => !Number.isFinite(x))) {
+      spreads[id] = null;
+      okById[id] = false;
+      continue;
+    }
+    const mean = v.reduce((a, b) => a + b, 0) / v.length;
+    const spread = (Math.max(...v) - Math.min(...v)) / Math.max(Math.abs(mean), 1e-9);
+    spreads[id] = spread;
+    okById[id] = spread <= cfg.maxSpread;
+  }
+  if (MUTANT === 'stableAlways') {
+    // 变异体：阈值恒真（判据形同虚设）—— 用来看"不稳定必须硬错"那条断言是不是真的接着实现
+    for (const id of Object.keys(okById)) okById[id] = true;
+  }
+  const ok = Object.values(okById).every(Boolean);
+  return { repeat: cfg.repeat, maxSpread: cfg.maxSpread, ok, okById, spreads, values: kept };
+}
+
+// 判不稳定 → 中文硬错。要求：点名哪个指标 / spread 多少 / 阈值多少 / repeat 次的原始值。
+// 不许静默降级（把不稳的那条指标剔掉继续跑），也不许自动取平均继续跑 —— 平均一下噪声就"不见了"，
+// 那正好是最危险的那种"看起来可信"。
+export function assertStability(st, metricIds) {
+  const bad = metricIds.filter((id) => st.okById[id] !== true);
+  if (!bad.length) return st;
+  const id = bad[0];
+  const sp = st.spreads[id];
+  const vals = st.values[id] ?? [];
+  die(
+    `观测不稳定：指标 \`${id}\` 的相对离散度 ${sp === null || sp === undefined ? '（取不到数）' : Number(sp).toFixed(6)}` +
+      ` 超过上限 maxSpread=${st.maxSpread}（repeat=${st.repeat} 次的原始值：${vals.map((v) => String(v)).join('、')}）\n` +
+      `  spread=(max-min)/max(|mean|,1e-9)。命令只要有随机性（时间戳 / 并发 / 浮点不确定性 / 真实接口抖动），` +
+      `搜索学到的就是"在噪声里挑好看的点"，交付的最优是假的 —— 拒绝继续（不静默降级、不自动取平均）。\n` +
+      `  先让观测确定下来（固定 seed、去掉时间戳、关并发、别读真实接口），或显式放宽 observe.stability.maxSpread 并自担风险` +
+      (bad.length > 1 ? `；另有 ${bad.length - 1} 条指标也不稳：${bad.slice(1).join('、')}` : ''),
+  );
+  return st;
+}
+
 // ---------------------------------------------------------------- 解析 adapter.observe
 // 与 core/adapter.js 的 command 分支**各有一份**（和 iter.ps1 的 Import-Adapter 与 core 的分工同构：
 // 执行器要能独立搬走，不 import 包内其它层的源码）。两边口径对齐点：
@@ -298,6 +388,8 @@ export function resolveCommandPlan(adapter, adapterFile, opts = {}) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) die(`adapter.observe.timeoutMs 必须是正数（收到 ${JSON.stringify(o.timeoutMs)}）`);
   const parseMode = String(o.parse ?? 'json');
   if (!PARSE_MODES.includes(parseMode)) die(`adapter.observe.parse=${parseMode} 不认识（只认 ${PARSE_MODES.join(' | ')}）`);
+  // 观测稳定性闸（0.4.1）：不写也有默认值（repeat 3 / maxSpread 0.02）—— 默认就该是安全的那一档。
+  const stability = resolveStability(o.stability);
 
   const rawMetrics = Array.isArray(o.metrics) ? o.metrics : [];
   if (!rawMetrics.length) die('adapter.observe.metrics 是空数组：没有指标就没有判据，跑不了');
@@ -406,6 +498,7 @@ export function resolveCommandPlan(adapter, adapterFile, opts = {}) {
       cwd,
       timeoutMs,
       parse: parseMode,
+      stability,
       metrics: activeMetrics.map((m) => ({ id: m.id, field: m.field, weight: m.weight, norm: m.norm })),
       metricIds: activeMetrics.map((m) => m.id),
     },

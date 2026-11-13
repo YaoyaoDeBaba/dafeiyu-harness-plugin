@@ -1,4 +1,4 @@
-// 命令观测（0.4.0）自测：不碰浏览器、不开端口、不依赖仓库外的现场。
+// 命令观测（0.4.0 / 0.4.1）自测：不碰浏览器、不开端口、不依赖仓库外的现场。
 //
 // 覆盖：
 //   ① 一轮能收敛（drop > 50%）+ 证据包齐全（curve.csv / best.json / report.md / outputs/）
@@ -10,9 +10,14 @@
 //   ⑦ 同 seed 两次（换 out 目录）best.json 的 hash 一致
 //   ⑧ 适配层/工具层：core 说得清 observe，probe 输出过 schema（新键全进 required）
 //   ⑨ 弄坏能红 ×2：flatZero（距离恒 0）→ 收敛断言必红；noTimeout（超时当正常）→ 超时断言必红
+//   ⑩ 另外两种取数方式（parse=number / line:k=v）
+//   ⑪ 观测稳定性闸（0.4.1）：稳定命令过闸 + 证据包有 stability 表；不稳定命令硬错（点名指标与 spread）；
+//      repeat=1 显式关闭并 warn；非法配置中文硬错；预算不够时硬错（不偷偷少跑几次）
+//   ⑫ 弄坏能红 ×2（0.4.1）：stableAlways（判定恒真）→ ⑪ 的不稳定断言必红；
+//      noStability（整段删掉）→ ⑪ 的 stability 字段断言必红
 //
 // 变异开关（只给测试用，见 harness/cmdlib.mjs 的 MUTANT）：
-//   CMDLOOP_MUTANT=flatZero|noTimeout node test/command.test.mjs
+//   CMDLOOP_MUTANT=flatZero|noTimeout|stableAlways|noStability node test/command.test.mjs
 // 不设时行为完全正常。
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -42,26 +47,29 @@ function runCli(args, env = {}) {
 }
 
 // 一个临时"现场"：基线参数文件 + 一条命令 + 一份 adapter（与 examples/command-echo.json 同形状）
-function makeSite(tag, { cmd, timeoutMs = 5000, parse = 'json', metrics, target, params = ['a'] }) {
+// stability 不传 = adapter 里不写 observe.stability（**默认值仍要生效**，这正是要测的一条）
+function makeSite(tag, { cmd, timeoutMs = 5000, parse = 'json', metrics, target, params = ['a'], stability }) {
   const dir = tmp(tag)
   writeFileSync(join(dir, 'base.json'), JSON.stringify({ params: { a: 1 } }), 'utf8')
   if (cmd.script) writeFileSync(join(dir, cmd.name), cmd.script, 'utf8')
+  const observe = {
+    type: 'command',
+    cmd: cmd.line ?? `node ./${cmd.name}`,
+    timeoutMs,
+    parse,
+    metrics:
+      metrics ?? [
+        { id: 'loss', field: 'loss', norm: { mode: 'abs', scale: 1 }, weight: 1 },
+        { id: 'size', field: 'size', norm: { mode: 'abs', scale: 10 }, weight: 0.5 },
+      ],
+  }
+  if (stability !== undefined) observe.stability = stability
   const adapter = {
     schema: 'closed-loop-adapter/3',
     domain: 'command',
     name: `test-${tag}`,
     config: { path: 'base.json', format: 'flat-params' },
-    observe: {
-      type: 'command',
-      cmd: cmd.line ?? `node ./${cmd.name}`,
-      timeoutMs,
-      parse,
-      metrics:
-        metrics ?? [
-          { id: 'loss', field: 'loss', norm: { mode: 'abs', scale: 1 }, weight: 1 },
-          { id: 'size', field: 'size', norm: { mode: 'abs', scale: 10 }, weight: 0.5 },
-        ],
-    },
+    observe,
     target: target ?? { mode: 'metrics', metrics: { loss: 0, size: 10 } },
     params: { mode: 'list', list: params },
     score: { type: 'l1', penalties: [] },
@@ -303,7 +311,9 @@ test('⑩ parse=number 与 line:k=v 也能跑通（三种取数方式都有人�
     target: { mode: 'metrics', metrics: { err: 0 } },
   })
   const o1 = tmp('num-ok-out')
-  const r1 = runCli(['--adapter', st.file, '--out', o1, '--budget', '1'])
+  // 预算 4 = 起点 1 + 稳定性闸 2（0.4.1 起默认 repeat=3，起点那一次算第 1 次采样）+ 预检 1。
+  // 这条测的是"取数方式"，不是预算边界（预算不够的表现由 ⑪-5 单独钉）。
+  const r1 = runCli(['--adapter', st.file, '--out', o1, '--budget', '4'])
   assert.equal(r1.status, 0, r1.out)
   const b1 = readJson2(join(o1, 'best.json'))
   assert.equal(b1.curve[0].dist, 0.25, 'number 模式：距离就是 0.25')
@@ -316,7 +326,7 @@ test('⑩ parse=number 与 line:k=v 也能跑通（三种取数方式都有人�
     target: { mode: 'metrics', metrics: { loss: 0, size: 10 } },
   })
   const o2 = tmp('kv-ok-out')
-  const r2 = runCli(['--adapter', kv.file, '--out', o2, '--budget', '1'])
+  const r2 = runCli(['--adapter', kv.file, '--out', o2, '--budget', '4'])
   assert.equal(r2.status, 0, r2.out)
   const b2 = readJson2(join(o2, 'best.json'))
   assert.equal(b2.curve[0].m_loss, 1.5, 'line:k=v 要能取到 loss')
@@ -333,6 +343,137 @@ test('⑩ parse=number 与 line:k=v 也能跑通（三种取数方式都有人�
   const r3 = runCli(['--adapter', bad.file, '--out', tmp('num-two-out'), '--budget', '1'])
   assert.equal(r3.status, 1)
   assert.match(r3.out, /只能配 1 条指标/)
+})
+
+// 稳定性闸用的两条 demo 命令（都写成 .mjs 落进临时目录，由 cmdloop 当普通命令跑）
+// 稳定：同一个参数跑几次，输出逐字节相同。
+const STABLE_SCRIPT =
+  [
+    'import { readFileSync } from "node:fs"',
+    'const d = JSON.parse(readFileSync(process.env.SELFLOOP_PARAMS, "utf8"))',
+    'const a = Number(d.params.a)',
+    'console.log(JSON.stringify({ loss: Number(Math.abs(a - 1).toFixed(6)), size: 10 + a }))',
+  ].join('\n') + '\n'
+// 不稳定：连续调用依次给 ×1.00 / ×1.05 / ×0.95（**确定性**抖动，不用 Math.random —— 用例要每次一样）。
+// 用计数器文件实现"第几次调用"，所以同一组参数两次采样的值必然不同，spread = 0.1 > 0.02。
+const JITTER_SCRIPT =
+  [
+    'import { existsSync, readFileSync, writeFileSync } from "node:fs"',
+    'import { dirname, join } from "node:path"',
+    'import { fileURLToPath } from "node:url"',
+    'const f = join(dirname(fileURLToPath(import.meta.url)), "jitter.n")',
+    'const n = existsSync(f) ? Number(readFileSync(f, "utf8")) : 0',
+    'writeFileSync(f, String(n + 1))',
+    'const k = [1, 1.05, 0.95][n % 3]',
+    'console.log(JSON.stringify({ loss: Number((1 * k).toFixed(6)), size: 10 }))',
+  ].join('\n') + '\n'
+
+// ---------------------------------------------------------------- ⑪ 观测稳定性闸（0.4.1）
+// 截图链路的等价物是 freeze.verify=strict（同 URL 连拍两张逐字节比）。命令链路原来什么都没有：
+// 命令一旦有随机性，搜索就会学会在噪声里挑"看起来更好"的点，最后交付一个假的最优。
+test('⑪-1 稳定命令 + 不写 stability → 默认参数生效、过闸、证据包里有 stability 表', () => {
+  const site = makeSite('stab-ok', { cmd: { name: 'steady.mjs', script: STABLE_SCRIPT } })
+  const out = tmp('stab-ok-out')
+  const r = runCli(['--adapter', site.file, '--out', out, '--budget', '12'])
+  assert.equal(r.status, 0, `稳定命令该跑通，实际 exit=${r.status}\n${r.out.slice(-2000)}`)
+  // 前提：adapter 里一个字都没写 stability —— 默认值必须自己生效
+  assert.equal(site.adapter.observe.stability, undefined, '这条用例的前提是 adapter 没写 stability')
+  const best = readJson2(join(out, 'best.json'))
+  assert.deepEqual([best.stability.repeat, best.stability.maxSpread], [3, 0.02], '默认 repeat=3 / maxSpread=0.02 不写也要生效')
+  assert.equal(best.stability.ok, true)
+  assert.equal(best.stability.checked, true)
+  assert.equal(best.stability.spreads.loss, 0, '稳定命令：loss 的 spread 必须是 0')
+  assert.equal(best.stability.values.loss.length, 3, 'repeat=3 → 要留 3 条原始值')
+  // 成本：起点那一次算第 1 次采样，额外花 repeat-1 = 2 次，并且**记进预算**（真的评估过 → 有 outputs）
+  assert.equal(best.evaluations.stability, 2, `稳定性检查该花 2 次，实测 ${best.evaluations.stability}`)
+  assert.equal(best.evaluations.used, best.curve.length, 'curve 行数 = 评估次数（稳定性那几次也在里面）')
+  for (const n of ['e001.json', 'e002.json', 'e003.json']) assert.ok(existsSync(join(out, 'outputs', n)), `缺 outputs/${n}（稳定性检查的原始输出要留）`)
+  const md = readFileSync(join(out, 'report.md'), 'utf8')
+  assert.match(md, /观测稳定性闸/, 'report.md 要有那一节')
+  assert.match(md, /spread/, 'report.md 的表头要写清 spread 口径')
+  assert.match(md, /repeat=3/)
+  assert.match(md, /记进预算/, '要写清这几次花掉的是预算')
+})
+
+test('⑪-2 不稳定命令（±5% 抖动）→ 中文硬错，点名指标、spread、阈值与原始值', () => {
+  const site = makeSite('stab-jitter', { cmd: { name: 'jitter.mjs', script: JITTER_SCRIPT } })
+  const out = tmp('stab-jitter-out')
+  const r = runCli(['--adapter', site.file, '--out', out, '--budget', '10'])
+  assert.equal(r.status, 1, `观测不稳必须硬错，实际 exit=${r.status}\n${r.out}`)
+  assert.match(r.out, /观测不稳定/)
+  assert.match(r.out, /`loss`|loss/, '要点名是哪条指标')
+  assert.match(r.out, /0\.100000/, `要报出 spread（实测 0.1），原文：${r.out}`)
+  assert.match(r.out, /maxSpread=0\.02/, '要报出阈值')
+  assert.match(r.out, /1、1\.05、0\.95/, '要报出 repeat 次的原始值')
+  assert.ok(!existsSync(join(out, 'best.json')), '硬错时不许交出"看起来跑完了"的证据包')
+})
+
+test('⑪-3 repeat=1 → 显式关掉检查，但必须 warn（不静默）', () => {
+  const site = makeSite('stab-off', { cmd: { name: 'steady.mjs', script: STABLE_SCRIPT }, stability: { repeat: 1 } })
+  const out = tmp('stab-off-out')
+  const r = runCli(['--adapter', site.file, '--out', out, '--budget', '8'])
+  assert.equal(r.status, 0, r.out)
+  assert.match(r.out, /不验证观测稳定性/, 'repeat=1 必须打一条中文 warn')
+  const best = readJson2(join(out, 'best.json'))
+  assert.equal(best.stability.repeat, 1)
+  assert.equal(best.stability.checked, false, 'repeat=1 = 没验过')
+  assert.equal(best.evaluations.stability, 0, 'repeat=1 不该额外花评估')
+  assert.match(readFileSync(join(out, 'report.md'), 'utf8'), /未验证/, 'report 里要写"未验证"，不能假装通过')
+})
+
+test('⑪-4 非法配置（repeat:0 / maxSpread:0 / maxSpread:1.5）→ 各个中文硬错', () => {
+  const cases = [
+    [{ repeat: 0 }, /stability\.repeat 必须是 ≥1 的整数/],
+    [{ maxSpread: 0 }, /stability\.maxSpread 必须是 \(0, 1\] 的数/],
+    [{ maxSpread: 1.5 }, /stability\.maxSpread 必须是 \(0, 1\] 的数/],
+  ]
+  for (const [stability, re] of cases) {
+    const site = makeSite('stab-bad', { cmd: { name: 'steady.mjs', script: STABLE_SCRIPT }, stability })
+    const r = runCli(['--adapter', site.file, '--out', tmp('stab-bad-out'), '--budget', '6'])
+    assert.equal(r.status, 1, `非法配置 ${JSON.stringify(stability)} 必须非零退出\n${r.out}`)
+    assert.match(r.out, re, `非法配置 ${JSON.stringify(stability)} 的中文错不对：${r.out.slice(0, 400)}`)
+    assert.match(r.out, /收到 /, '错误里要把收到的值原样回显（不然没法排查）')
+  }
+})
+
+test('⑪-5 预算不够跑闸 → 硬错（绝不偷偷少跑几次）', () => {
+  const site = makeSite('stab-budget', { cmd: { name: 'steady.mjs', script: STABLE_SCRIPT } })
+  const out = tmp('stab-budget-out')
+  // repeat=3 要 起点 1 + 2，预算 2 不够
+  const r = runCli(['--adapter', site.file, '--out', out, '--budget', '2'])
+  assert.equal(r.status, 1, `预算不够必须硬错，实际 exit=${r.status}\n${r.out}`)
+  assert.match(r.out, /预算太小/)
+  assert.match(r.out, /repeat=3/, '要说清要跑几次')
+  assert.match(r.out, /repeat=1/, '要给一条出路（显式关掉）')
+  assert.ok(!existsSync(join(out, 'best.json')), '硬错时不许产出证据包')
+})
+
+// ---------------------------------------------------------------- ⑫ 弄坏能红 ×2（0.4.1）
+test('⑫-1 弄坏能红：判定恒真（CMDLOOP_MUTANT=stableAlways）→ ⑪-2 的硬错断言必须塌', () => {
+  const site = makeSite('stab-mut-a', { cmd: { name: 'jitter.mjs', script: JITTER_SCRIPT } })
+  const out = tmp('stab-mut-a-out')
+  const r = runCli(['--adapter', site.file, '--out', out, '--budget', '10'], { CMDLOOP_MUTANT: 'stableAlways' })
+  // ⑪-2 断言"不稳 → exit 1"；判定恒真之后它必然 exit 0 —— 这就是"那条断言真的接在实现上"的证据
+  assert.equal(r.status, 0, `变异体该跑完（这正是判定形同虚设的危险），实际 exit=${r.status}\n${r.out}`)
+  assert.notEqual(r.status, 1, '⑪-2 的 assert.equal(r.status, 1) 在这份实现上不可能成立')
+  assert.ok(!/观测不稳定/.test(r.out), '变异体下不该出现"观测不稳定"硬错')
+  const best = readJson2(join(out, 'best.json'))
+  assert.equal(best.stability.ok, true, '判定恒真：spread 再大也说 ok')
+  assert.ok(best.stability.spreads.loss > 0.02, `spread 实测 ${best.stability.spreads.loss}，本来超阈值该被拦`)
+})
+
+test('⑫-2 弄坏能红：整段删掉（CMDLOOP_MUTANT=noStability）→ ⑪-1 的 stability 字段断言必须塌', () => {
+  const site = makeSite('stab-mut-b', { cmd: { name: 'steady.mjs', script: STABLE_SCRIPT } })
+  const out = tmp('stab-mut-b-out')
+  const r = runCli(['--adapter', site.file, '--out', out, '--budget', '12'], { CMDLOOP_MUTANT: 'noStability' })
+  assert.equal(r.status, 0, r.out)
+  const best = readJson2(join(out, 'best.json'))
+  // ⑪-1 断言 best.stability.repeat === 3 / ok === true；字段没了之后它必然红（这里断言"没了"这件事）
+  assert.ok(!('stability' in best), '整段删掉后 best.json 不该有 stability')
+  assert.equal(best.evaluations.stability, 0)
+  assert.ok(!/^## 观测稳定性闸/m.test(readFileSync(join(out, 'report.md'), 'utf8')), '报告里也不该有那一节')
+  // 但它照样"看起来跑完了"—— 这正是没这个闸的时候证据包的样子：谁也看不出观测没验过
+  assert.equal(typeof best.dropPct, 'number')
 })
 
 // ---------------------------------------------------------------- 极小 JSON-Schema 子集校验器（与 plugin.test.mjs 同口径）
