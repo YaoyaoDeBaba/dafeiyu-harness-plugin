@@ -1,16 +1,17 @@
 // 插件自测：不起宿主、不装 profile、不开端口、不跑产线。
 // 纯 node:test + 假 ctx + 一个 JSON-Schema 子集校验器（用来验 output.schema 和返回值对得上）。
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const mod = await import('../lib/index.js')
 const { name, apply, selfloopProbeTool, selfloopListAdaptersTool, DEFAULT_ADAPTER, DEFAULT_DOMAIN } = mod
-const { HARNESS_REQUIRED, parseAdapter, listAdapters, groupByDomain } = await import('../core/adapter.js')
+const { HARNESS_REQUIRED, HARNESS_ROLES, parseAdapter, listAdapters, groupByDomain } = await import('../core/adapter.js')
 const { resolveRequest, contentType, createStaticHandler, MIME } = await import('../static/server.mjs')
 
 const ADAPTER_DIR = join(ROOT, 'domains', 'vfx-render', 'adapters')
@@ -139,9 +140,9 @@ test('两个工具的 schema 每个 object 都显式 additionalProperties:boolea
 })
 
 // ---------------------------------------------------------------- harness / adapters / 三层
-test('harness 齐全：8 件跑一轮必需件 + 默认 adapter + 适配层字段说明', () => {
+test('harness 齐全：9 件跑一轮必需件 + 默认 adapter + 适配层字段说明', () => {
   const dir = join(ROOT, 'harness')
-  assert.equal(HARNESS_REQUIRED.length, 8, '跑一轮的必需件清单')
+  assert.equal(HARNESS_REQUIRED.length, 9, '跑一轮的必需件清单')
   for (const f of HARNESS_REQUIRED) {
     const p = join(dir, f)
     assert.ok(existsSync(p), `harness 缺 ${f}`)
@@ -234,12 +235,20 @@ test('selfloop_probe 默认读包内 fire-ray.json，返回结构合 schema，�
   assert.equal(v.penalties[0].id, 'coreGone')
   assert.match(v.distanceRule, /Σ\(nd_i × w_i\)/)
   assert.deepEqual(v.harness.missing, [], '包内 harness 不该缺件')
-  assert.equal(v.harness.required, 8)
+  assert.equal(v.harness.required, 9, '必需件清单含 writeguard.js（9 件）')
   assert.ok(v.tools.metricsJs.endsWith('metrics2.js'))
-  // 包内零本机绝对路径：clientRoot 是 %VFX_LOOP_CLIENT% 模板 ⇒ 没设变量时应当"指不到配置"并说清原因
+  // 包内零本机绝对路径：clientRoot 是 %VFX_LOOP_CLIENT% 模板 ⇒ 没设变量时应当"指不到配置"并说清原因。
+  // 模板变量有两条（clientRoot + guard.protectPaths 的 %VFX_LOOP_BODY_CLIENT%），所以这里**不数条数**：
+  // 只钉"该报的那条报了"——数条数的写法在加 protectPaths 时就会红（加一个模板变量 = 一条新 warning）。
   assert.equal(v.clientRoot, '')
-  const envWarn = v.warnings.filter((w) => /环境变量没设置/.test(w))
-  assert.equal(envWarn.length, 1, '应当恰好一条"环境变量没设置"警告：' + v.warnings.join(' | '))
+  assert.ok(
+    v.warnings.some((w) => /环境变量没设置/.test(w) && w.includes('%VFX_LOOP_CLIENT%')),
+    'clientRoot 的模板变量没设要说出来：' + v.warnings.join(' | '),
+  )
+  assert.ok(
+    v.warnings.some((w) => /环境变量没设置/.test(w) && w.includes('VFX_LOOP_BODY_CLIENT')),
+    'guard.protectPaths 的模板变量没设也要说出来：' + v.warnings.join(' | '),
+  )
   assert.equal(v.configFileExists, false)
 })
 
@@ -267,19 +276,28 @@ test('selfloop_probe：设了 %VFX_LOOP_CLIENT% 之后 clientRoot / 配置文件
   mkdirSync(join(dir, 'resource', 'lab', 'vfx'), { recursive: true })
   writeFileSync(join(dir, 'resource', 'lab', 'vfx', 'vfx.json'), '{}')
   const prev = process.env.VFX_LOOP_CLIENT
+  // fire-ray 现在有两处模板变量：clientRoot（%VFX_LOOP_CLIENT%）与 guard.protectPaths（%VFX_LOOP_BODY_CLIENT%）。
+  // 这条测的是"变量都设好 → 一条环境变量警告都不该有"，所以两个都设。
+  const prevBody = process.env.VFX_LOOP_BODY_CLIENT
   process.env.VFX_LOOP_CLIENT = dir
+  process.env.VFX_LOOP_BODY_CLIENT = join(dir, 'body')
   try {
     const v = await selfloopProbeTool.execute({})
     assert.deepEqual(validate(selfloopProbeTool.output.schema, v), [])
     assert.equal(v.clientRoot, dir)
     assert.equal(v.configFileExists, true)
     assert.deepEqual(v.warnings.filter((w) => /环境变量没设置|配置文件不在/.test(w)), [])
+    // 保护路径也是模板展开的（bodyClient 空 → 只剩声明的那一条）
+    assert.deepEqual(v.guard.protectPaths, [join(dir, 'body')])
+    assert.equal(v.guard.enforced, true)
     // 浏览器候选也是模板展开的：本机装了 Edge/Chrome 才会命中，没装就只该有一条"没命中"的警告
     assert.ok(Array.isArray(v.warnings))
     assert.ok(v.browser.exeCandidates >= 3, 'adapter 声明了 4 个候选（模板按 4 条计）')
   } finally {
     if (prev === undefined) delete process.env.VFX_LOOP_CLIENT
     else process.env.VFX_LOOP_CLIENT = prev
+    if (prevBody === undefined) delete process.env.VFX_LOOP_BODY_CLIENT
+    else process.env.VFX_LOOP_BODY_CLIENT = prevBody
   }
 })
 
@@ -562,22 +580,22 @@ test('locale 双语 key 完全一致，title 是「权臣」/ Selfloop，描述�
   }
 })
 
-test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.3.3', () => {
+test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.3.4', () => {
   const pkg = readJson('package.json')
   assert.equal(pkg.name, 'dsh-selfloop')
-  assert.equal(pkg.version, '0.3.3')
+  assert.equal(pkg.version, '0.3.4')
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.main, 'lib/index.js')
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
   for (const k of ['.', './core', './cordis.patch.yml', './package.json', './locale/*.json']) {
     assert.ok(pkg.exports[k], `exports 缺 ${k}`)
   }
-  for (const need of ['lib', 'core', 'domains', 'harness', 'static', 'skills', 'locale/*.json', 'cordis.patch.yml', 'icon.png', 'README.md']) {
+  for (const need of ['lib', 'core', 'domains', 'harness', 'static', 'examples', 'skills', 'locale/*.json', 'cordis.patch.yml', 'icon.png', 'README.md']) {
     assert.ok(pkg.files.includes(need), `files 缺 ${need}`)
   }
   assert.ok(!pkg.files.includes('adapters'), 'adapters 已搬进 domains/，根目录不该再列')
   const positives = pkg.files.filter((f) => !f.startsWith('!'))
-  assert.equal(positives.length, 10, 'files 正名单不该有多余项')
+  assert.equal(positives.length, 11, 'files 正名单不该有多余项')
   // 评审 §4.2：日志文件不许随包分发 —— 显式排除一条，别指望"忘了把文件挪进来"
   assert.ok(pkg.files.includes('!**/*.log'), 'files 要显式排除 *.log')
   // 白名单里的每一项都真有东西（带 * 的按"目录里至少命中一个"判）
@@ -678,4 +696,407 @@ test('孤儿守卫三条都在（评审 §4.1）：看门狗 / 关闭时杀整�
   assert.match(iter, /\$ProfileRoot = Resolve-AbsPath/)
   assert.ok(!/\$profile = Join-Path \$ToolDir/.test(iter), 'profile 不该落在包目录里（装成 node_modules 后可能只读）')
   assert.match(iter, /Expand-PathTpl/, '路径模板（%环境变量%）要有统一的展开口径')
+})
+
+// ---------------------------------------------------------------- 解耦批次一：默认值中性化 + adapter 字段解析
+// 对应方案 11-解耦方案.md §4 的 T10 / T11 / T13~T17 / T19。
+// 每条都要"弄坏能红"：删掉被测的那行，本条（或点名的那条）必须红。
+const ITER_SRC = readFileSync(join(ROOT, 'harness', 'iter.ps1'), 'utf8')
+
+test('T10 iter.ps1 没有内置白名单：$Params 默认空串，白名单没来源就 throw（唯一 BREAKING）', () => {
+  // 弄坏能红：把 param 块改回 [string]$Params = 'widthPx,distM' 或把 else 的 throw 改回静默赋值
+  assert.ok(
+    !/\[string\]\$Params\s*=\s*'widthPx,distM'/.test(ITER_SRC),
+    '[string]$Params 不许再有内置默认白名单 widthPx,distM',
+  )
+  assert.match(ITER_SRC, /\[string\]\$Params = '',/, '$Params 的默认值必须是空串')
+  assert.match(ITER_SRC, /throw '白名单没有来源：/, '命令行没 -Params 且 adapter 没 params 节时必须 throw，不许静默兜底')
+  assert.match(ITER_SRC, /-Params a,b/, '报错文案要写清修法（-Params a,b 或给 adapter 加 params 节）')
+  assert.ok(
+    !/内置默认 widthPx,distM，等价 P2\.5 之前的行为/.test(ITER_SRC),
+    '旧的"内置默认 + 打日志就开跑"必须删干净',
+  )
+})
+
+test('T11 iter.ps1 不认字段模板（template:true 拒跑）+ Import-Adapter 补非空校验/block 空串', () => {
+  // 弄坏能红：删掉 template 拒跑那段 → 本条红
+  assert.match(ITER_SRC, /\$[aA]\['template'\]/, 'Import-Adapter 要检查 template 键')
+  assert.match(ITER_SRC, /template:true/, '拒跑文案要点明 template:true')
+  assert.match(ITER_SRC, /你用的是包内字段模板/, '拒跑要用人话说明"这是模板不是 adapter"')
+  assert.match(ITER_SRC, /domains\/vfx-render\/adapters\/fire-ray\.json/, '拒跑要指路一份真 adapter')
+  // 与 core 同口径的非空校验（D4：一侧只看键在不在、一侧查空串，就是第三次口径分叉）
+  assert.match(ITER_SRC, /IsNullOrWhiteSpace/, 'Import-Adapter 要查空串（name/clientRoot/config.path/config.block/page.file）')
+  assert.match(ITER_SRC, /adapter 缺字段：config\.block（空串）/, 'config.block 空串要在 §0 就报错，别让正则报"格式不对"')
+})
+
+test('T13 parseAdapter 认 guard.protectPaths：绝对路径 + bodyClient 自动并入（并集、不重复）', () => {
+  // 弄坏能红：不并入 bodyClient → 第二条断言的 length 变 1
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-guard-'))
+  const src = readJson('domains/vfx-render/adapters/fire-ray.json')
+  src.clientRoot = dir
+  src.guard = { protectPaths: ['protect-body'], bodyClient: 'protect-body/client' }
+  const file = join(dir, 'a.json')
+  writeFileSync(file, JSON.stringify(src))
+  const a = parseAdapter(file, join(ROOT, 'harness'))
+  assert.equal(a.guard.enforced, true, '声明了 protectPaths 就必须 enforced=true')
+  assert.equal(a.guard.bodyClient, join(dir, 'protect-body', 'client'))
+  assert.equal(a.guard.protectPaths.length, 2, 'protectPaths(1) ∪ bodyClient(1)')
+  for (const p of a.guard.protectPaths) assert.ok(isAbsolute(p), `protectPaths 必须展开成绝对路径：${p}`)
+  assert.ok(a.guard.protectPaths.includes(join(dir, 'protect-body')), '相对路径按 adapter 目录展开')
+  assert.ok(a.guard.protectPaths.includes(a.guard.bodyClient), 'bodyClient 非空时必须进 protectPaths')
+  assert.deepEqual(a.warnings.filter((w) => /没声明 guard\.protectPaths/.test(w)), [])
+
+  // 已经写在 protectPaths 里的 bodyClient 不许重复加
+  src.guard = { protectPaths: ['protect-body', 'protect-body/client'], bodyClient: 'protect-body/client' }
+  const file2 = join(dir, 'b.json')
+  writeFileSync(file2, JSON.stringify(src))
+  assert.equal(parseAdapter(file2, join(ROOT, 'harness')).guard.protectPaths.length, 2, '并集要去重')
+})
+
+test('T14 parseAdapter 守卫缺失只记账：enforced=false + 恰好一条 guard.protectPaths 警告，不抛', () => {
+  // 弄坏能红：改成硬错 → assert.throws 之外的这行拿不到结果（直接红）
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-noguard-'))
+  const src = readJson('domains/vfx-render/adapters/fire-ray.json')
+  src.clientRoot = dir
+  delete src.guard
+  const file = join(dir, 'a.json')
+  writeFileSync(file, JSON.stringify(src))
+  const a = parseAdapter(file, join(ROOT, 'harness'))
+  assert.equal(a.guard.enforced, false)
+  assert.deepEqual(a.guard.protectPaths, [])
+  assert.equal(a.guard.bodyClient, '')
+  const hits = a.warnings.filter((w) => w.includes('guard.protectPaths'))
+  assert.equal(hits.length, 1, `守卫缺失应当恰好一条 warning，实际：${a.warnings.join(' | ')}`)
+})
+
+test('T15 clientRoot 空串硬错 vs %环境变量% 没设只 warn（两条不能混）', () => {
+  // 弄坏能红：把空串也做成 warn → 第一条 throws 红；把模板没设做成硬错 → 末段绿断言红
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-clientroot-'))
+  const good = readJson('domains/vfx-render/adapters/fire-ray.json')
+  const empty = join(dir, 'empty.json')
+  writeFileSync(empty, JSON.stringify({ ...good, clientRoot: '' }))
+  assert.throws(() => parseAdapter(empty, join(ROOT, 'harness')), /clientRoot（空串/, '空串是缺字段，必须硬错')
+
+  const tpl = join(dir, 'tpl.json')
+  writeFileSync(tpl, JSON.stringify({ ...good, clientRoot: '%NOPE_X_%' }))
+  const a = parseAdapter(tpl, join(ROOT, 'harness'))
+  assert.equal(a.clientRoot, '', '模板没展开时 clientRoot 回空串')
+  assert.ok(
+    a.warnings.some((w) => /环境变量没设置/.test(w) && /NOPE_X_/.test(w)),
+    '模板变量没设只记账：' + a.warnings.join(' | '),
+  )
+})
+
+test('T16 target.mode=params 但 params 为空：一条 warning，不抛', () => {
+  // 弄坏能红：删掉 target.params 解析与 warning → 本条红
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-tp-'))
+  const src = readJson('domains/vfx-render/adapters/fire-ray.json')
+  src.clientRoot = dir
+  src.target = { mode: 'params' }
+  const file = join(dir, 'a.json')
+  writeFileSync(file, JSON.stringify(src))
+  const a = parseAdapter(file, join(ROOT, 'harness'))
+  assert.equal(a.target.mode, 'params')
+  assert.deepEqual(a.target.params, {})
+  assert.equal(a.warnings.filter((w) => /target\.params 为空/.test(w)).length, 1)
+  // 正常那份要能把目标参数透出来
+  const ok = parseAdapter(join(ADAPTER_DIR, 'fire-ray.json'), join(ROOT, 'harness'))
+  assert.deepEqual(ok.target.params, { widthPx: 30, distM: 8 })
+})
+
+test('T17 probe 输出 schema 说得出 template / guard / target / params（新键全进 required）', async () => {
+  // 弄坏能红：只加 property 不加 required → walkSchema(requireAll) 那条（以及下面逐键点名）红
+  const schema = selfloopProbeTool.output.schema
+  for (const k of ['template', 'guard', 'target', 'params']) {
+    assert.ok(schema.properties[k], `PROBE_OUT.properties 缺 ${k}`)
+    assert.ok(schema.required.includes(k), `${k} 没进 required（返回值必须稳定给全）`)
+  }
+  for (const k of ['readyExpr', 'readbackExpr']) {
+    assert.ok(schema.properties.page.required.includes(k), `page.${k} 没进 required`)
+  }
+  const v = await selfloopProbeTool.execute({})
+  assert.deepEqual(validate(schema, v), [])
+  assert.equal(v.template, false, 'fire-ray 不是模板')
+  assert.equal(typeof v.guard.enforced, 'boolean')
+  assert.ok(Array.isArray(v.guard.protectPaths))
+  assert.equal(typeof v.guard.bodyClient, 'string')
+  assert.equal(typeof v.target.mode, 'string')
+  assert.ok(Array.isArray(v.params.list))
+  assert.ok(v.page.readbackExpr.includes('VfxConfig'), '要能看见这轮用什么回读')
+  // template:true 的 adapter 能被解析出标记（iter.ps1 据此拒跑）
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-tpl-'))
+  const src = readJson('domains/vfx-render/adapters/fire-ray.json')
+  src.clientRoot = dir
+  src.template = true
+  const file = join(dir, 'tpl.json')
+  writeFileSync(file, JSON.stringify(src))
+  assert.equal(parseAdapter(file, join(ROOT, 'harness')).template, true)
+})
+
+test('T19 三份示例 adapter 的"最少命令行可跑性"：target / params / readbackExpr / format↔apply 一致', () => {
+  // 弄坏能红：删掉 chain 的 params 节 → 第一条红
+  for (const f of ['chain-lightning.json', 'demo-url-time.json', 'fire-ray.json']) {
+    const raw = readJson(join('domains', 'vfx-render', 'adapters', f))
+    assert.ok(raw.target && typeof raw.target.mode === 'string' && raw.target.mode, `${f} 缺 target 节（最少命令行会报"目标帧没有来源"）`)
+    assert.ok(raw.params && Array.isArray(raw.params.list), `${f} 缺 params 节（拆掉内置默认后同样硬错）`)
+    assert.ok(raw.params.list.length > 0, `${f} 的 params.list 不能空`)
+    assert.equal(typeof raw.page.readbackExpr, 'string', `${f} 缺 page.readbackExpr（会静默变成 selfCheck:false）`)
+    assert.ok(raw.page.readbackExpr.length > 8, `${f} 的 readbackExpr 太短`)
+    const a = parseAdapter(join(ADAPTER_DIR, f), join(ROOT, 'harness'))
+    const want = a.configFormat === 'flat-params' ? 'apply_params.js' : 'apply.js'
+    assert.equal(a.tools.apply.split(/[\\/]/).pop(), want, `${f} 的 tools.apply 与 config.format 不一致`)
+    assert.equal(a.warnings.filter((w) => /target\.params 为空/.test(w)).length, 0, `${f} target.params 不能空`)
+  }
+})
+
+test('C4 examples/minimal.json 是解耦后的字段模板（零项目默认值、零私有宿主 API、包里不带 host）', () => {
+  const file = join(ROOT, 'examples', 'minimal.json')
+  assert.ok(existsSync(file), 'examples/minimal.json 必须随包（files 里有 examples）')
+  const m = readJson(join('examples', 'minimal.json'))
+  assert.equal(m.schema, 'closed-loop-adapter/3')
+  assert.ok(m.target && m.params && m.page.readbackExpr && m.guard, '模板要示范 target/params/readbackExpr/guard 四节')
+  assert.deepEqual(m.guard.protectPaths, [])
+  assert.ok(!/VfxConfig|__t3_stale|mergeProbe/.test(JSON.stringify(m)), '不许再出现 fanren/mergeProbe 的私有宿主 API')
+  assert.ok(!/可直接跑/.test(m.retarget.note), '没验过的事不许承诺"可直接跑"')
+  const a = parseAdapter(file, join(ROOT, 'harness'))
+  assert.equal(a.template, false, '这份是字段模板示例，不是 template:true 的包内模板')
+  assert.equal(a.configFormat, 'flat-params')
+  assert.equal(a.tools.apply.split(/[\\/]/).pop(), 'apply_params.js')
+})
+
+// ---------------------------------------------------------------- 解耦批次二：写护栏（方案 §3-B / §4 的 T1~T9、T12、T18、T20）
+// T1~T4 是 writeguard 的纯函数单测（platform 可注入 → 不在 Windows 上也能钉住大小写/段边界）；
+// T5~T9 是**唯一**起子进程的几条：直接调 applier，秒级、无端口、无浏览器。
+const wgImport = await import('../harness/writeguard.js')
+const WG = wgImport.default ?? wgImport
+const APPLY_JS = join(ROOT, 'harness', 'apply.js')
+const APPLY_PARAMS_JS = join(ROOT, 'harness', 'apply_params.js')
+
+function runNode(args) {
+  const r = spawnSync(process.execPath, args, { encoding: 'utf8' })
+  return { code: r.status, stdout: (r.stdout ?? '').trim(), stderr: (r.stderr ?? '').trim(), error: r.error }
+}
+
+// 一份 vfx-block 形态的基线（effects.<Effect>.<Block>）；minBytes 给了就靠 note 补到那个大小
+function makeVfxBlock(dir, minBytes = 0) {
+  const blk = { widthPx: 10, distM: 5, note: 'pad' }
+  const doc = { effects: { FireRay: { blk } } }
+  let txt = JSON.stringify(doc, null, 2)
+  while (minBytes && Buffer.byteLength(txt, 'utf8') < minBytes) {
+    blk.note += 'x'.repeat(16)
+    txt = JSON.stringify(doc, null, 2)
+  }
+  const p = join(dir, 'vfx.json')
+  writeFileSync(p, txt)
+  return p
+}
+
+test('T1 writeguard.normPath 归一：尾分隔符 / 斜杠 / win32 大小写', () => {
+  // 弄坏能红：删掉 toLowerCase() → 大小写那行红；删掉去尾分隔符 → 第一行红
+  const n = (p, plat) => WG.normPath(p, plat)
+  assert.equal(n('sub\\dir\\', 'win32'), n('sub\\dir', 'win32'), '尾分隔符必须归一掉')
+  assert.equal(n('sub/dir', 'win32'), n('sub\\dir', 'win32'), 'win32 下 / 与反斜杠等价')
+  assert.equal(n('SUB\\DIR', 'win32'), n('sub\\dir', 'win32'), 'win32 忽略大小写')
+  assert.notEqual(n('A/b', 'posix'), n('a/b', 'posix'), '非 win32 区分大小写')
+})
+
+test('T2 writeguard.isUnder 按路径段边界（…\\a\\b 不匹配 …\\a\\bc）', () => {
+  // 弄坏能红：把 startsWith 改成裸前缀（去掉 + sep）→ 第一条红
+  assert.equal(WG.isUnder('a/bc/x', 'a/b', 'win32'), false, 'bodycopy 不是 body 的子目录')
+  assert.equal(WG.isUnder('a/b/x', 'a/b', 'win32'), true, '真子目录要命中')
+  assert.equal(WG.isUnder('a/b/', 'a/b', 'win32'), true, '等值（含尾分隔符）要命中')
+  assert.equal(WG.isUnder('A/b/x', 'a/b', 'win32'), true, 'win32 忽略大小写')
+  assert.equal(WG.isUnder('A/b/x', 'a/b', 'posix'), false, 'posix 区分大小写')
+})
+
+test('T2b writeguard.isUnder 能识破 junction（镜像目录指向本体）', (t) => {
+  // 这是"写回本体"最真实的翻车方式：路径字面上不在本体的子树里，realpath 之后在。
+  // 弄坏能红：删掉 normPath 里的 realpathSync → 第一条 false ≠ true。
+  if (process.platform !== 'win32') {
+    t.skip('junction 只有 Windows 有，这里不假装跨平台')
+    return
+  }
+  const root = mkdtempSync(join(tmpdir(), 'sl-junction-'))
+  try {
+    const body = join(root, 'body')
+    mkdirSync(join(body, 'cfg'), { recursive: true })
+    spawnSync('cmd', ['/c', 'mklink', '/J', join(root, 'mirror'), body])
+    if (!existsSync(join(root, 'mirror', 'cfg'))) {
+      t.skip('这台机器建不了 junction（权限或文件系统不支持）')
+      return
+    }
+    assert.equal(WG.isUnder(join(root, 'mirror', 'cfg', 'vfx.json'), body), true, 'junction 指过来的路径也算本体')
+    assert.equal(WG.isUnder(join(root, 'bodycopy', 'x.json'), body), false, '兄弟目录仍不许误伤')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('T3 writeguard.hitProtect 回命中的那条原串，未命中回 null，空元素不炸', () => {
+  // 弄坏能红：改成返回 boolean → 第一条的类型/文案断言红
+  const o = { platform: 'win32' }
+  assert.equal(WG.hitProtect('a/b/x', ['zzz', 'a/b'], o), 'a/b', '要回**声明里的原串**，用得上拒写文案')
+  assert.equal(WG.hitProtect('a/bx/x', ['a/b'], o), null)
+  assert.equal(WG.hitProtect('a/b/x', [], o), null)
+  assert.equal(WG.hitProtect('a/b/x', [null, '', undefined], o), null, '空元素跳过，不许炸')
+})
+
+test('T4 writeguard.splitProtectFlags 摘 --protect（可重复）且 rest 里不留它', () => {
+  // 弄坏能红：只取第一个 --protect → protect 少一项；不把值从 rest 里摘掉 → rest 多一项
+  const r = WG.splitProtectFlags(['--del', 'a,b', '--protect', 'X', '--protect', 'Y'])
+  assert.deepEqual(r.protect, ['X', 'Y'])
+  assert.deepEqual(r.rest, ['--del', 'a,b'], '--protect 的值不许留在 rest 里（否则 --del 会扫到它）')
+  assert.deepEqual(WG.splitProtectFlags(['--protect']).protect, [], '末尾裸挂 --protect 不许把空吃成值')
+})
+
+test('T5 apply.js 端到端拒写：out 落在 --protect 下 → 退出码 3 / stdout 空 / stderr 说清怎么改', () => {
+  // 弄坏能红：删掉 apply.js 的 hitProtect 检查 → 退出码变 0，这条红
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-wg-apply-'))
+  const base = makeVfxBlock(dir)
+  const prot = join(dir, 'body')
+  mkdirSync(prot, { recursive: true })
+  const out = join(prot, 'vfx.json')
+  const r = runNode([APPLY_JS, base, out, 'FireRay', 'blk', '{"widthPx":57}', '--protect', prot])
+  assert.equal(r.code, 3, '拒写必须退出码 3（实际 ' + r.code + '）：' + r.stderr)
+  assert.equal(r.stdout, '', '拒写时不许有 OK 输出')
+  assert.match(r.stderr, /拒写/)
+  assert.ok(r.stderr.includes(prot), 'stderr 要点名命中的那条保护路径：' + r.stderr)
+  assert.match(r.stderr, /protectPaths|clientRoot|-Mirror/, '要告诉用户改哪里，不能只说"拒写"')
+  assert.equal(existsSync(out), false, '拒写之后不许留下文件')
+})
+
+test('T6 apply.js 不误伤兄弟目录：保护 body，写 bodycopy 必须能过（裸前缀匹配会红）', () => {
+  // 弄坏能红：把 isUnder 的段边界改成裸前缀 → 这条退出码变 3
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-wg-sibling-'))
+  const base = makeVfxBlock(dir)
+  const prot = join(dir, 'body')
+  mkdirSync(prot, { recursive: true })
+  const outDir = join(dir, 'bodycopy', 'runs')
+  mkdirSync(outDir, { recursive: true })
+  const out = join(outDir, 'vfx.json')
+  const r = runNode([APPLY_JS, base, out, 'FireRay', 'blk', '{"widthPx":57}', '--protect', prot])
+  assert.equal(r.code, 0, 'bodycopy 是合法输出目录：' + r.stderr)
+  assert.ok(existsSync(out), '兄弟目录必须真的写出来')
+  assert.match(readFileSync(out, 'utf8'), /"widthPx": 57/)
+})
+
+test('T7 apply_params.js 接的是同一份护栏：拒写/放行与 apply.js 一致', () => {
+  // 弄坏能红：只给 apply.js 加 --protect、忘了 apply_params.js → 第一条退出码变 0
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-wg-flat-'))
+  const baseP = join(dir, 'params.json')
+  writeFileSync(baseP, JSON.stringify({ name: 'demo', params: { size: 40, soft: 0.2 } }))
+  const prot = join(dir, 'body')
+  mkdirSync(prot, { recursive: true })
+  const blocked = runNode([APPLY_PARAMS_JS, baseP, join(prot, 'params.json'), '{"size":12}', '--protect', prot])
+  assert.equal(blocked.code, 3, 'flat-params 也要拒写：' + blocked.stderr)
+  assert.match(blocked.stderr, /拒写/)
+  assert.ok(blocked.stderr.includes(prot))
+  const outDir = join(dir, 'bodycopy')
+  mkdirSync(outDir, { recursive: true })
+  const okOut = join(outDir, 'params.json')
+  const ok = runNode([APPLY_PARAMS_JS, baseP, okOut, '{"size":12}', '--protect', prot])
+  assert.equal(ok.code, 0, ok.stderr)
+  assert.deepEqual(JSON.parse(readFileSync(okOut, 'utf8')).params, { size: 12, soft: 0.2 })
+})
+
+test('T8 不带 --protect 仍可写（向后兼容）；out==base 的判等走 normPath', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-wg-compat-'))
+  const base = makeVfxBlock(dir)
+  const sub = join(dir, 'sub')
+  mkdirSync(sub, { recursive: true })
+  const out = join(sub, 'vfx.json')
+  assert.equal(runNode([APPLY_JS, base, out, 'FireRay', 'blk', '{"widthPx":11}']).code, 0, '老的直接调用方式不许断')
+  // Windows 上同一个文件换个大小写写法必须判成"等于 base"（旧的 path.resolve 严格比较会放过它）
+  const same = process.platform === 'win32' ? base.toUpperCase() : base
+  const r = runNode([APPLY_JS, base, same, 'FireRay', 'blk', '{"widthPx":11}'])
+  assert.equal(r.code, 3, 'out 与 base 是同一个文件时必须拒写：' + r.stderr)
+  assert.match(r.stderr, /不能等于 base/)
+})
+
+test('T9 小配置不会被"写坏"判死：~300B 的 vfx-block 基线写出来必须过（阈值 20000 会红）', () => {
+  // 弄坏能红：把 sz < 0.5*基线 改回 sz < 20000 → 退出码变 6
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-wg-small-'))
+  const base = makeVfxBlock(dir, 300)
+  const sz = statSync(base).size
+  assert.ok(sz >= 300 && sz < 20000, '这条要的是"小而正常"的基线，实际 ' + sz + 'B')
+  const sub = join(dir, 'sub')
+  mkdirSync(sub, { recursive: true })
+  const r = runNode([APPLY_JS, base, join(sub, 'vfx.json'), 'FireRay', 'blk', '{"distM":7.5}'])
+  assert.equal(r.code, 0, '小配置不该被判成写坏：' + r.stderr)
+  assert.match(r.stdout, /^OK/)
+})
+
+test('T12 iter.ps1 两头接护栏：--protect 走数组 splat / Test-PathUnder / [guard][warn] / meta 记 protectPaths', () => {
+  // 弄坏能红：只改 applier 不改 ps1（删掉 @(--protect) 那行）→ 本条红。这是最容易被漏的一半。
+  assert.match(ITER_SRC, /@\('--protect', \$pp\)/, 'protectPaths 必须逐条变成 --protect 参数')
+  assert.match(ITER_SRC, /& node @nodeArgs/, '调 applier 必须走数组 splat（手工拼引号会在带空格路径上拆错）')
+  assert.match(ITER_SRC, /function Test-PathUnder/, '要有与 writeguard.isUnder 同语义的路径判定')
+  assert.match(ITER_SRC, /\[guard\]\[warn\]/, '没声明 protectPaths 时只 warn 一行（不硬错）')
+  assert.match(ITER_SRC, /镜像配置文件落在保护路径里/, '执行点①：镜像落在保护区要在花预算之前 throw')
+  assert.match(ITER_SRC, /别改保护路径/, '报错要写清修法（改 -Mirror / adapter.clientRoot）')
+  assert.match(ITER_SRC, /protectPaths = @\(\$protectPaths\)/, '证据包 meta 要记保护路径')
+  assert.match(ITER_SRC, /guardEnforced = \(\$protectPaths\.Count -gt 0\)/, '证据包要记这轮到底强制没强制')
+})
+
+test('T18 harness 清单 9 件：writeguard.js 在必需件里、有角色说明、文件不是占位', () => {
+  // 弄坏能红：从 HARNESS_REQUIRED 删掉 writeguard.js → length 变 8
+  assert.equal(HARNESS_REQUIRED.length, 9)
+  assert.ok(HARNESS_REQUIRED.includes('writeguard.js'), 'apply*.js require 它，缺了就是 MODULE_NOT_FOUND')
+  assert.ok(HARNESS_ROLES['writeguard.js']?.length > 10, 'HARNESS_ROLES 要说明它是干什么的')
+  assert.ok(statSync(join(ROOT, 'harness', 'writeguard.js')).size > 200, 'writeguard.js 太小，像占位')
+})
+
+test('T20 三份示例 adapter 的 guard 自洽：不写死盘符；fire-ray 示范同模板；demo 显式空数组', () => {
+  // 弄坏能红：往任一示例的 protectPaths 里写死一个盘符路径 → 盘符那条红（包里那条便携性测试也会红）
+  const driveRe = new RegExp('^[A-Za-z]:')
+  const files = ['chain-lightning.json', 'demo-url-time.json', 'fire-ray.json']
+  for (const f of files) {
+    const raw = readJson(join('domains', 'vfx-render', 'adapters', f))
+    const pp = raw.guard?.protectPaths
+    if (pp === undefined) continue
+    assert.ok(Array.isArray(pp), f + '.guard.protectPaths 必须是数组')
+    for (const p of pp) {
+      assert.equal(typeof p, 'string', f + ' 的 protectPaths 元素必须是字符串')
+      assert.ok(p.length > 0, f + ' 的 protectPaths 不许有空串')
+      assert.ok(!driveRe.test(p), f + ' 的 protectPaths 不许写死盘符：' + p)
+    }
+  }
+  assert.deepEqual(
+    readJson(join('domains', 'vfx-render', 'adapters', 'fire-ray.json')).guard.protectPaths,
+    ['%VFX_LOOP_BODY_CLIENT%'],
+    'fire-ray 要与 bodyClient 同一个模板（示范"两个都写不冲突"）',
+  )
+  assert.deepEqual(
+    readJson(join('domains', 'vfx-render', 'adapters', 'demo-url-time.json')).guard.protectPaths,
+    [],
+    'demo 要显式声明"没有本体"',
+  )
+  // 展开后：要么空、要么绝对路径；enforced 必须与"真的声明出几条"一致
+  for (const f of files) {
+    const a = parseAdapter(join(ADAPTER_DIR, f), join(ROOT, 'harness'))
+    for (const p of a.guard.protectPaths) assert.ok(isAbsolute(p), f + ' 的 protectPaths 展开后必须是绝对路径：' + p)
+    assert.equal(a.guard.enforced, a.guard.protectPaths.length > 0)
+  }
+})
+
+test('模板例外：template:true 的字段模板不硬错，返回 template:true + 一条"字段模板"warning', async () => {
+  // 弄坏能红：把 isTemplate 那几处 guard 去掉 → parseAdapter 抛"缺字段：clientRoot（空串）"，本条红
+  const tplFile = join(ROOT, 'harness', 'adapter.json')
+  const a = parseAdapter(tplFile, join(ROOT, 'harness'))
+  assert.equal(a.template, true)
+  const hits = a.warnings.filter((w) => /字段模板/.test(w))
+  assert.equal(hits.length, 1, '模板只记一条人话警告：' + a.warnings.join(' | '))
+  assert.match(hits[0], /不能直接跑/)
+  assert.match(hits[0], /clientRoot/, '要把还空着的必填项点名')
+  // probe 是唯一的对外体检口：读包内模板时也该看到这句话，而不是"缺字段 clientRoot（空串）"
+  const v = await selfloopProbeTool.execute({ adapter: tplFile })
+  assert.deepEqual(validate(selfloopProbeTool.output.schema, v), [], '模板也要能过输出 schema')
+  assert.equal(v.template, true)
+  assert.ok(v.warnings.some((w) => /字段模板/.test(w)), v.warnings.join(' | '))
+  // 模板例外不许把批次一的裁决松掉：没有 template 标记的空串仍然硬错
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-tplexc-'))
+  const good = readJson('domains/vfx-render/adapters/fire-ray.json')
+  const bad = join(dir, 'no-tpl.json')
+  writeFileSync(bad, JSON.stringify({ ...good, clientRoot: '' }))
+  assert.throws(() => parseAdapter(bad, join(ROOT, 'harness')), /clientRoot（空串/)
 })

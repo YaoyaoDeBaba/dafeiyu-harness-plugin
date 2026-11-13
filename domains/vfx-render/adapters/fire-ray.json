@@ -13,7 +13,9 @@
   "page": {
     "file": "_dev/mergeProbe.html",
     "query": "?seed={seed}",
-    "readyExpr": "String(!!(window.__ready === true && window.__t3_stale === undefined && document.readyState === \"complete\"))"
+    "readyExpr": "String(!!(window.__ready === true && window.__t3_stale === undefined && document.readyState === \"complete\"))",
+    "readbackExpr": "JSON.stringify(VfxConfig.raw().effects.FireRay.fireBeamG1M1)",
+    "note": "readbackExpr 是本宿主专属（mergeProbe 的 VfxConfig 全局）：回读 effects.FireRay.fireBeamG1M1，证明参数真的被吃到。别的宿主自己给一句窗口 API 的 JSON 字符串。"
   },
   "freeze": {
     "protocol": "noloop-step",
@@ -113,8 +115,9 @@
     "capture": "capture.mjs"
   },
   "guard": {
+    "protectPaths": ["%VFX_LOOP_BODY_CLIENT%"],
     "bodyClient": "",
-    "note": "本体守卫：填你自己的本体 client 目录（或 %VFX_LOOP_BODY_CLIENT% 模板）才会做「本体 vfx.json 前后哈希一致」的对比；留空 = 不做，且报告里明说 n/a，绝不假装比过。"
+    "note": "写护栏：protectPaths = 写入禁区（改参脚本拒绝把任何文件写进这些目录/文件，含子目录），匹配语义是 subtree。这里用的是与 bodyClient 同一个模板 %VFX_LOOP_BODY_CLIENT%（两份都写不冲突：bodyClient 非空时会自动并入并集，去重）。bodyClient 填了才会做「本体 vfx.json 前后哈希一致」的对比，留空 = 不做，报告里明说 n/a，绝不假装比过。"
   },
   "retarget": {
     "note": "火柱实例 · v3。换一支特效仍然只改本文件；本轮新把 target / params 两节从命令行搬进来。最少命令行 = -Adapter 本文件 -Budget N -Out 目录。"

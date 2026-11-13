@@ -1,0 +1,37 @@
+{
+  "schema": "closed-loop-adapter/3",
+  "domain": "",
+  "topic": "最小可跑示例：扁平参数 + url-time 冻帧，不依赖任何具体项目",
+  "name": "example-minimal",
+  "clientRoot": "./host",
+  "config": { "path": "host-params.json", "block": "effects.Demo.box", "format": "flat-params" },
+  "page": {
+    "file": "index.html",
+    "query": "?time={sec}",
+    "readyExpr": "String(!!(window.__ready === true && document.readyState === \"complete\"))",
+    "readbackExpr": "JSON.stringify(window.__params())"
+  },
+  "freeze": { "protocol": "url-time", "clock": "n/a", "targetTimeMs": 900, "seed": 12345,
+              "urlTemplate": "index.html?time={sec}", "verify": "strict" },
+  "target": { "mode": "params", "params": { "size": 40, "soft": 0.2 } },
+  "params": { "mode": "list", "list": ["size", "soft"] },
+  "render": { "tier": "low", "width": 480, "height": 270 },
+  "server": { "staticPort": 8301, "cdpPort": 9501, "browserProfilePrefix": "prof_example_",
+              "staticScript": "../static/server.mjs", "bind": "127.0.0.1" },
+  "browser": { "exe": "", "exeCandidates": [
+      "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe",
+      "%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe",
+      "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe"],
+    "args": ["--headless=new", "--no-first-run", "--no-default-browser-check",
+             "--disable-extensions", "--hide-scrollbars", "--mute-audio",
+             "--force-device-scale-factor=1", "--window-size={width},{height}",
+             "--remote-debugging-port={cdpPort}", "--user-data-dir={profile}", "about:blank"] },
+  "metrics": [
+    { "id": "cov", "extract": "cov", "opts": { "luma": 40 }, "norm": { "mode": "range", "range": [0, 0.15] }, "weight": 1 }
+  ],
+  "score": { "type": "l1", "penalties": [] },
+  "tools": { "metricsJs": "metrics2.js", "capture": "capture.mjs", "apply": "apply_params.js" },
+  "guard": { "protectPaths": [], "bodyClient": "" },
+  "packageNote": "这是「解耦后的样子」的字段模板：零项目默认值、零私有宿主 API。包里**不带** examples/host/（没有那份 demo 页与 host-params.json），所以这份文件本身不能直接跑；它示范的是字段形状与最小必填集。",
+  "retarget": { "note": "这是字段模板，例：把 clientRoot 指到你自己的宿主目录（里面要有 index.html + host-params.json），再 pwsh -File harness/iter.ps1 -Adapter examples/minimal.json -Budget 5 -Out runs/r1。宿主页面要自己实现 window.__params() 供回读、并吃 ?time=<秒> 冻帧（url-time + verify:strict 会连拍两张逐字节比，比不过就报错）。" }
+}

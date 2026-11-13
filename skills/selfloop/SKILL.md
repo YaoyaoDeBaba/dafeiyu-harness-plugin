@@ -78,23 +78,24 @@ description: 用「改参数 → 出可比较的观测 → 算判据 → 搜索�
 入口是插件包里的执行器（`harness/iter.ps1`）。三样输入就够：**adapter + 预算 + 输出目录**。
 
 ```powershell
-# 现场位置（包里不含任何本机路径）
-$env:VFX_LOOP_CLIENT = '<你的现场根目录>'
-
-# 目标是图
-pwsh -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\vfx-render\adapters\fire-ray.json `
-     -Target .\target.png -Params widthPx,distM -Budget 60 -Out .\runs\r1
-
-# 目标是数值（内部先渲出目标帧）
-pwsh -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\vfx-render\adapters\fire-ray.json `
-     -Target '{"widthPx":32,"distM":3.6}' -Params widthPx,distM -Budget 60 -Out .\runs\r1
+# 三输入就够（目标 / 白名单都写在 adapter 的 target / params 节里）
+pwsh -File <包目录>\harness\iter.ps1 -Adapter <你的 adapter.json> -Budget 60 -Out .\runs\r1
 ```
 
-上面两条用的是首个领域的示例 adapter；换目标就换 adapter，命令形状不变。
+`widthPx` / `distM` 只是 vfx 领域那份示例 adapter 自己的参数名（现场位置用 `%VFX_LOOP_CLIENT%` 给），别的领域按自己 adapter 的 `params.list` 写，引擎不内置任何参数名：
+
+```powershell
+# vfx 领域的一份示例
+$env:VFX_LOOP_CLIENT = '<你的现场根目录>'
+pwsh -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\vfx-render\adapters\fire-ray.json `
+     -Budget 60 -Out .\runs\r1
+```
+
+换目标（图还是数值）就换 adapter，命令形状不变。`target` / `params` 命令行没给、adapter 也没有就直接报错；`page.readbackExpr` 不给则跳过回读自检（打 warn，证据包里记 `selfCheck:false`）。
 
 一次 run 产出（都在 `-Out` 下）：`curve.csv`（每轮距离）、`best.json`（最优参数）、`report.md`、`shots\`（target / best / 逐轮缩略）、`logs\`（每次评估的指标包）、`base\`（基线配置副本）。
 
-**纪律**：只改自己范围内的配置（本体拒写，前后交哈希）；浏览器用独立 `--user-data-dir`、按 PID 收尾；端口各 run 独占，别抢别人的；`capture.mjs` 自带父进程死亡看门狗，**判据是父进程没了，不是跑了多久**，别自己再加"超时杀"。
+**纪律**：只改自己范围内的配置（**本体拒写由 adapter 的 `guard.protectPaths` 声明**，改参脚本会拒绝写进这些目录；前后交哈希）；浏览器用独立 `--user-data-dir`、按 PID 收尾；端口各 run 独占，别抢别人的；`capture.mjs` 自带父进程死亡看门狗，**判据是父进程没了，不是跑了多久**，别自己再加"超时杀"。
 
 ## 报告里必须写清的东西
 

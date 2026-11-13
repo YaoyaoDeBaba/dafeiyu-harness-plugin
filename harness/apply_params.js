@@ -1,28 +1,35 @@
 // P2.6 · 改参（扁平 params 形态，对应 apply.js 的 vfx-block 形态）
 //
-// 有些宿主不是 vfx.json 里 effects.<Effect>.<Block> 那套，而是"一份扁平 {params:{...}} json"
-// （例如 _临时\试刀\host\demo 的 trial-params.json）。这个文件补上那种形态，
+// 有些宿主的配置不是 vfx.json 里 effects.<Effect>.<Block> 那套，而是"一份扁平 {params:{...}} json"
+// （例如任何把自己的旋钮摊在 params 下的页面自建宿主）。这个文件补上那种形态，
 // 让 iter.ps1 只靠 adapter.config.format 就能吃两种宿主，脚本本身不分辨。
 //
-// 用法：node apply_params.js <base.json> <out.json> '<patchJSON>'
+// 用法：node apply_params.js <base.json> <out.json> '<patchJSON>' [--protect <dir>]...
 //
 // 三条硬约束与 apply.js 相同（E0/E2 的坑）：
 //   ① 每次从纯净基线重写，不累加 —— 否则轨迹被污染；
 //   ② 写完回读自校验 —— writeFileSync 写坏/写 0 字节不会自己报错；
 //   ③ 只改 params.*，顶层元数据（name/source/note）一个字节不动。
 // 另一条：patch 里的键必须已存在于基线 params 里 —— 打错一个字母会静默加死键，画面零变化却无报错。
+// 铁律（与 apply.js 同一份实现，见 writeguard.js）：out 不许落在 `--protect` 声明的任何路径下，也不许等于 base。
 'use strict';
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { normPath, hitProtect, splitProtectFlags } = require('./writeguard');
 
-const [base, out, patchRaw] = process.argv.slice(2);
+const [base, out, patchRaw, ...flags] = process.argv.slice(2);
 if (!base || !out) {
-    console.error('用法: node apply_params.js <base> <out> <patchJSON>');
+    console.error('用法: node apply_params.js <base> <out> <patchJSON> [--protect <dir>]...');
     process.exit(2);
 }
-if (/实验室移植-工具|_资产/.test(path.resolve(out))) { console.error('拒写：out 落在本体/资产目录'); process.exit(3); }
-if (path.resolve(base) === path.resolve(out)) { console.error('拒写：out 不能等于 base'); process.exit(3); }
+const { protect } = splitProtectFlags(flags);
+const hit = hitProtect(out, protect);
+if (hit) {
+    console.error('拒写：out 落在保护路径 ' + hit + '（out=' + path.resolve(out) + '）—— 检查 adapter.guard.protectPaths 与 clientRoot/-Mirror');
+    process.exit(3);
+}
+if (normPath(base) === normPath(out)) { console.error('拒写：out 不能等于 base（两者是同一个文件）'); process.exit(3); }
 
 const patch = patchRaw ? JSON.parse(patchRaw) : {};
 const src = fs.readFileSync(base, 'utf8');
@@ -55,7 +62,8 @@ if (j && j.params) {
     if (Object.keys(backRoot).length !== Object.keys(root).length) errs.push('键数变了');
 }
 const sz = fs.statSync(out).size;
-if (sz < 200) errs.push('输出过小 ' + sz + 'B（疑似写坏）');
+// 与 apply.js 同口径的自适应阈值（原来写死 200B）：拿基线自身大小当尺子，小配置不会被"写坏"判死
+if (sz < 0.5 * Buffer.byteLength(src, 'utf8')) errs.push('输出过小 ' + sz + 'B（基线 ' + Buffer.byteLength(src, 'utf8') + 'B，疑似写坏）');
 if (errs.length) { console.error('回读不一致: ' + errs.join('; ')); process.exit(6); }
 
 const md5 = crypto.createHash('md5').update(backTxt).digest('hex').toUpperCase().slice(0, 8);

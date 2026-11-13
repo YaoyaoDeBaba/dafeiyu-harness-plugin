@@ -1,5 +1,5 @@
 {
-  "schema": "closed-loop-adapter/2",
+  "schema": "closed-loop-adapter/3",
   "domain": "vfx-render",
   "topic": "闪电链 / 雷光球（冷色分叉型）：分叉细节 + 冷色占比（火柱的 warmFrac 在这支恒为 0，换 coldFrac）",
   "packageNote": "随插件分发版：server.staticScript / tools.metricsJs 用相对 harness/ 的包内路径；clientRoot 用 %VFX_LOOP_CLIENT% 模板，浏览器候选用 %ProgramFiles(x86)%/%ProgramFiles% 模板。包内零本机绝对路径。",
@@ -7,18 +7,31 @@
   "clientRoot": "%VFX_LOOP_CLIENT%",
   "config": {
     "path": "resource/lab/vfx/vfx.json",
-    "block": "effects.ChainLightning.bolt"
+    "block": "effects.ChainLightning.bolt",
+    "format": "vfx-block"
   },
   "page": {
     "file": "_dev/mergeProbe.html",
     "query": "?seed={seed}",
-    "readyExpr": "String(!!(window.__ready === true && window.__t3_stale === undefined && document.readyState === \"complete\"))"
+    "readyExpr": "String(!!(window.__ready === true && window.__t3_stale === undefined && document.readyState === \"complete\"))",
+    "readbackExpr": "JSON.stringify(VfxConfig.raw().effects.ChainLightning.bolt)",
+    "note": "readbackExpr 是本宿主专属（mergeProbe 的 VfxConfig 全局）：回读 effects.ChainLightning.bolt。"
   },
   "freeze": {
     "protocol": "noloop-step",
     "stepMs": 16,
     "targetTimeMs": 80,
     "seed": 12345
+  },
+  "target": {
+    "mode": "params",
+    "params": { "widthPx": 30, "distM": 8.0 },
+    "note": "取值理由：本文件的 retarget.note 明说它只比 fire-ray 差 8 个字段（name/block/targetTimeMs/tier/端口/前缀/metrics 第三节），target 与 params 不在这 8 个里 —— 也就是这支闪电链与火柱共用同一组参数名与量级，故沿用 widthPx=30 / distM=8.0 作为目标帧。metrics 注释里的「目标 952 / 起点 1656」是 lapVar 的指标值，不能反解成参数；要精确目标帧就把 target.mode 改成 png 指向一张现成截图。"
+  },
+  "params": {
+    "mode": "list",
+    "list": ["widthPx", "distM"],
+    "note": "与 fire-ray 同一组旋钮（见 target.note 的理由）；初值取块内现值，命令行也可以 -Params widthPx=24,distM=6 覆盖。"
   },
   "render": {
     "tier": "ultra",
@@ -100,10 +113,13 @@
     "capture": "capture.mjs"
   },
   "guard": {
+    "protectPaths": [
+      "%VFX_LOOP_BODY_CLIENT%"
+    ],
     "bodyClient": "",
-    "note": "本体守卫：填你自己的本体 client 目录（或 %VFX_LOOP_BODY_CLIENT% 模板）才做前后哈希对比；留空 = 不做并明说 n/a。"
+    "note": "写入禁区：填了 %VFX_LOOP_BODY_CLIENT% 就自动变成保护路径（改参脚本拒写它的子树）；bodyClient 非空时也会自动并入。两者都留空 = 没有本体可保护，证据包会标 enforced:false —— 绝不假装比过。"
   },
   "retarget": {
-    "note": "闪电链实例。与 fire-ray.json 只差 8 个字段：name / config.block / freeze.targetTimeMs(320→80) / render.tier(low→ultra) / server.staticPort+cdpPort / server.browserProfilePrefix / metrics 第三节 extract(warmFrac→coldFrac)+range / retarget.note。代码零改动。"
+    "note": "闪电链实例。与 fire-ray.json 只差 8 个字段：name / config.block / freeze.targetTimeMs(320→80) / render.tier(low→ultra) / server.staticPort+cdpPort / server.browserProfilePrefix / metrics 第三节 extract(warmFrac→coldFrac)+range / retarget.note。代码零改动。v3 起补齐 target / params / page.readbackExpr / config.format：最少命令行 = -Adapter 本文件 -Budget N -Out 目录。"
   }
 }

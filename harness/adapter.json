@@ -1,51 +1,52 @@
 {
+  "_note": [
+    "这是**字段模板**，不是一份能跑的 adapter：template:true，iter.ps1 不带 -Adapter 读到这里会直接拒跑。",
+    "为什么要模板化：下面这些值原本写死的是某个具体项目（fanren-lab）的现场——目标参数 widthPx/distM、白名单、",
+    "mergeProbe 专用 readyExpr、项目专属 metrics/score。谁照抄这份文件，就会把别人的项目基准当成自己的目标。",
+    "必填字段（缺了 iter.ps1 会中文报错）：name / clientRoot / config.path / config.block / page.file /",
+    "  freeze.protocol / freeze.targetTimeMs / freeze.seed（noloop-step 还要 freeze.stepMs）/ render.tier|width|height /",
+    "  server.staticPort|cdpPort|browserProfilePrefix / browser.args（或 exe/exeCandidates 至少命中一个）/",
+    "  target（mode=png|params|default）/ params（mode=list|activity）/ metrics（判据本体）。",
+    "可选字段（合法默认）：config.format=vfx-block / page.query='' / freeze.clock（noloop-step 默认 wall，url-time 恒 n/a）/",
+    "  freeze.clockStepMs（缺省取 stepMs，再缺 16）/ freeze.verify=strict / server.bind=127.0.0.1 /",
+    "  server.profileRoot（默认 %TEMP%\\dsh-vfx-loop）/ tools.capture=capture.mjs / tools.apply（按 config.format 选）。",
+    "page.readbackExpr 不填时：iter.ps1 不做浏览器侧回读，证据包 meta.selfCheck=false（能跑，但证明不了参数被吃到）。",
+    "page.readyExpr 不填时：只用中性默认 String(document.readyState === \"complete\")。",
+    "guard.protectPaths = 写入禁区（改参脚本拒绝把任何文件写进这些目录/文件）；bodyClient 非空会自动并入，不用重复写。",
+    "guard 留空数组 = 这份宿主没有本体可保护（报告里 enforced:false，绝不假装比过）。",
+    "真正能跑的例子见 domains/vfx-render/adapters/{fire-ray,chain-lightning,demo-url-time}.json 与 examples/minimal.json。"
+  ],
   "schema": "closed-loop-adapter/3",
-  "name": "fanren-lab",
-  "clientRoot": "%VFX_LOOP_CLIENT%",
+  "template": true,
+  "name": "",
+  "clientRoot": "",
   "config": {
-    "path": "resource/lab/vfx/vfx.json",
-    "block": "effects.FireRay.fireBeamG1M1",
-    "format": "vfx-block"
+    "path": "",
+    "block": "",
+    "format": "vfx-block",
+    "_note": "path = client 下配置文件的相对路径；block = effects.<Effect>.<Block>（vfx-block）或任意标签（flat-params）；format 决定用 apply.js 还是 apply_params.js"
   },
   "page": {
-    "file": "_dev/mergeProbe.html",
-    "query": "?seed={seed}",
-    "readyExpr": "String(!!(window.__ready === true && window.__t3_stale === undefined && document.readyState === \"complete\"))"
+    "file": "",
+    "query": ""
   },
   "freeze": {
     "protocol": "noloop-step",
-    "clock": "virtual",
-    "stepMs": 16,
-    "targetTimeMs": 320,
-    "seed": 12345
-  },
-  "target": {
-    "mode": "params",
-    "params": {
-      "widthPx": 30,
-      "distM": 8.0
-    },
-    "note": "v3 缺省目标：等价于旧的 -Target targets\\GC.json"
-  },
-  "params": {
-    "mode": "list",
-    "list": [
-      "widthPx",
-      "distM"
-    ],
-    "note": "v3 缺省白名单：等价于旧的 -Params widthPx,distM"
+    "_note": "protocol 必填；targetTimeMs / seed / stepMs 是必填项，模板里故意不写——缺了就该报错，不该有内置默认"
   },
   "render": {
     "tier": "low",
     "width": 640,
-    "height": 360
+    "height": 360,
+    "_note": "示例值，不是默认值：low 档 + 640x360 只是常见起点，按宿主选"
   },
   "server": {
     "staticPort": 8290,
     "cdpPort": 9490,
-    "browserProfilePrefix": "prof_p26_def_",
-    "staticScript": "..\\static\\server.mjs",
-    "bind": "127.0.0.1"
+    "browserProfilePrefix": "prof_",
+    "staticScript": "../static/server.mjs",
+    "bind": "127.0.0.1",
+    "_note": "端口是示例值（每份 adapter 各占一对，别两份同时跑）；browserProfilePrefix 必须给，profile 会 = 前缀 + run 名"
   },
   "browser": {
     "exe": "",
@@ -71,77 +72,20 @@
       "--remote-debugging-port={cdpPort}",
       "--user-data-dir={profile}",
       "about:blank"
-    ]
-  },
-  "metrics": [
-    {
-      "id": "cov",
-      "extract": "cov",
-      "opts": {
-        "luma": 40
-      },
-      "norm": {
-        "mode": "range",
-        "range": [
-          0,
-          0.3
-        ]
-      },
-      "weight": 0.35
-    },
-    {
-      "id": "lapVar",
-      "extract": "lapVar",
-      "opts": {
-        "luma": 40
-      },
-      "norm": {
-        "mode": "range",
-        "range": [
-          200,
-          4000
-        ]
-      },
-      "weight": 0.35
-    },
-    {
-      "id": "tone",
-      "extract": "warmFrac",
-      "opts": {
-        "luma": 80,
-        "rMin": 140,
-        "rg": 1.15,
-        "gb": 0.9
-      },
-      "norm": {
-        "mode": "range",
-        "range": [
-          0,
-          0.55
-        ]
-      },
-      "weight": 0.3
-    }
-  ],
-  "score": {
-    "type": "l1",
-    "penalties": [
-      {
-        "id": "coreGone",
-        "when": "ratioCore <= 0 || covCore < 0.5 * T.covCore",
-        "add": 0.5
-      }
-    ]
+    ],
+    "_note": "这一节是中性资产，不是私货：14 个 Chromium flag 通用，路径写成 %环境变量% 模板，换机器不用改"
   },
   "tools": {
     "metricsJs": "metrics2.js",
-    "capture": "capture.mjs"
+    "capture": "capture.mjs",
+    "_note": "相对路径按 harness/ 展开；tools.apply 不写时按 config.format 选（vfx-block→apply.js / flat-params→apply_params.js）"
   },
   "guard": {
+    "protectPaths": [],
     "bodyClient": "",
-    "note": "留空 = 不做本体前后哈希对比（报告里明写 n/a）；要守卫就填本体 client 目录或 %VFX_LOOP_BODY_CLIENT% 模板。"
+    "_note": "protectPaths：绝对路径 / 相对路径（按 adapter 目录）/ %ENV% 模板，匹配语义是 subtree（含子目录）；不写或空数组 = 没有本体保护，只 warn 不报错。bodyClient 非空时自动并入 protectPaths。"
   },
   "retarget": {
-    "note": "默认适配层（v3）。v3 在 v2 上补了三节：target（目标帧怎么来）/ params（白名单怎么来）/ freeze.protocol+urlTemplate（冻帧协议）。最少命令行 = -Adapter 本文件 -Budget N -Out 目录。"
+    "note": "**这是字段模板，不能直接跑**：template:true，iter.ps1 不带 -Adapter 时会拒绝它并告诉你该怎么做。用法：复制这份当骨架（或照 domains/vfx-render/adapters/fire-ray.json），填必填字段，再 pwsh -File harness/iter.ps1 -Adapter <你的.json> -Budget N -Out <目录>。"
   }
 }

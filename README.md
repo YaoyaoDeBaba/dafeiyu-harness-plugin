@@ -27,18 +27,19 @@
 | 入口 | `lib/` | 两个工具的定义、参数与输出 schema、技能注册 | 不动 |
 | 引擎 | `core/` | adapter 契约解析、硬错口径、清单与领域分组、harness 齐全性 | 不动 |
 | 领域 | `domains/<domain>/` | 该题材的 `adapters/*.json` + 领域说明 | **只动这里** |
-| 执行器 | `harness/` | `iter.ps1` / `capture.mjs` / `metrics2.js` / `score.js` / `finalize.js` / `apply*.js` | 不动（**逐字节冻结**） |
+| 执行器 | `harness/` | `iter.ps1` / `capture.mjs` / `metrics2.js` / `score.js` / `finalize.js` / `apply*.js` / `writeguard.js` | 按需可改：**改了记 CHANGELOG，并回灌 fanren 侧原件** |
 
-`harness/` 为什么没被搬进 `core/`：它是已经跑通的产品资产（PowerShell + Edge + 那套 Windows 进程卫生，都实测过）。为了目录好看去搬它、改里面的路径，等于拿跑通的东西换排版。所以三层体现在**谁引用谁**和**文档描述**上：`lib/` → `core/` → 只读 `harness/` 与 `domains/`，单向。
+`harness/` 为什么没被搬进 `core/`：它是已经跑通的产品资产（PowerShell + Edge + 那套 Windows 进程卫生，都实测过）。为了目录好看去搬它、改里面的路径，等于拿跑通的东西换排版。所以三层体现在**谁引用谁**和**文档描述**上：`lib/` → `core/` → 引用 `harness/` 与 `domains/`，单向。
 
 ## 装上之后你得到
 
 | 得到什么 | 在哪 |
 |---|---|
 | 两个只读工具 `selfloop_probe` / `selfloop_list_adapters` | 模型侧工具目录 |
-| 跑一轮的必需件（`iter.ps1` + 7 个伴生脚本 + 默认 adapter + 适配层字段说明） | `harness/` |
+| 跑一轮的必需件（`iter.ps1` + 8 个伴生脚本 + 字段模板 `adapter.json` + 适配层字段说明） | `harness/` |
 | 自带静态服（替掉对项目根 `_tmp_static.js` 的依赖） | `static/server.mjs` |
 | 首个领域的 3 份示例适配器（火焰射线 / 闪电链 / url-time demo） | `domains/vfx-render/adapters/` |
+| 一份不绑任何项目的最小示例（自己写 adapter 就从它改） | `examples/minimal.json` |
 | `selfloop` 技能（宿主有 `ctx.skills` 时自动注册） | `skills/selfloop/` |
 
 **这个插件不跑产线**：工具只读文件，不起浏览器、不开端口、不花预算。真跑一轮是 `harness/iter.ps1` 的事。
@@ -47,11 +48,12 @@
 
 ### `selfloop_probe { adapter? }`
 
-解析一份 adapter.json 描述的现场，返回：`domain`（所属领域）/ `clientRoot` / 配置文件路径与是否存在 / 参数块 / 冻帧协议（`noloop-step` | `url-time`，含 clock、步长、冻结时刻、seed）/ 视口档位 / 端口 / **判据口径**（每条指标 = 提取器 + 权重 + 归一区间 + 是否启用）/ 距离公式与惩罚项 / 包内 harness 是否齐全 / `warnings`。
+解析一份 adapter.json 描述的现场，返回：`domain`（所属领域）/ `clientRoot` / 配置文件路径与是否存在 / 参数块 / 冻帧协议（`noloop-step` | `url-time`，含 clock、步长、冻结时刻、seed）/ 视口档位 / 端口 / **判据口径**（每条指标 = 提取器 + 权重 + 归一区间 + 是否启用）/ 距离公式与惩罚项 / 目标与白名单来源（`target` / `params`）/ `template`（是不是字段模板）/ `guard`（`protectPaths` + `enforced`）/ 包内 harness 是否齐全 / `warnings`。
 
 - `adapter`：adapter.json 的**绝对路径**；省略时读包内 `domains/vfx-render/adapters/fire-ray.json`
 - 硬错（缺 `name`/`clientRoot`/`config`/`page`/`freeze`/`render`/`server`、`freeze.protocol` 不认、`config.format` 不认、`noloop-step` 缺 `stepMs`、`clock` 口径不对）**与 `iter.ps1` 的 `Import-Adapter` 同口径**，不多拦
 - 能解析但开跑会炸的（配置文件不在、浏览器没装、脚本指不到、`score.type` 不是 `l1`）只进 `warnings`，不当错误
+- `guard.protectPaths` 没写只 warn（`enforced:false`），不当错误——但这时改参脚本没有"拒写本体"的保护
 
 ### `selfloop_list_adapters {}`
 
@@ -70,7 +72,7 @@
 | 模板 | 含义 |
 |---|---|
 | `%VFX_LOOP_CLIENT%` | **你自己的 client 根目录**（`_镜像\<分支>\client` 那种），示例 adapter 的 `clientRoot` 就是它 |
-| `%VFX_LOOP_BODY_CLIENT%` | 可选：本体 client 目录，填了才做「本体 vfx.json 前后哈希一致」的守卫 |
+| `%VFX_LOOP_BODY_CLIENT%` | 可选：本体 client 目录。填了它 = ①「本体 vfx.json 前后哈希一致」的守卫 ②**同时进 `guard.protectPaths`**（改参脚本拒写这个目录），不用两边重复写 |
 | `%VFX_LOOP_DEMO_HOST%` | 只给 `demo-url-time.json` 用：那个 demo 宿主页面所在目录 |
 | `%ProgramFiles(x86)%` / `%ProgramFiles%` / `%LOCALAPPDATA%` | 浏览器候选路径 |
 
@@ -164,6 +166,7 @@ npx playwright install --only-shell chromium   # 只要无头版，约 290 MB
      -Adapter <包目录>\domains\vfx-render\adapters\fire-ray.json -Budget 20 -Out <你自己的输出目录>
    ```
    三个输入就够：adapter + 预算 + 输出目录。目标是 png / 参数 / 默认帧都在 adapter 的 `target` 节里。
+   **前提**：`target`（目标）和 `params`（白名单）两节——命令行没给、adapter 也没有，就是**直接报错**，不会替你兜底。`page.readbackExpr` 建议写上（回读自检是"参数真被吃到"的唯一证据）；不写不报错，但会跳过回读、打一条 warn，证据包里记 `selfCheck:false`。
 
 ## 浏览器进程卫生（宿主被强杀也不会留孤儿）
 
@@ -176,7 +179,7 @@ npx playwright install --only-shell chromium   # 只要无头版，约 290 MB
    **判据是"父进程/连接没了"，不是"跑了多久"** —— 一次完整产线单步就可能 30~90 秒，按时间硬杀会误伤正在干活的会话。
 
 profile 落在 `%TEMP%\dsh-vfx-loop\`（可用 `-ProfileRoot` 或 `server.profileRoot` 改），**不落在包目录里**（装成 node_modules 后可能只读，而且清孤儿需要一个只属于本包的临时目录来圈范围）。
-> 这个目录名仍是旧的 `dsh-vfx-loop`：`harness/` 本轮逐字节冻结，所以**执行器内部的字符串没改**。它与旧包同时安装时共用一个 profile 根——真同时跑两个包的产线时，用 `-ProfileRoot` 分开即可。
+> 这个目录名仍是旧的 `dsh-vfx-loop`：它是执行器内部写死的字符串，没跟着正名改。它与旧包同时安装时共用一个 profile 根——真同时跑两个包的产线时，用 `-ProfileRoot` 分开即可。
 
 ## 目录
 
@@ -187,11 +190,12 @@ core/adapter.js                  adapter 契约解析与口径（硬错对齐 it
 core/README.md                   三层怎么分、三个概念、引用方向
 domains/vfx-render/adapters/     首个领域的 3 份示例适配器
 domains/vfx-render/README.md     首个领域说明（观测/判定/搜索怎么落地）
-harness/                         执行器：跑一轮的必需件（见下，逐字节冻结）
+harness/                         执行器：跑一轮的必需件（见下；改动要进 CHANGELOG 并回灌 fanren 侧）
+examples/minimal.json            不绑任何项目的最小 adapter（自己写就从它改）
 static/server.mjs                静态服：node server.mjs <root> <port> [host]
 skills/selfloop/                 技能：SKILL.md + references/（通用方法 + domains-vfx.md）
 locale/{zh,en}.json              插件清单里的标题与描述（权臣 / Selfloop）
-test/plugin.test.mjs             25 个用例（不进包）
+test/plugin.test.mjs             52 个用例（不进包）
 ```
 
 `harness/` 里逐件的作用：
@@ -204,15 +208,22 @@ test/plugin.test.mjs             25 个用例（不进包）
 | `score.js` | 距离：`d = Σ(nd×w)/Σw + Σpenalty.add` |
 | `metrics2.js` | 指标提取（png → cov/lapVar/warmFrac/coldFrac/covCore/ratioCore） |
 | `finalize.js` | 收尾：`curve.csv` / `best.json` / `report.md` |
-| `apply.js` | 改参：`vfx-block` 形态（vfx.json 的 `effects.<E>.<B>`） |
-| `apply_params.js` | 改参：`flat-params` 形态（扁平 `{params:{...}}`） |
-| `adapter.json` | `iter.ps1` 不带 `-Adapter` 时的默认适配层 |
+| `apply.js` | 改参：`vfx-block` 形态（vfx.json 的 `effects.<E>.<B>`），`--protect` 拒写本体 |
+| `apply_params.js` | 改参：`flat-params` 形态（扁平 `{params:{...}}`），同样走 `--protect` |
+| `writeguard.js` | 写护栏：判定 `out` 是否落在 `guard.protectPaths` 下（两个改参脚本共用） |
+| `adapter.json` | **字段模板**（`template:true`）：只有字段和注释，**不能直接跑**；`iter.ps1` 不带 `-Adapter` 时会被拒绝 |
 | `适配层-说明.md` | adapter 字段语义（v3 全部字段 + 优先级） |
-| `package.json` | **只做一件事**：把这一层钉成 `"type": "commonjs"`（包根是 `"type": "module"`，而 `score/metrics2/finalize/apply/apply_params` 是照抄的 CommonJS 原件） |
+| `package.json` | **只做一件事**：把这一层钉成 `"type": "commonjs"`（包根是 `"type": "module"`，而 `score/metrics2/finalize/apply/apply_params` 是从 fanren 移植来的 CommonJS 脚本） |
 
-**`harness/` 的 11 个文件在本次正名里逐字节未变**（SHA256 与改造前源目录逐个对得上，测试之外另做了一次清单比对）。它在本文档的口径里属于"产品资产"：说明更新，代码不动。
+**`harness/` 现在按需可改**：本轮解耦动了 `iter.ps1`（白名单不再有内置默认、`template:true` 直接拒绝、两头接写护栏）、`apply.js` / `apply_params.js`（写护栏改由 adapter 的 `guard.protectPaths` 声明、统一走 `--protect`），并新增了 `harness/writeguard.js`。所以它已经不是 fanren 原件的副本了。
 
-> 因此 `harness/适配层-说明.md` 里例举的 `adapters\xxx.json` 还是**旧位置**的写法（那份文档也在冻结清单里）。现在示例适配器在 `domains/vfx-render/adapters/`，字段语义完全一样，只是路径写法旧了。
+**改动规矩**（比冻结松，但别当成随便改）：
+
+1. 每次改动都要留记录（写进仓库根的 `CHANGELOG.md`），写清改了哪个文件、为什么、行为变了什么；
+2. `apply.js` / `apply_params.js` / `writeguard.js` 在 fanren 侧还有一份原件，**回灌时要按改动点手动改**，别整文件覆盖（两边已经分叉）；
+3. 别为了"目录好看"搬文件、改相对引用——那等于拿跑通的东西换排版。
+
+> 因此 `harness/适配层-说明.md` 里 §4.4 / §5.4 举例的 `adapters\xxx.json` 还是**旧位置**的写法。现在示例适配器在 `domains/vfx-render/adapters/`，字段语义完全一样，只是路径写法旧了。
 
 ## 与旧版的关系（正名说明）
 
@@ -239,13 +250,13 @@ test/plugin.test.mjs             25 个用例（不进包）
 8. **没写 `meta.detail`**：插件详情页回退到本 README。
 9. **包内零本机绝对路径**，有测试钉住（全文扫「盘符+冒号+反斜杠」）；日志文件也不许进包（`files` 里有 `!**/*.log`）。
 10. **`package.json` 保留 `"private": true`**：本包的装机形态是「目录 / `git+https`」，不依赖 npm registry；`npm publish` 属于发版动作。
-11. **执行器内部仍叫 `iter.ps1` / `capture.mjs`**：文件名没改（改了要动一堆 `$PSScriptRoot` 相对引用，收益为零）。它们内部日志里出现的 `dsh-vfx-loop` 字样属于冻结层，本轮不动。
+11. **执行器内部仍叫 `iter.ps1` / `capture.mjs`**：文件名没改（改了要动一堆 `$PSScriptRoot` 相对引用，收益为零）。它们内部日志里出现的 `dsh-vfx-loop` 字样属于历史字符串，没跟着正名改。
 
 ## 测试
 
 ```powershell
 cd <包目录>
-node test/plugin.test.mjs      # 29 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）
+node test/plugin.test.mjs      # 52 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）、写护栏（段边界/大小写/junction/端到端拒写）
 ```
 
 测试不起宿主、不装 profile、不开端口、不跑产线。

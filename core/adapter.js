@@ -24,6 +24,7 @@ export const HARNESS_REQUIRED = [
   'finalize.js',
   'apply.js',
   'apply_params.js',
+  'writeguard.js',
 ]
 
 export const HARNESS_ROLES = {
@@ -35,6 +36,7 @@ export const HARNESS_ROLES = {
   'finalize.js': '收尾：curve.csv / best.json / report.md',
   'apply.js': '改参（vfx-block 形态：vfx.json 里 effects.<E>.<B>）',
   'apply_params.js': '改参（flat-params 形态：扁平 {params:{...}}）',
+  'writeguard.js': '写护栏：判定 out 是否落在 adapter.guard.protectPaths 下（apply.js / apply_params.js 共用这一份）',
 }
 
 export const STATIC_SERVER = join(import.meta.dirname, '..', 'static', 'server.mjs')
@@ -43,6 +45,13 @@ const BLOCK_RE = /^(?:effects\.)?([^.]+)\.(.+)$/
 
 function fail(msg) {
   throw new Error(msg)
+}
+
+// 数字字段统一走这里：非数字（字段缺失/模板留空）给 0，别把 NaN 透到 probe 返回值里
+// （NaN 序列化成 null，宿主按 output.schema 校验会直接报"期望 integer，实际 null"）。
+function num(x) {
+  const n = Number(x)
+  return Number.isFinite(n) ? n : 0
 }
 
 export function readJsonFile(file) {
@@ -88,6 +97,15 @@ function resolveWithWarn(base, raw, label, warnings) {
   }
   if (!value) return ''
   return isAbsolute(value) ? value : resolve(base, value)
+}
+
+// 两个绝对路径是不是同一个目录/文件（Windows 大小写不敏感 + 尾分隔符不算差异）
+function samePath(x, y) {
+  const norm = (p) => {
+    const s = resolve(String(p))
+    return process.platform === 'win32' ? s.toLowerCase().replace(/[/\\]+$/, '') : s.replace(/\/+$/, '')
+  }
+  return norm(x) === norm(y)
 }
 
 function resolveFrom(base, p) {
@@ -178,61 +196,93 @@ export function distanceRule(scoreType) {
 // 解析一份 adapter；harnessDir 用来展开 server.staticScript / tools.* 这些"相对 harness 的"路径
 export function parseAdapter(file, harnessDir) {
   const a = readJsonFile(file)
+  // 模板例外（template:true）：包内 harness/adapter.json 是**字段模板**，name / clientRoot / config.path /
+  // config.block / page.file 都是有意留空的。拿"缺字段（空串）"硬错去拦它，用户看到的只会是
+  // "缺字段：clientRoot（空串）"，根本看不出这是模板；所以模板不做字段校验，只记一条人话 warning
+  // （真正拒跑在 iter.ps1 的 Import-Adapter 与调用方）。与批次一的"空串=硬错"并存：模板标记优先。
+  const isTemplate = a?.template === true
   const missing = []
   for (const k of ['name', 'clientRoot', 'config', 'page', 'freeze', 'render', 'server']) {
     if (a?.[k] === undefined || a[k] === null) missing.push(k)
   }
-  if (missing.length) fail(`adapter 缺字段：${missing.join(' / ')}（${file}）`)
-  if (typeof a.config?.path !== 'string' || !a.config.path) fail(`adapter 缺字段：config.path（${file}）`)
-  if (typeof a.config?.block !== 'string' || !a.config.block) fail(`adapter 缺字段：config.block（${file}）`)
-  if (typeof a.page?.file !== 'string' || !a.page.file) fail(`adapter 缺字段：page.file（${file}）`)
+  if (missing.length && !isTemplate) fail(`adapter 缺字段：${missing.join(' / ')}（${file}）`)
+  if (!isTemplate && (typeof a.config?.path !== 'string' || !a.config.path)) fail(`adapter 缺字段：config.path（${file}）`)
+  if (!isTemplate && (typeof a.config?.block !== 'string' || !a.config.block)) fail(`adapter 缺字段：config.block（${file}）`)
+  if (!isTemplate && (typeof a.page?.file !== 'string' || !a.page.file)) fail(`adapter 缺字段：page.file（${file}）`)
 
-  const block = String(a.config.block)
+  const block = String(a.config?.block ?? '')
   const m = BLOCK_RE.exec(block)
-  if (!m) fail(`adapter.config.block 格式不对（要 effects.<Effect>.<Block>）：${block}`)
-  const effect = m[1]
-  const blockName = m[2]
+  if (!m && !isTemplate) fail(`adapter.config.block 格式不对（要 effects.<Effect>.<Block>）：${block}`)
+  const effect = m ? m[1] : ''
+  const blockName = m ? m[2] : ''
 
   const freeze = a.freeze ?? {}
   const protocol = String(freeze.protocol ?? '')
-  if (protocol !== 'noloop-step' && protocol !== 'url-time') {
+  if (!isTemplate && protocol !== 'noloop-step' && protocol !== 'url-time') {
     fail(`adapter.freeze.protocol=${protocol || '（缺）'} 未实现（iter.ps1 只支持 noloop-step | url-time）`)
   }
-  if (freeze.targetTimeMs === undefined || freeze.targetTimeMs === null) fail(`adapter 缺字段：freeze.targetTimeMs（${file}）`)
-  if (freeze.seed === undefined || freeze.seed === null) fail(`adapter 缺字段：freeze.seed（${file}）`)
-  if (protocol === 'noloop-step' && !(Number(freeze.stepMs) > 0)) {
+  if (!isTemplate && (freeze.targetTimeMs === undefined || freeze.targetTimeMs === null)) {
+    fail(`adapter 缺字段：freeze.targetTimeMs（${file}）`)
+  }
+  if (!isTemplate && (freeze.seed === undefined || freeze.seed === null)) fail(`adapter 缺字段：freeze.seed（${file}）`)
+  if (!isTemplate && protocol === 'noloop-step' && !(Number(freeze.stepMs) > 0)) {
     fail(`adapter 缺字段：freeze.stepMs（noloop-step 必须有推进步长，${file}）`)
   }
   let clock = String(freeze.clock ?? '')
-  if (clock === '' ) clock = protocol === 'url-time' ? 'n/a' : 'wall'
-  if (protocol === 'url-time') {
-    if (clock === 'virtual') fail(`adapter.freeze.clock=virtual 在 url-time 下没有意义（没有推进过程），写 "n/a"`)
-    if (clock !== 'n/a' && clock !== 'wall') fail(`adapter.freeze.clock=${clock} 在 url-time 下只认 n/a|wall`)
-  } else if (clock !== 'wall' && clock !== 'virtual') {
-    fail(`adapter.freeze.clock=${clock} 只支持 wall|virtual（noloop-step）；url-time 下才是 n/a`)
+  if (clock === '') clock = protocol === 'url-time' ? 'n/a' : 'wall'
+  if (!isTemplate) {
+    if (protocol === 'url-time') {
+      if (clock === 'virtual') fail(`adapter.freeze.clock=virtual 在 url-time 下没有意义（没有推进过程），写 "n/a"`)
+      if (clock !== 'n/a' && clock !== 'wall') fail(`adapter.freeze.clock=${clock} 在 url-time 下只认 n/a|wall`)
+    } else if (clock !== 'wall' && clock !== 'virtual') {
+      fail(`adapter.freeze.clock=${clock} 只支持 wall|virtual（noloop-step）；url-time 下才是 n/a`)
+    }
   }
 
-  for (const k of ['tier', 'width', 'height']) {
-    if (a.render?.[k] === undefined || a.render[k] === null) fail(`adapter 缺字段：render.${k}（${file}）`)
-  }
-  for (const k of ['staticPort', 'cdpPort', 'browserProfilePrefix']) {
-    if (a.server?.[k] === undefined || a.server[k] === null) fail(`adapter 缺字段：server.${k}（${file}）`)
+  if (!isTemplate) {
+    for (const k of ['tier', 'width', 'height']) {
+      if (a.render?.[k] === undefined || a.render[k] === null) fail(`adapter 缺字段：render.${k}（${file}）`)
+    }
+    for (const k of ['staticPort', 'cdpPort', 'browserProfilePrefix']) {
+      if (a.server?.[k] === undefined || a.server[k] === null) fail(`adapter 缺字段：server.${k}（${file}）`)
+    }
   }
 
-  let configFormat = String(a.config.format ?? 'vfx-block')
-  if (configFormat !== 'vfx-block' && configFormat !== 'flat-params') {
+  let configFormat = String(a.config?.format ?? 'vfx-block')
+  if (!isTemplate && configFormat !== 'vfx-block' && configFormat !== 'flat-params') {
     fail(`adapter.config.format=${configFormat} 只支持 vfx-block | flat-params`)
   }
 
   const warnings = []
+  // 模板：把"还缺哪些必填项"合成**一条**人话（模板不硬错，但也不能一声不响地返回一个空壳）
+  if (isTemplate) {
+    const gaps = [
+      ['name', !String(a.name ?? '').trim()],
+      ['clientRoot', !String(a.clientRoot ?? '').trim()],
+      ['config.path', !String(a.config?.path ?? '')],
+      ['config.block', !String(a.config?.block ?? '')],
+      ['page.file', !String(a.page?.file ?? '')],
+      ['freeze.targetTimeMs', freeze.targetTimeMs === undefined || freeze.targetTimeMs === null],
+      ['freeze.seed', freeze.seed === undefined || freeze.seed === null],
+    ]
+      .filter(([, blank]) => blank)
+      .map(([k]) => k)
+    warnings.push(
+      `这是字段模板（template:true），不能直接跑${gaps.length ? `：${gaps.join(' / ')} 还空着` : ''} —— 复制一份填必填字段，或 -Adapter 指定一份真 adapter（如 domains/vfx-render/adapters/fire-ray.json）`,
+    )
+  }
   const adapterDir = resolve(file, '..')
-  const clientRootRaw = String(a.clientRoot)
+  const clientRootRaw = String(a.clientRoot ?? '')
+  // 空串 ≠ %环境变量% 没展开：
+  //   空串 = 这份 adapter 少写了一个必填项 → 硬错（与 iter.ps1 Import-Adapter 同口径）；
+  //   "%NOPE_X%" = 机器上还没设变量 → 只记账（老测试钉住了这条：probe 不该因为没设变量就拒绝解析）。
+  if (!isTemplate && !clientRootRaw.trim()) fail(`adapter 缺字段：clientRoot（空串，${file}）—— 写 client 根目录，或 %ENV% 模板`)
   const clientRoot = resolveWithWarn(adapterDir, clientRootRaw, 'clientRoot', warnings)
   if (clientRoot && !isAbsolute(clientRootRaw)) {
     warnings.push(`clientRoot 是相对路径（${clientRootRaw}）：按 adapter 所在目录展开成 ${clientRoot}（iter.ps1 同口径）`)
   }
   // clientRoot 没解析出来（通常是 %环境变量% 没设）时不要拿 cwd 去拼一个假路径骗人
-  const configFile = clientRoot ? resolveFrom(clientRoot, String(a.config.path)) : ''
+  const configFile = clientRoot ? resolveFrom(clientRoot, String(a.config?.path ?? '')) : ''
   const configFileExists = existsSync(configFile)
   if (!configFileExists) {
     warnings.push(
@@ -240,7 +290,7 @@ export function parseAdapter(file, harnessDir) {
     )
   }
 
-  const staticScript = resolveWithWarn(harnessDir, String(a.server.staticScript ?? ''), 'server.staticScript', warnings)
+  const staticScript = resolveWithWarn(harnessDir, String(a.server?.staticScript ?? ''), 'server.staticScript', warnings)
   // 兜底顺序与 iter.ps1 一致：adapter 给的 → 包内自带 static/server.mjs → 旧项目根 _tmp_static.js
   let staticScriptUsed = staticScript
   if (!staticScriptUsed || !existsSync(staticScriptUsed)) {
@@ -287,12 +337,49 @@ export function parseAdapter(file, harnessDir) {
     if (!Number.isFinite(it.weight)) warnings.push(`metric ${it.id} 的 weight 不是数`)
   }
 
+  // 写守卫（guard）：**保护路径由 adapter 声明**，core 只负责把它解析出来、说得出来。
+  // 这里是"体检口"不是"执行点"：缺失/环境变量没设只 warning（证据包会记 enforced:false），
+  // 真正拒写在 iter.ps1 启动时与改参脚本里（两个执行点都必须有，见方案 §2.4）。
+  const guardRaw = a.guard ?? {}
+  const protectPaths = []
+  const protectPathsRaw = Array.isArray(guardRaw.protectPaths) ? guardRaw.protectPaths : []
+  for (const p of protectPathsRaw) {
+    if (typeof p !== 'string' || !p.trim()) continue
+    const { value, missing } = expandEnvTpl(p)
+    if (missing.length) {
+      warnings.push(
+        `guard.protectPaths 里的环境变量没设置：${missing.map((n) => `%${n}%`).join('、')}（原文 ${p}）—— 设好它，否则 iter.ps1 会在启动时硬错`,
+      )
+      continue
+    }
+    const abs = isAbsolute(value) ? value : resolve(adapterDir, value)
+    if (abs) protectPaths.push(abs)
+  }
+  const bodyClient = resolveWithWarn(adapterDir, String(guardRaw.bodyClient ?? ''), 'guard.bodyClient', warnings)
+  // bodyClient 非空 → 自动并入 protectPaths（并集）：老 adapter 一个字不改就获得写保护
+  if (bodyClient && !protectPaths.some((p) => samePath(p, bodyClient))) protectPaths.push(bodyClient)
+  if (protectPaths.length === 0) {
+    warnings.push('adapter 没声明 guard.protectPaths：改参脚本不会拦"写回本体"（只保证 out≠base）')
+  }
+
+  const readbackExpr = String(a.page?.readbackExpr ?? '')
+  if (!readbackExpr) {
+    warnings.push('adapter 没给 page.readbackExpr：iter.ps1 不做浏览器侧回读，证据包会标 selfCheck:false（没法证明参数真被吃到）')
+  }
+
   const targetMode = String(a.target?.mode ?? '')
   let targetPng = ''
+  let targetParams = {}
   if (targetMode === 'png') {
     // target.path 按 adapter 所在目录展开（P2.6 口径）
     targetPng = resolveFrom(adapterDir, String(a.target?.path ?? ''))
     if (!targetPng || !existsSync(targetPng)) warnings.push(`target.mode=png 但目标帧不在：${targetPng || '（未给 path）'}`)
+  } else if (targetMode === 'params') {
+    const raw = a.target?.params
+    targetParams = raw && typeof raw === 'object' && !Array.isArray(raw) ? { ...raw } : {}
+    if (Object.keys(targetParams).length === 0) {
+      warnings.push('adapter.target.mode=params 但 target.params 为空：iter.ps1 §1 会报错（拒绝静默用默认目标）')
+    }
   }
 
   return {
@@ -301,6 +388,8 @@ export function parseAdapter(file, harnessDir) {
     schemaVersion: String(a.schema ?? ''),
     // 领域标注（可选）：一眼看出这份 adapter 属于哪个题材包，如 vfx-render。缺字段 = 空串（照常跑）
     domain: String(a.domain ?? ''),
+    // template:true = 字段模板（包内 harness/adapter.json），没有可跑的目标/白名单，iter.ps1 会拒跑
+    template: a.template === true,
     clientRoot,
     clientRootExists: existsSync(clientRoot),
     configFile,
@@ -309,18 +398,23 @@ export function parseAdapter(file, harnessDir) {
     block,
     effect,
     blockName,
-    page: { file: String(a.page.file), query: String(a.page.query ?? '') },
+    page: {
+      file: String(a.page?.file ?? ''),
+      query: String(a.page?.query ?? ''),
+      readyExpr: String(a.page?.readyExpr ?? ''),
+      readbackExpr,
+    },
     freeze: {
       protocol,
       clock,
-      stepMs: protocol === 'url-time' ? 0 : Number(freeze.stepMs),
-      targetTimeMs: Number(freeze.targetTimeMs),
-      seed: Number(freeze.seed),
+      stepMs: protocol === 'url-time' ? 0 : num(freeze.stepMs),
+      targetTimeMs: num(freeze.targetTimeMs),
+      seed: num(freeze.seed),
     },
-    render: { tier: String(a.render.tier), width: Number(a.render.width), height: Number(a.render.height) },
+    render: { tier: String(a.render?.tier ?? ''), width: num(a.render?.width), height: num(a.render?.height) },
     server: {
-      staticPort: Number(a.server.staticPort),
-      cdpPort: Number(a.server.cdpPort),
+      staticPort: num(a.server?.staticPort),
+      cdpPort: num(a.server?.cdpPort),
       staticScript: staticScriptUsed,
       staticScriptExists: existsSync(staticScriptUsed),
     },
@@ -331,7 +425,9 @@ export function parseAdapter(file, harnessDir) {
     penalties,
     distanceRule: distanceRule(scoreType),
     tools: { metricsJs, capture, apply, missing: missingTools },
-    target: { mode: targetMode, png: targetPng },
+    // 写守卫：protectPaths 是**已展开的绝对路径**；enforced = 有没有真的声明出保护路径
+    guard: { bodyClient, protectPaths, enforced: protectPaths.length > 0 },
+    target: { mode: targetMode, png: targetPng, params: targetParams },
     params: {
       mode: String(a.params?.mode ?? ''),
       list: (Array.isArray(a.params?.list) ? a.params.list : []).map(String),

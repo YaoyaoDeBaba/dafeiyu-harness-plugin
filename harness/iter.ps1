@@ -40,7 +40,7 @@
 
 param(
     [string]$Target = '',
-    [string]$Params = 'widthPx,distM',
+    [string]$Params = '',
     [int]$Budget = 60,
     [string]$Out = '',
     [string]$Adapter = '',
@@ -113,6 +113,19 @@ function Resolve-AbsPath([string]$p, [string]$what, [string]$base) {
     if (-not $base) { $base = (Get-Location).Path }
     return [IO.Path]::GetFullPath((Join-Path $base $x))
 }
+# 写护栏的路径判定：$child 是不是"等于 $root，或位于 $root 的子树下"。
+# 实现只有一处：harness/writeguard.js 的 isUnder（绝对化 → 父目录 realpath → 去尾分隔符 →
+# Windows 忽略大小写 → 按**路径段边界**比较）。这里故意不再自己复制一份语义：
+# 复制一次就会再分叉（apply.js 与 apply_params.js 的护栏当年就是这么岔开的）。
+# 用 node 而不是 PS 原生实现，是为了能识破"镜像目录是指向本体的 junction"——PS 5.1 没有可靠的链接解析。
+# node 跑不起来 = 判定不可信 → 直接 throw（守卫失效必须是响声，不许静默放行）。
+$script:WriteguardJs = Join-Path $PSScriptRoot 'writeguard.js'
+function Test-PathUnder([string]$child, [string]$root) {
+    if (-not $child -or -not $root) { return $false }
+    $r = & node -e "const w=require(process.argv[1]);process.stdout.write(w.isUnder(process.argv[2],process.argv[3],'win32')?'1':'0')" $script:WriteguardJs $child $root
+    if ($LASTEXITCODE -ne 0) { throw ('写护栏判定失败：node harness/writeguard.js 没跑起来（退出码 ' + $LASTEXITCODE + '）—— 镜像与保护路径谁能写，现在没法确认，先别跑') }
+    return (([string]$r).Trim() -eq '1')
+}
 
 # ---------------- 0. 适配层（项目现场信息全在 adapter.json，脚本不写死） ----------------
 # 四类信息：怎么改配置(config) / 哪张页面(page) / 怎么冻到某时刻(freeze) / 怎么起服务与浏览器(server+browser)。
@@ -120,11 +133,28 @@ function Resolve-AbsPath([string]$p, [string]$what, [string]$base) {
 function Import-Adapter([string]$Path) {
     if (-not (Test-Path $Path)) { throw ('adapter 不存在: ' + $Path) }
     $a = Get-Content $Path -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    # 包内 harness/adapter.json 已降级成"字段模板"（template:true）：它没有可跑的目标/白名单。
+    # 这条检查**必须排在下面的必填校验之前**：模板有意把 name/clientRoot 留成空串，
+    # 否则用户先看到的是"缺字段: name（空串）"，永远看不到"这是模板、该换一份 adapter"这句人话。
+    if ($a.ContainsKey('template') -and $a['template']) {
+        throw ('你用的是包内字段模板 ' + $Path + '（template:true），它没有可跑的目标/白名单。请用 -Adapter 指定一份真实 adapter，例如 domains/vfx-render/adapters/fire-ray.json')
+    }
     foreach ($k in @('name', 'clientRoot', 'config', 'page', 'freeze', 'render', 'server')) {
         if (-not $a.ContainsKey($k) -or $null -eq $a[$k]) { throw ('adapter 缺字段: ' + $k + '  (' + $Path + ')') }
     }
-    foreach ($k in @('path', 'block')) { if (-not $a.config.ContainsKey($k)) { throw ('adapter 缺字段: config.' + $k) } }
-    foreach ($k in @('file')) { if (-not $a.page.ContainsKey($k)) { throw ('adapter 缺字段: page.' + $k) } }
+    # 与 core/adapter.js 同口径（D4：两侧不能一个"只看键在不在"一个"还查空串"）：
+    # 空串不是"字段存在"，别让它一路跑到后面再报成"镜像配置文件不存在"那种误导文案。
+    foreach ($k in @('name', 'clientRoot')) {
+        if ([string]::IsNullOrWhiteSpace([string]$a[$k])) { throw ('adapter 缺字段: ' + $k + '（空串，' + $Path + '）') }
+    }
+    foreach ($k in @('path', 'block')) {
+        if (-not $a.config.ContainsKey($k)) { throw ('adapter 缺字段: config.' + $k) }
+        if ([string]::IsNullOrWhiteSpace([string]$a.config[$k])) { throw ('adapter 缺字段: config.' + $k + '（空串）') }
+    }
+    foreach ($k in @('file')) {
+        if (-not $a.page.ContainsKey($k)) { throw ('adapter 缺字段: page.' + $k) }
+        if ([string]::IsNullOrWhiteSpace([string]$a.page[$k])) { throw ('adapter 缺字段: page.' + $k + '（空串）') }
+    }
     foreach ($k in @('protocol', 'targetTimeMs', 'seed')) { if (-not $a.freeze.ContainsKey($k)) { throw ('adapter 缺字段: freeze.' + $k) } }
     # P2.6：冻帧协议两种都认；stepMs 只有 noloop-step 才需要（url-time 没有推进过程）
     $fp = [string]$a.freeze.protocol
@@ -139,6 +169,7 @@ $bound = $PSBoundParameters
 if (-not $Adapter) { $Adapter = Join-Path $PSScriptRoot 'adapter.json' }
 $Adapter = (Resolve-Path $Adapter).Path
 $A = Import-Adapter $Adapter
+# 注：template:true 的模板在 Import-Adapter 里就拒跑了（那里能先于"缺字段"报出"这是字段模板"）。
 $adapterDir = Split-Path -Parent $Adapter
 
 # ---------------- 0.0b 根目录（-Root）：默认空，运行时推导 ----------------
@@ -170,6 +201,7 @@ $Root = (Resolve-Path $Root).Path
 
 # 命中优先级：显式命令行参数 > adapter > 内置兜底（老调用方式因此完全不受影响）
 $blkFull = [string]$A.config.block
+if (-not $blkFull) { throw ('adapter 缺字段：config.block（空串）—— 要 effects.<Effect>.<Block>，如 effects.FireRay.fireBeamG1M1（' + $Adapter + '）') }
 if ($blkFull -notmatch '^(?:effects\.)?([^.]+)\.(.+)$') { throw ('adapter.config.block 格式不对（要 effects.<Effect>.<Block>）: ' + $blkFull) }
 if (-not $bound.ContainsKey('Effect') -or -not $Effect) { $Effect = $Matches[1] }
 if (-not $bound.ContainsKey('Block') -or -not $Block) { $Block = $Matches[2] }
@@ -185,6 +217,24 @@ if (-not $MetricsJs) { throw 'adapter 没给 tools.metricsJs，且命令行没�
 $MetricsJs = Resolve-AbsPath $MetricsJs 'tools.metricsJs' $PSScriptRoot
 if (-not (Test-Path $MetricsJs)) { throw ('metrics 脚本不存在: ' + $MetricsJs + '（检查 adapter.tools.metricsJs；相对路径按 harness/ 展开）') }
 $BodyClient = Resolve-AbsPath $BodyClient 'guard.bodyClient' $adapterDir
+
+# 写护栏（protectPaths）：写入禁区由 adapter 声明，bodyClient 非空时自动并入（并集、不重复）。
+# 展开失败必须硬错（Resolve-AbsPath → Expand-PathTpl 就是 throw 语义）：守卫声明了却没法执行，比不声明更危险。
+# 缺省（没声明）不硬错，只在 §1 之前打一条 [guard][warn]：这是"护栏缺省只 warn"的唯一口径。
+$protectPaths = @()
+if ($A.ContainsKey('guard') -and $A.guard -and $A.guard.ContainsKey('protectPaths') -and $null -ne $A.guard.protectPaths) {
+    foreach ($pp in @($A.guard.protectPaths)) {
+        if ([string]::IsNullOrWhiteSpace([string]$pp)) { continue }
+        $protectPaths += (Resolve-AbsPath ([string]$pp) 'guard.protectPaths' $adapterDir)
+    }
+}
+if ($BodyClient) {
+    $bodyCovered = $false
+    foreach ($pp in $protectPaths) {
+        if ((Test-PathUnder $BodyClient $pp) -and (Test-PathUnder $pp $BodyClient)) { $bodyCovered = $true; break }
+    }
+    if (-not $bodyCovered) { $protectPaths += $BodyClient }
+}
 if (-not $bound.ContainsKey('W') -or $W -le 0) { $W = [int]$A.render.width }
 if (-not $bound.ContainsKey('H') -or $H -le 0) { $H = [int]$A.render.height }
 if (-not $bound.ContainsKey('Tier') -or -not $Tier) { $Tier = [string]$A.render.tier }
@@ -287,9 +337,15 @@ if (-not $applyJs) { $applyJs = $(if ($applyFormat -eq 'flat-params') { 'apply_p
 $applyJs = Resolve-AbsPath $applyJs 'tools.apply' $PSScriptRoot
 if (-not (Test-Path $applyJs)) { throw ('改参脚本不存在: ' + $applyJs) }
 
-# 回读校验用哪句 JS（证明"这轮真的吃到了新参数"）：VfxConfig 是 mergeProbe 那套；别的宿主自己给
+# 回读校验用哪句 JS（证明"这轮真的吃到了新参数"）：默认**不回读**（中性）。
+# adapter 不给 page.readbackExpr 时就不做浏览器侧回读，只靠 apply 自己的 JSON 回读校验 ——
+# 这样一轮仍能跑，但**无法证明参数真的被吃到**，证据包 meta 会记 selfCheck:false（绝不假装验过）。
 $jsReadback = [string]$A.page.readbackExpr
-if (-not $jsReadback) { $jsReadback = 'JSON.stringify(VfxConfig.raw().effects.' + $Effect + '.' + $Block + ')' }
+$script:selfCheck = $true
+if (-not $jsReadback) {
+    $script:selfCheck = $false
+    Write-Output '[adapter][warn] adapter 没给 page.readbackExpr：本轮无法证明参数真的被吃到，证据包会标 selfCheck:false'
+}
 
 # metrics 有两种写法：v1 = 裸字符串（仅声明，不参与计算）；v2 = 对象 {id, extract, opts, norm, weight}（真驱动提取与距离）
 # P2.5：脚本对"用哪些指标"完全无知，只把 id 列表当标签用（记录进证据包 / 动态列）。
@@ -353,6 +409,20 @@ foreach ($d in @($Out, $shots, $thumbs, $logs, $baseDir)) { if (-not (Test-Path 
 
 $cfgRel = ([string]$A.config.path).Replace('/', '\')   # 配置文件在 client 下的相对路径（来自适配层）
 $mirrorJson = Join-Path $Mirror $cfgRel
+# 写护栏执行点①（早失败，不浪费预算）：镜像配置文件落在保护路径里 = "写回本体"的前兆。
+# 必须排在任何写之前（下面那条 Copy-Item 快照、finally 里的还原都绕过 apply*.js，applier 的护栏拦不住）。
+# 判定走 Test-PathUnder → writeguard.isUnder，与 applier 口径完全一致（含 junction：镜像指向本体也会被抓）。
+if ($protectPaths.Count) {
+    foreach ($pp in $protectPaths) {
+        if (Test-PathUnder $mirrorJson $pp) {
+            throw ('镜像配置文件落在保护路径里：' + $mirrorJson + ' ⊂ ' + $pp + '。这是"写回本体"的前兆 —— 改 -Mirror 或 adapter.clientRoot，别改保护路径')
+        }
+    }
+    Write-Output ('[guard] 保护路径 ' + $protectPaths.Count + ' 条：镜像配置文件不在其中任何一条下')
+}
+else {
+    Write-Output '[guard][warn] adapter 没声明 guard.protectPaths：本轮没有任何"写回本体"保护（applier 只保证 out≠base），证据包会标 guardEnforced:false。想保护就在 adapter.guard 里声明它'
+}
 # 本体守卫（P2.6）：adapter 不给 guard.bodyClient 时（宿主是 _临时 里的自建页）就不做本体对比，
 # 只把"没给"这件事打出来，绝不假装比过。
 $bodyJson = ''
@@ -489,8 +559,7 @@ elseif ($A['params']) {
     else { throw ('adapter.params.mode=' + $pm + ' 不认（只有 list | activity | auto）') }
 }
 else {
-    $paramsSrc = 'default（内置 widthPx,distM，等价 P2.5 之前的行为）'
-    $paramsRaw = $Params
+    throw '白名单没有来源：命令行没给 -Params，adapter 也没有 params 节（拒绝内置默认 widthPx,distM）。补法：给 adapter 加 params 节（mode=list + list:[...]），或命令行显式 -Params a,b'
 }
 
 $wl = New-Object System.Collections.ArrayList
@@ -597,7 +666,10 @@ function Wait-For([string]$js, [string]$want, [int]$timeoutMs) {
 }
 
 $jsReady = [string]$A.page.readyExpr
-if (-not $jsReady) { $jsReady = 'String(!!(window.__ready === true && window.__t3_stale === undefined && document.readyState === "complete"))' }
+if (-not $jsReady) {
+    $jsReady = 'String(document.readyState === "complete")'
+    Write-Output '[adapter][warn] adapter 没给 page.readyExpr，用中性默认（只等 document 就绪）'
+}
 $jsTier = '(function(){try{OverlayVfx._host.quality=function(){return "TIER";};return "patched";}catch(e){return "ERR:"+e;}})()'
 
 # 浏览器 flag 来自适配层模板，占位符在这里吃掉（{width} {height} {cdpPort} {profile}）
@@ -628,12 +700,17 @@ function Stop-Browser {
 function Invoke-Frame {
     param([string]$Id, $Vec, [string]$TierName)
     $patchJson = $Vec | ConvertTo-Json -Compress -Depth 6
+    # 写护栏执行点②：protectPaths 逐条作为 --protect 传给 applier（可重复），走数组 splat ——
+    # 手工拼引号会在路径带空格时被拆开，拼错就又成了"护栏静默失效"。
+    $protectArgs = @()
+    foreach ($pp in $protectPaths) { $protectArgs += @('--protect', $pp) }
     if ($applyFormat -eq 'flat-params') {
-        $setOut = & node $applyJs $baseJson $mirrorJson $patchJson 2>&1
+        $nodeArgs = @($applyJs, $baseJson, $mirrorJson, $patchJson) + $protectArgs
     }
     else {
-        $setOut = & node $applyJs $baseJson $mirrorJson $Effect $Block $patchJson 2>&1
+        $nodeArgs = @($applyJs, $baseJson, $mirrorJson, $Effect, $Block, $patchJson) + $protectArgs
     }
+    $setOut = & node @nodeArgs 2>&1
     if (("$setOut") -notmatch '^OK') { throw ('apply 失败 id=' + $Id + ' : ' + ($setOut -join ' ')) }
 
     $null = EvalJs 'window.__t3_stale = 1; "marked"'
@@ -685,15 +762,19 @@ function Invoke-Frame {
     }
 
     # 回读：证明这轮真的吃到了新参数（E2 §2 的坑：改错块 = 画面零变化却毫无报错）
-    $cfgRaw = EvalJs $jsReadback
-    if ("$cfgRaw" -notmatch '^\{') { throw ('回读配置失败 id=' + $Id + ' : ' + $cfgRaw) }
-    $cfgObj = $cfgRaw | ConvertFrom-Json -AsHashtable
-    foreach ($k in $wl) {
-        if ($Vec.Keys -notcontains $k) { continue }   # 目标帧可以只给部分参数（含"默认参数"= 一个都不给）
-        $want = [double]$Vec[$k]
-        if ($cfgObj.Keys -notcontains $k) { throw ('回读里缺参数 id=' + $Id + ' ' + $k + '（adapter.page.readbackExpr 指的对象不对？）') }
-        $got = [double]$cfgObj[$k]
-        if ([math]::Abs($want - $got) -gt 1e-6) { throw ('参数没吃到 id=' + $Id + ' ' + $k + ' want=' + $want + ' got=' + $got) }
+    # adapter 没给 page.readbackExpr 时这里是中性默认「不回读」：只靠 apply 的 JSON 回读校验兜底，
+    # 并且 meta.selfCheck=false（上面打过的 warn）—— 不能因为"跳过"就把结论写成"验过"。
+    if ($jsReadback) {
+        $cfgRaw = EvalJs $jsReadback
+        if ("$cfgRaw" -notmatch '^\{') { throw ('回读配置失败 id=' + $Id + ' : ' + $cfgRaw) }
+        $cfgObj = $cfgRaw | ConvertFrom-Json -AsHashtable
+        foreach ($k in $wl) {
+            if ($Vec.Keys -notcontains $k) { continue }   # 目标帧可以只给部分参数（含"默认参数"= 一个都不给）
+            $want = [double]$Vec[$k]
+            if ($cfgObj.Keys -notcontains $k) { throw ('回读里缺参数 id=' + $Id + ' ' + $k + '（adapter.page.readbackExpr 指的对象不对？）') }
+            $got = [double]$cfgObj[$k]
+            if ([math]::Abs($want - $got) -gt 1e-6) { throw ('参数没吃到 id=' + $Id + ' ' + $k + ' want=' + $want + ' got=' + $got) }
+        }
     }
 }
 
@@ -1001,7 +1082,12 @@ $bundle = [ordered]@{
         applyFormat = $applyFormat; applyJs = $applyJs
         urlTemplate = $urlTemplate; urlSec = $(if ($freezeProto -eq 'url-time') { $urlSec } else { $null })
         freezeVerify = $freezeVerifyMode; freezeVerified = $script:urlTimeVerified
+        # adapter 没给 page.readbackExpr 时 false：这轮只做了 apply 的 JSON 回读，没证明宿主真的吃到参数
+        selfCheck = $script:selfCheck
         configPath = $cfgRel; pageQuery = $pageQuery
+        # 写护栏的证据：保护路径列表 + 这轮到底强制没强制（enforced=false 时报告里必须看得出来）
+        protectPaths = @($protectPaths); guardEnforced = ($protectPaths.Count -gt 0)
+        guardBodyClient = $BodyClient
     }
     target      = [ordered]@{
         kind = $targetKind
@@ -1036,9 +1122,9 @@ Write-Output ('[done] 证据包 -> ' + $Out)
 Write-Output ('[done] report.md / best.json / curve.csv / shots\ (target.png, best.png' + $(if ($script:hiPng) { ', run.png' } else { '' }) + ')')
 Write-Output ('[cleanup] 镜像 vfx.json ' + (Sha12 $mirrorShaBefore) + ' -> ' + (Sha12 $mirrorShaAfter) + '（应等于基线 ' + (Sha12 $baseSha) + '）')
 if ($BodyClient) {
-    Write-Output ('[cleanup] 本体 vfx.json ' + (Sha12 $bodyShaBefore) + ' -> ' + (Sha12 $bodyShaAfter) + '（必须一致）')
+    Write-Output ('[cleanup] 本体 vfx.json ' + (Sha12 $bodyShaBefore) + ' -> ' + (Sha12 $bodyShaAfter) + '（必须一致）  保护路径 ' + $protectPaths.Count + ' 条')
 }
 else {
-    Write-Output '[cleanup] 本体 vfx.json n/a（adapter 没给 guard.bodyClient：宿主是 _临时 里的自建页，本体不参与本次实验）'
+    Write-Output ('[cleanup] 本体 vfx.json n/a（adapter 没给 guard.bodyClient：本体不参与本次实验）  保护路径 ' + $protectPaths.Count + ' 条')
 }
 
