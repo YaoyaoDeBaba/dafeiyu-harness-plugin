@@ -1,8 +1,8 @@
 {
   "_note": [
     "这是**字段模板**，不是一份能跑的 adapter：template:true，iter.ps1 不带 -Adapter 读到这里会直接拒跑。",
-    "为什么要模板化：下面这些值原本写死的是某个具体项目（fanren-lab）的现场——目标参数 widthPx/distM、白名单、",
-    "mergeProbe 专用 readyExpr、项目专属 metrics/score。谁照抄这份文件，就会把别人的项目基准当成自己的目标。",
+    "为什么要模板化：下面这些值原本写死的是某一份具体现场的私货——目标参数 widthPx/distM、白名单、",
+    "示例宿主专用 readyExpr、专属 metrics/score。谁照抄这份文件，就会把别人的基准当成自己的目标。",
     "必填字段（缺了 iter.ps1 会中文报错）：name / clientRoot / config.path / config.block / page.file /",
     "  freeze.protocol / freeze.targetTimeMs / freeze.seed（noloop-step 还要 freeze.stepMs）/ render.tier|width|height /",
     "  server.staticPort|cdpPort|browserProfilePrefix / browser.args（或 exe/exeCandidates 至少命中一个）/",

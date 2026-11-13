@@ -302,7 +302,7 @@ md.push('- **单步单轴**：坐标下降每轮每参数只试 −一步 / +一
 md.push('- **距离不对称**：`d = f(候选, 目标)`，方向固定为"候选→目标"；把 target 和 candidate 换个位置数字会变（E2 §6）。');
 md.push('- **无多目标合成**：一次只对一个目标帧。');
 md.push('- **留档图体积**：`shots/` 每张约 20KB（' + M.w + '×' + M.h + '），thumbs 每 ' + M.thumbEvery + ' 轮一张；B 档 `run.png` 约 50KB。');
-md.push('- **只在 ' + (M.pageFile ? M.pageFile.split('/').pop() : 'mergeProbe.html') + ' 单页跑**：本机 `client` 没有 `index.html`（E0 §1），不含场景/角色/RTS；整包实验室路径要上 86。');
+md.push('- **只在 ' + (M.pageFile ? M.pageFile.split('/').pop() : '冻帧页') + ' 单页跑**：本证据包只覆盖这一页的观测，其它页面的行为不在本次范围内。');
 md.push('- **参数活性是"当前交付态"的性质**：`directDraw=1` 时美术类旋钮全死（E2 §3.1），换个实现就得重跑预检。');
 md.push('');
 

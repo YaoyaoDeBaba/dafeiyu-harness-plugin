@@ -2,7 +2,7 @@
 // capture.mjs —— 「浏览器 + 页面 + 截图」边界（P1 适配层第二步：为插件版铺路）
 //
 // ============================================================================
-// 这是全流程里**唯一**碰浏览器/CDP 的地方。项目语义（改哪份 vfx.json、播哪个特效、
+// 这是全流程里**唯一**碰浏览器/CDP 的地方。领域语义（改哪份 vfx.json、播哪个特效、
 // 冻到第几毫秒、画质档怎么打补丁）都不在这里，只在 iter.ps1 里。
 //
 // 引擎（P3）：同一份协议下有两个内部实现，默认 edge（老调用一行不用改）。
@@ -10,7 +10,7 @@
 //   --engine playwright   Playwright 自带 Chromium（本文件内部替换，协议逐字段不变）
 //
 //   直接调用边界：node capture.mjs --engine playwright
-//   整条产线跑：  $env:DSH_CAPTURE_ENGINE='playwright'   （capture.ps1 按纪律冻结，只 node <path>，
+//   整条闭环跑：  $env:DSH_CAPTURE_ENGINE='playwright'   （capture.ps1 按纪律冻结，只 node <path>，
 //                 所以用它把引擎选择透传进来；两者是同一个变量，优先级 --engine > 环境变量 > edge）
 //
 // 两个引擎的对外协议完全一致：
@@ -162,7 +162,7 @@ async function evalExpr(expr) {
 }
 
 // ---------------------------------------------------------------- Playwright（playwright 引擎）
-// Playwright 装在插件原型目录（P3 纪律：只在 _临时\插件原型\ 里装依赖）。
+// Playwright 装在插件的原型目录里（P3 纪律：依赖装在插件目录，别污染宿主）。
 // 解析顺序：DSH_PLAYWRIGHT_MODULE > 插件原型目录 > capture.mjs 上级 > capture.mjs 同目录 > 裸名。
 function playwrightBases() {
   return [
@@ -424,7 +424,7 @@ function stopWatchdog() {
 }
 
 // ---------------------------------------------------------------- 启动清孤儿（评审 §4.1 第 3 条）
-// 红线：判据是「父进程已不存在」，**不是**「跑了多久」——一次完整产线单步就可能 30~90 秒，
+// 红线：判据是「父进程已不存在」，**不是**「跑了多久」——一次完整闭环单步就可能 30~90 秒，
 // 按时间硬杀会误伤正在干活的会话。范围也只认「--user-data-dir 指向我们自己的 profile 根」，
 // 别人的 DSH 实例 / 用户自己的浏览器一个都不碰。
 function sweepOrphans() {

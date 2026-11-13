@@ -7,7 +7,7 @@
 // 被谁引用：lib/index.js（工具入口）→ 本文件。本文件不引用 lib/，也不改 harness/。
 //
 // 唯一的纪律：**硬错只报 iter.ps1 自己会抛的那几种**（否则 probe 会拒绝 iter.ps1 明明接受的配置，
-// 等于把工具做得比产线还严）；其余一律进 warnings —— 比如 score.type 不是 l1，是 score.js 才炸，
+// 等于把工具做得比执行器还严）；其余一律进 warnings —— 比如 score.type 不是 l1，是 score.js 才炸，
 // 不是 iter.ps1 炸，那就记账不拦。
 //
 // 向后兼容：adapter 的 `domain` 字段**可选**。缺了照样解析、照样能跑，只是在清单里归到"未标注领域"。

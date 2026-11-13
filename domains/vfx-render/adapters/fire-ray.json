@@ -1,9 +1,9 @@
 {
   "schema": "closed-loop-adapter/3",
   "domain": "vfx-render",
-  "topic": "火焰射线 / 火柱（暖色体积型）：粗细长短 + 亮面积 + 暖色占比，本项目基准题材",
+  "topic": "火焰射线 / 火柱（暖色体积型）：粗细长短 + 亮面积 + 暖色占比，本领域基准题材",
   "packageNote": "随插件分发版：server.staticScript / tools.metricsJs 用相对 harness/ 的包内路径；clientRoot 用 %VFX_LOOP_CLIENT% 模板（= 你自己 client 根目录），浏览器候选用 %ProgramFiles(x86)%/%ProgramFiles% 模板。包内零本机绝对路径，换机器只设环境变量，不改包。",
-  "name": "fanren-lab-fire-ray",
+  "name": "example-fire-ray",
   "clientRoot": "%VFX_LOOP_CLIENT%",
   "config": {
     "path": "resource/lab/vfx/vfx.json",
@@ -15,7 +15,7 @@
     "query": "?seed={seed}",
     "readyExpr": "String(!!(window.__ready === true && window.__t3_stale === undefined && document.readyState === \"complete\"))",
     "readbackExpr": "JSON.stringify(VfxConfig.raw().effects.FireRay.fireBeamG1M1)",
-    "note": "readbackExpr 是本宿主专属（mergeProbe 的 VfxConfig 全局）：回读 effects.FireRay.fireBeamG1M1，证明参数真的被吃到。别的宿主自己给一句窗口 API 的 JSON 字符串。"
+    "note": "readbackExpr 是本宿主专属（示例页暴露的 VfxConfig 全局）：回读 effects.FireRay.fireBeamG1M1，证明参数真的被吃到。别的宿主自己给一句窗口 API 的 JSON 字符串。"
   },
   "freeze": {
     "protocol": "noloop-step",
@@ -28,12 +28,12 @@
   "target": {
     "mode": "params",
     "params": { "widthPx": 30, "distM": 8.0 },
-    "note": "P2.6：目标帧从命令行搬进配置。等价于 P2.5 的 -Target targets\\GC.json（同一个参数渲染出来的帧）。"
+    "note": "目标帧写在配置里：先按 target.params 渲一张当目标；命令行 -Target 仍可覆盖（优先级更高）。"
   },
   "params": {
     "mode": "list",
     "list": ["widthPx", "distM"],
-    "note": "P2.6：白名单从命令行搬进配置。等价于 P2.5 的 -Params widthPx,distM（初值取块内现值）。"
+    "note": "白名单写在配置里（初值取块内现值）；命令行 -Params 仍可覆盖（优先级更高）。"
   },
   "render": {
     "tier": "low",

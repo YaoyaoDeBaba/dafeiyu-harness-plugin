@@ -40,7 +40,7 @@
 
 | 模板 | 含义 |
 |---|---|
-| `%VFX_LOOP_CLIENT%` | **你自己的 client 根目录**（`_镜像\<分支>\client` 那种），示例 adapter 的 `clientRoot` 就是它 |
+| `%VFX_LOOP_CLIENT%` | **你自己的 client 根目录**（如 `<你的镜像目录>\<分支>\client`），示例 adapter 的 `clientRoot` 就是它 |
 | `%VFX_LOOP_BODY_CLIENT%` | 可选：本体 client 目录，填了才做「本体 vfx.json 前后哈希一致」的守卫 |
 | `%VFX_LOOP_DEMO_HOST%` | 只给 `demo-url-time.json` 用：那个 demo 宿主页面所在目录 |
 | `%ProgramFiles(x86)%` / `%ProgramFiles%` / `%LOCALAPPDATA%` | 浏览器候选路径 |
@@ -58,8 +58,8 @@ pwsh -NoProfile -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\
 
 ## 进程与端口卫生（这个领域的坑）
 
-- 浏览器用独立 `--user-data-dir`；profile 落在 `%TEMP%\dsh-vfx-loop\`（可用 `-ProfileRoot` 或 `server.profileRoot` 改），**不落在包目录里**（装成 node_modules 后可能只读，而且清孤儿需要一个只属于本包的临时目录来圈范围）。目录名仍是旧的 `dsh-vfx-loop`——`harness/` 是逐字节冻结的资产，端口/目录这类内部字符串本轮不改；与旧包同时跑产线时用 `-ProfileRoot` 分开。
-- `capture.mjs` 三条守卫：父进程死亡看门狗（每 10s 查一次，父没了就 `taskkill /T /F` 整棵树）、关闭时杀整棵树、启动时只清「父进程已不存在」的自家孤儿。**判据是父进程没了，不是跑了多久**——一次完整产线单步就可能 30~90 秒，按时间硬杀会误伤正在干活的会话。
+- 浏览器用独立 `--user-data-dir`；profile 落在 `%TEMP%\dsh-vfx-loop\`（可用 `-ProfileRoot` 或 `server.profileRoot` 改），**不落在包目录里**（装成 node_modules 后可能只读，而且清孤儿需要一个只属于本包的临时目录来圈范围）。目录名仍是旧的 `dsh-vfx-loop`——它是执行器内部写死的字符串，没跟着正名改；与旧包同时跑闭环时用 `-ProfileRoot` 分开。
+- `capture.mjs` 三条守卫：父进程死亡看门狗（每 10s 查一次，父没了就 `taskkill /T /F` 整棵树）、关闭时杀整棵树、启动时只清「父进程已不存在」的自家孤儿。**判据是父进程没了，不是跑了多久**——一次完整闭环单步就可能 30~90 秒，按时间硬杀会误伤正在干活的会话。
 - 静态服端口和 CDP 端口各 run 独占（示例用 8290 / 9490），别抢别人的。
 - 执行器是 **Windows 专用**：`iter.ps1` 用 `Get-NetTCPConnection`，`capture.mjs` 用 `Win32_Process` + `taskkill`。三个入口都有平台守卫，非 Windows 直接一行中文报错，不会跑到一半才炸。
 
@@ -70,11 +70,12 @@ pwsh -NoProfile -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\
 3. **目标帧错了就全错**：目标若是旧画面或错档位，闭环会非常认真地收敛到一个错的东西。
 4. **底噪要各自标定**：同参重跑 2~3 次取中位数，别把「≈3」当全局常数。
 
-## 项目内进一步阅读（这些文件会继续改，本 skill 只提炼、不复制）
+## 三份示例 adapter 说的事
 
-- `_文档\顾问\方法论\参数活性扫描.md` —— 五分法、判假轴的两个对照、本相位死
-- `_文档\顾问\经验与工具\判据与口径.md` —— 唯一口径、档位表、底噪、跨工具换算
-- `_文档\顾问\经验与工具\坑位-按症状查.md` —— 按症状查坑（`pitfalls.md` 是精简版）
-- `_文档\顾问\闭环产线\01-结论与反哺.md` —— 这套产线能做什么、不能做什么
-- `_文档\方案\参数活性与调参指南.md` —— 具体参数名与「要改 X 就动 Y」
+三份示例描述的都是同一套示例现场（**案例 A**：一个 2D 游戏项目的渲染管线，见包根 README「案例与来源」）。它们的作用是演示"换项目只换 adapter"——本包不依赖任何具体项目。
+
+## 进一步阅读（都在本包内）
+
+- `references/workflow.md` / `metrics.md` / `pitfalls.md` —— 通用方法（五步、五分法、底噪、对抗门槛）
 - `harness/适配层-说明.md` —— adapter 每个字段的语义（v3 全部字段 + 优先级）
+- `examples/minimal.json` —— 不绑任何项目的最小 adapter（自己写就从它改）

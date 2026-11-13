@@ -11,7 +11,7 @@
 | 入口 | `lib/` | 工具定义（`selfloop_probe` / `selfloop_list_adapters`）、参数与输出 schema、技能注册 | 不动 |
 | 引擎 | `core/` | adapter 契约解析、硬错口径、清单与分组、harness 齐全性、Chromium 成本探测 | 不动 |
 | 领域 | `domains/<domain>/` | 该题材的 `adapters/*.json` 与领域说明 | **只动这里** |
-| 执行器 | `harness/` | `iter.ps1` / `capture.mjs` / `metrics2.js` / `score.js` / `finalize.js` / `apply*.js` | 不动（逐字节冻结） |
+| 执行器 | `harness/` | `iter.ps1` / `capture.mjs` / `metrics2.js` / `score.js` / `finalize.js` / `apply*.js` | 不动（换题材不用动；真要改执行器，记 CHANGELOG） |
 
 执行器为什么留在根上、不自称「core 的实现」：它是已经跑通的**产品资产**（PowerShell + Edge + `taskkill` 那套 Windows 进程卫生，实测过的）。为了目录好看去搬它、改它里面的路径，等于拿跑通的东西换排版。所以三层的边界体现在**谁引用谁**和**文档描述**上，不体现在把执行器搬进 `core/`。
 
@@ -30,7 +30,7 @@
 
 ## adapter 契约（本层唯一要守的东西）
 
-一份 adapter = 现场描述。本层校验的硬错**只报执行器自己会抛的那几种**，其余一律进 `warnings`（工具不该比产线更严）：
+一份 adapter = 现场描述。本层校验的硬错**只报执行器自己会抛的那几种**，其余一律进 `warnings`（工具不该比执行器更严）：
 
 - 必填：`name` / `clientRoot` / `config.path` / `config.block` / `page.file` / `freeze` / `render` / `server`
 - 只认：`freeze.protocol` ∈ `noloop-step | url-time`；`config.format` ∈ `vfx-block | flat-params`

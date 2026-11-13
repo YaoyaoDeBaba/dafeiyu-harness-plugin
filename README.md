@@ -1,7 +1,9 @@
 # dsh-selfloop（权臣）
 
-> **通用闭环引擎**：任意**可测目标 + 可调参数**，都能用「观测 → 判定 → 搜索」把参数自动调到接近目标，并留下可复验的证据包。
-> vfx 渲染只是它接上的**第一个领域**（`domains/vfx-render/`）——引擎本身不认识火柱，也不认识别的题材。
+这个包是个**通用闭环引擎**：给它一个能测的目标（一张图、一组数值、一段日志），再给一组能调的参数，它自己搜出最接近目标的那组值，并留下一份能复验的证据包。
+它不绑任何项目——换项目 = 换一份 adapter，引擎和执行器都不用动。
+包里那几份示例 adapter 描述的是一个 2D 游戏渲染管线的现场（案例 A，见文末「案例与来源」），只用来演示"换项目只换 adapter"。
+渲染/特效只是它接上的第一个领域（`domains/vfx-render/`），换成日志、接口、UI 状态同理。
 
 > **① 执行器 Windows 专用**｜`harness/` 基于 PowerShell + Edge/Chromium（`taskkill`、`Win32_Process`、`Get-NetTCPConnection`）。Mac/Linux 会在**入口直接报错退出**（`本适配器需要 Windows（harness 基于 PowerShell + Edge）；当前平台 <xxx> 不受支持。`），不会跑到一半才炸。上游已定案：**不把 .ps1 重写成 Node**。
 > 两个**工具**本身是纯 Node、跨平台只读。
@@ -27,7 +29,7 @@
 | 入口 | `lib/` | 两个工具的定义、参数与输出 schema、技能注册 | 不动 |
 | 引擎 | `core/` | adapter 契约解析、硬错口径、清单与领域分组、harness 齐全性 | 不动 |
 | 领域 | `domains/<domain>/` | 该题材的 `adapters/*.json` + 领域说明 | **只动这里** |
-| 执行器 | `harness/` | `iter.ps1` / `capture.mjs` / `metrics2.js` / `score.js` / `finalize.js` / `apply*.js` / `writeguard.js` | 按需可改：**改了记 CHANGELOG，并回灌 fanren 侧原件** |
+| 执行器 | `harness/` | `iter.ps1` / `capture.mjs` / `metrics2.js` / `score.js` / `finalize.js` / `apply*.js` / `writeguard.js` | 按需可改：**改了记 CHANGELOG，并同步上游原件（案例 A）** |
 
 `harness/` 为什么没被搬进 `core/`：它是已经跑通的产品资产（PowerShell + Edge + 那套 Windows 进程卫生，都实测过）。为了目录好看去搬它、改里面的路径，等于拿跑通的东西换排版。所以三层体现在**谁引用谁**和**文档描述**上：`lib/` → `core/` → 引用 `harness/` 与 `domains/`，单向。
 
@@ -37,12 +39,12 @@
 |---|---|
 | 两个只读工具 `selfloop_probe` / `selfloop_list_adapters` | 模型侧工具目录 |
 | 跑一轮的必需件（`iter.ps1` + 8 个伴生脚本 + 字段模板 `adapter.json` + 适配层字段说明） | `harness/` |
-| 自带静态服（替掉对项目根 `_tmp_static.js` 的依赖） | `static/server.mjs` |
+| 自带静态服（不再依赖外部临时静态脚本） | `static/server.mjs` |
 | 首个领域的 3 份示例适配器（火焰射线 / 闪电链 / url-time demo） | `domains/vfx-render/adapters/` |
 | 一份不绑任何项目的最小示例（自己写 adapter 就从它改） | `examples/minimal.json` |
 | `selfloop` 技能（宿主有 `ctx.skills` 时自动注册） | `skills/selfloop/` |
 
-**这个插件不跑产线**：工具只读文件，不起浏览器、不开端口、不花预算。真跑一轮是 `harness/iter.ps1` 的事。
+**这个插件不跑闭环**：工具只读文件，不起浏览器、不开端口、不花预算。真跑一轮是 `harness/iter.ps1` 的事。
 
 ## 工具
 
@@ -72,7 +74,7 @@
 
 | 模板 | 含义 |
 |---|---|
-| `%VFX_LOOP_CLIENT%` | **你自己的 client 根目录**（`_镜像\<分支>\client` 那种），示例 adapter 的 `clientRoot` 就是它 |
+| `%VFX_LOOP_CLIENT%` | **你自己的 client 根目录**（如 `<你的镜像目录>\<分支>\client`），示例 adapter 的 `clientRoot` 就是它 |
 | `%VFX_LOOP_BODY_CLIENT%` | 可选：本体 client 目录。填了它 = ①「本体 vfx.json 前后哈希一致」的守卫 ②**同时进 `guard.protectPaths`**（改参脚本拒写这个目录），不用两边重复写 |
 | `%VFX_LOOP_DEMO_HOST%` | 只给 `demo-url-time.json` 用：那个 demo 宿主页面所在目录 |
 | `%ProgramFiles(x86)%` / `%ProgramFiles%` / `%LOCALAPPDATA%` | 浏览器候选路径 |
@@ -130,7 +132,7 @@ pwsh -NoProfile -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\
 
 ## 首装成本与失败处理
 
-这个包不带浏览器二进制，第一轮跑产线需要本机有一个浏览器，两条路：
+这个包不带浏览器二进制，第一轮跑闭环需要本机有一个浏览器，两条路：
 
 | 路线 | 一次性成本 | 落到哪 |
 |---|---|---|
@@ -177,10 +179,10 @@ npx playwright install --only-shell chromium   # 只要无头版，约 290 MB
    实测注意：`spawn(pwsh, …, { detached: true })` 在 Windows 上会**立刻退出、一行都不执行**，所以这里用 `detached: false`；也不用 `cmd` 批处理（`stdio: 'ignore'` 时管道会挂死）。
 2. **关闭时杀整棵树**：`browser.close()` 只是"请求"，带不走 renderer/gpu，所以再按 PID `taskkill /T /F`。
 3. **启动时清孤儿**：只杀「`--user-data-dir` 指向**本包的 profile 根**」**且**「父进程已不存在」的进程。
-   **判据是"父进程/连接没了"，不是"跑了多久"** —— 一次完整产线单步就可能 30~90 秒，按时间硬杀会误伤正在干活的会话。
+   **判据是"父进程/连接没了"，不是"跑了多久"** —— 一次完整闭环单步就可能 30~90 秒，按时间硬杀会误伤正在干活的会话。
 
 profile 落在 `%TEMP%\dsh-vfx-loop\`（可用 `-ProfileRoot` 或 `server.profileRoot` 改），**不落在包目录里**（装成 node_modules 后可能只读，而且清孤儿需要一个只属于本包的临时目录来圈范围）。
-> 这个目录名仍是旧的 `dsh-vfx-loop`：它是执行器内部写死的字符串，没跟着正名改。它与旧包同时安装时共用一个 profile 根——真同时跑两个包的产线时，用 `-ProfileRoot` 分开即可。
+> 这个目录名仍是旧的 `dsh-vfx-loop`：它是执行器内部写死的字符串，没跟着正名改。它与旧包同时安装时共用一个 profile 根——真同时跑两个包的闭环时，用 `-ProfileRoot` 分开即可。
 
 ## 目录
 
@@ -191,12 +193,13 @@ core/adapter.js                  adapter 契约解析与口径（硬错对齐 it
 core/README.md                   三层怎么分、三个概念、引用方向
 domains/vfx-render/adapters/     首个领域的 3 份示例适配器
 domains/vfx-render/README.md     首个领域说明（观测/判定/搜索怎么落地）
-harness/                         执行器：跑一轮的必需件（见下；改动要进 CHANGELOG 并回灌 fanren 侧）
+harness/                         执行器：跑一轮的必需件（见下；改动要进 CHANGELOG 并同步上游原件）
 examples/minimal.json            不绑任何项目的最小 adapter（自己写就从它改）
 static/server.mjs                静态服：node server.mjs <root> <port> [host]
 skills/selfloop/                 技能：SKILL.md + references/（通用方法 + domains-vfx.md）
 locale/{zh,en}.json              插件清单里的标题与描述（权臣 / Selfloop）
-test/plugin.test.mjs             53 个用例（不进包）
+CHANGELOG.md                     改动记录（随包分发，`files` 里有它）
+test/plugin.test.mjs             54 个用例（不进包）
 ```
 
 `harness/` 里逐件的作用：
@@ -214,14 +217,14 @@ test/plugin.test.mjs             53 个用例（不进包）
 | `writeguard.js` | 写护栏：判定 `out` 是否落在 `guard.protectPaths` 下（两个改参脚本共用） |
 | `adapter.json` | **字段模板**（`template:true`）：只有字段和注释，**不能直接跑**；`iter.ps1` 不带 `-Adapter` 时会被拒绝 |
 | `适配层-说明.md` | adapter 字段语义（v3 全部字段 + 优先级） |
-| `package.json` | **只做一件事**：把这一层钉成 `"type": "commonjs"`（包根是 `"type": "module"`，而 `score/metrics2/finalize/apply/apply_params` 是从 fanren 移植来的 CommonJS 脚本） |
+| `package.json` | **只做一件事**：把这一层钉成 `"type": "commonjs"`（包根是 `"type": "module"`，而 `score/metrics2/finalize/apply/apply_params` 是从上游原件（案例 A）移植来的 CommonJS 脚本） |
 
-**`harness/` 现在按需可改**：本轮解耦动了 `iter.ps1`（白名单不再有内置默认、`template:true` 直接拒绝、两头接写护栏）、`apply.js` / `apply_params.js`（写护栏改由 adapter 的 `guard.protectPaths` 声明、统一走 `--protect`），并新增了 `harness/writeguard.js`。所以它已经不是 fanren 原件的副本了。
+**`harness/` 现在按需可改**：本轮解耦动了 `iter.ps1`（白名单不再有内置默认、`template:true` 直接拒绝、两头接写护栏）、`apply.js` / `apply_params.js`（写护栏改由 adapter 的 `guard.protectPaths` 声明、统一走 `--protect`），并新增了 `harness/writeguard.js`。所以它已经不是上游原件的副本了。
 
 **改动规矩**（比冻结松，但别当成随便改）：
 
 1. 每次改动都要留记录（写进仓库根的 `CHANGELOG.md`），写清改了哪个文件、为什么、行为变了什么；
-2. `apply.js` / `apply_params.js` / `writeguard.js` 在 fanren 侧还有一份原件，**回灌时要按改动点手动改**，别整文件覆盖（两边已经分叉）；
+2. `apply.js` / `apply_params.js` / `writeguard.js` 在上游（案例 A）还有一份原件，**回灌时要按改动点手动改**，别整文件覆盖（两边已经分叉）；
 3. 别为了"目录好看"搬文件、改相对引用——那等于拿跑通的东西换排版。
 
 > 因此 `harness/适配层-说明.md` 里 §4.4 / §5.4 举例的 `adapters\xxx.json` 还是**旧位置**的写法。现在示例适配器在 `domains/vfx-render/adapters/`，字段语义完全一样，只是路径写法旧了。
@@ -257,7 +260,11 @@ test/plugin.test.mjs             53 个用例（不进包）
 
 ```powershell
 cd <包目录>
-node test/plugin.test.mjs      # 53 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）、写护栏（段边界/大小写/junction/端到端拒写）
+node test/plugin.test.mjs      # 54 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）、写护栏（段边界/大小写/junction/端到端拒写）
 ```
 
-测试不起宿主、不装 profile、不开端口、不跑产线。
+测试不起宿主、不装 profile、不开端口、不跑闭环。
+
+## 案例与来源
+
+`harness/` 的执行器最早移植自**案例 A**（一个 2D 游戏项目的渲染管线），之后在本包里独立演进、已与上游分叉；示例 adapter 描述的是案例 A 的现场，用来演示"换项目只换 adapter"。除此之外，本包不依赖任何具体项目。

@@ -1,5 +1,5 @@
 {
   "type": "commonjs",
-  "_note": "包根 package.json 是 \"type\": \"module\"（lib/ 与 static/ 是 ESM，capture.mjs 用 .mjs）。harness/ 下的 score.js / metrics2.js / finalize.js / apply.js / apply_params.js / writeguard.js 是 CommonJS（require + module.exports），所以在这里把这一层钉成 commonjs —— 否则 node 会把它们当 ESM 跑，报 `require is not defined`。加这个文件比给这些脚本改名更小的改动面。**注意：apply.js / apply_params.js 已与 fanren 原件分叉**（增加了 `--protect`，护栏逻辑收进新增的 `writeguard.js`）；改这两个文件时按改动点回灌，别整文件覆盖回去。",
+  "_note": "包根 package.json 是 \"type\": \"module\"（lib/ 与 static/ 是 ESM，capture.mjs 用 .mjs）。harness/ 下的 score.js / metrics2.js / finalize.js / apply.js / apply_params.js / writeguard.js 是 CommonJS（require + module.exports），所以在这里把这一层钉成 commonjs —— 否则 node 会把它们当 ESM 跑，报 `require is not defined`。加这个文件比给这些脚本改名更小的改动面。**注意：apply.js / apply_params.js 已与上游原件（案例 A）分叉**（增加了 `--protect`，护栏逻辑收进新增的 `writeguard.js`）；改这两个文件时按改动点回灌上游，别整文件覆盖回去。",
   "_note2": "capture.mjs / capture.ps1 / iter.ps1 不受影响：.mjs 恒为 ESM，.ps1 由 pwsh 执行。"
 }

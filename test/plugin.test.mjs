@@ -1,4 +1,4 @@
-// 插件自测：不起宿主、不装 profile、不开端口、不跑产线。
+// 插件自测：不起宿主、不装 profile、不开端口、不跑闭环。
 // 纯 node:test + 假 ctx + 一个 JSON-Schema 子集校验器（用来验 output.schema 和返回值对得上）。
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -207,7 +207,7 @@ test('包内 3 份适配器都能被解析，带 domain 标注，且脚本路径
   }
   // adapter 搬家到 domains/ 之后，harness 不能被“按 adapters 的上级”猜歪
   const listed = listAdapters(ADAPTER_DIR, join(ROOT, 'harness'))
-  assert.deepEqual(listed.map((a) => a.name).sort(), ['fanren-lab-chain-lightning', 'fanren-lab-fire-ray', 'trial-demo-url-time'])
+  assert.deepEqual(listed.map((a) => a.name).sort(), ['example-chain-lightning', 'example-fire-ray', 'example-flat-params'])
   // 不传 harnessDir 时也要能向上找到 harness/（旧调用方式）
   assert.deepEqual(
     listAdapters(ADAPTER_DIR).map((a) => a.runnable),
@@ -221,7 +221,7 @@ test('selfloop_probe 默认读包内 fire-ray.json，返回结构合 schema，�
   assert.equal(v.adapterResolved, DEFAULT_ADAPTER)
   assert.equal(DEFAULT_ADAPTER, join(ADAPTER_DIR, 'fire-ray.json'))
   assert.equal(v.domain, DEFAULT_DOMAIN)
-  assert.equal(v.adapterName, 'fanren-lab-fire-ray')
+  assert.equal(v.adapterName, 'example-fire-ray')
   assert.equal(v.schemaVersion, 'closed-loop-adapter/3')
   assert.equal(v.block, 'effects.FireRay.fireBeamG1M1')
   assert.equal(v.configFormat, 'vfx-block')
@@ -261,13 +261,13 @@ test('domain 是可选字段：旧 adapter 没有 domain 时照常解析、照�
   const v = await selfloopProbeTool.execute({ adapter: legacy })
   assert.deepEqual(validate(selfloopProbeTool.output.schema, v), [])
   assert.equal(v.domain, '', '缺字段时 domain 要回空串而不是抛错')
-  assert.equal(v.adapterName, 'fanren-lab-fire-ray')
+  assert.equal(v.adapterName, 'example-fire-ray')
   assert.deepEqual(v.harness.missing, [])
   // 清单里照样能列出来，归到"未标注"那组
   const listed = listAdapters(dir, join(ROOT, 'harness'))
   assert.equal(listed.length, 1)
   assert.equal(listed[0].domain, '')
-  assert.equal(listed[0].name, 'fanren-lab-fire-ray')
+  assert.equal(listed[0].name, 'example-fire-ray')
   assert.deepEqual(groupByDomain(listed).map((g) => g.domain), [''])
 })
 
@@ -580,10 +580,10 @@ test('locale 双语 key 完全一致，title 是「权臣」/ Selfloop，描述�
   }
 })
 
-test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.3.5', () => {
+test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.3.6', () => {
   const pkg = readJson('package.json')
   assert.equal(pkg.name, 'dsh-selfloop')
-  assert.equal(pkg.version, '0.3.5')
+  assert.equal(pkg.version, '0.3.6')
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.main, 'lib/index.js')
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
@@ -595,7 +595,7 @@ test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只�
   }
   assert.ok(!pkg.files.includes('adapters'), 'adapters 已搬进 domains/，根目录不该再列')
   const positives = pkg.files.filter((f) => !f.startsWith('!'))
-  assert.equal(positives.length, 11, 'files 正名单不该有多余项')
+  assert.equal(positives.length, 12, 'files 正名单恰好 12 项，不该有多余项')
   // 评审 §4.2：日志文件不许随包分发 —— 显式排除一条，别指望"忘了把文件挪进来"
   assert.ok(pkg.files.includes('!**/*.log'), 'files 要显式排除 *.log')
   // 白名单里的每一项都真有东西（带 * 的按"目录里至少命中一个"判）
@@ -629,6 +629,30 @@ test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只�
   // 包里不该混进测试与 node_modules
   assert.ok(!pkg.files.some((f) => /test|node_modules|tgz/.test(f)))
   assert.ok(!pkg.files.some((f) => /\.log$/i.test(f) && !f.startsWith('!')), 'files 正名单里不该有日志')
+})
+
+test('T21 files 正名单里的每一项都真的进得了包（npm pack --dry-run 对账）', (t) => {
+  // 上面那条只证明"本地有这个东西"，证明不了"打出来的 tgz 里有它"——
+  // 0.3.4 就是栽在这：CHANGELOG 写了却不在白名单里，装机后根本看不到。
+  const pkg = readJson('package.json')
+  const positives = pkg.files.filter((f) => !f.startsWith('!'))
+  const r = spawnSync('npm', ['pack', '--dry-run', '--json'], { cwd: ROOT, encoding: 'utf8', shell: true })
+  if (r.error || r.status !== 0) {
+    t.skip(`这台机器跑不了 npm pack（${r.error?.message ?? `exit ${r.status}`}）—— 发版前手动跑一次 npm pack --dry-run 对账`)
+    return
+  }
+  let packed
+  try {
+    packed = JSON.parse(r.stdout)[0].files.map((f) => f.path.replace(/\\/g, '/'))
+  } catch (e) {
+    assert.fail(`npm pack --json 的输出解析不了：${e.message}`)
+  }
+  for (const entry of positives) {
+    const hit = entry.includes('*')
+      ? packed.some((p) => p.startsWith(entry.split('*')[0]))
+      : packed.some((p) => p === entry || p.startsWith(`${entry}/`))
+    assert.ok(hit, `files 里有 ${entry}，但 npm pack 的产物里没有它 —— 白名单写了发不出去，等于没写`)
+  }
 })
 
 // ---------------------------------------------------------------- 便携性（评审 §5）
@@ -877,7 +901,7 @@ test('C4 examples/minimal.json 是解耦后的字段模板（零项目默认值�
   assert.equal(m.schema, 'closed-loop-adapter/3')
   assert.ok(m.target && m.params && m.page.readbackExpr && m.guard, '模板要示范 target/params/readbackExpr/guard 四节')
   assert.deepEqual(m.guard.protectPaths, [])
-  assert.ok(!/VfxConfig|__t3_stale|mergeProbe/.test(JSON.stringify(m)), '不许再出现 fanren/mergeProbe 的私有宿主 API')
+  assert.ok(!/VfxConfig|__t3_stale|mergeProbe/.test(JSON.stringify(m)), '不许再出现示例宿主的私有宿主 API')
   assert.ok(!/可直接跑/.test(m.retarget.note), '没验过的事不许承诺"可直接跑"')
   const a = parseAdapter(file, join(ROOT, 'harness'))
   assert.equal(a.template, false, '这份是字段模板示例，不是 template:true 的包内模板')

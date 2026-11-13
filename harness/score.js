@@ -4,7 +4,7 @@
 //   nd_i = 第 i 个指标的归一化差（norm.mode 决定，见下）
 //   d    = Σ w_i·nd_i / Σ w_i  +  Σ 命中的 penalty.add
 //
-// 归一化（每个指标自己的 norm，字段语义见 T4\适配层-说明.md §五）：
+// 归一化（每个指标自己的 norm，字段语义见 harness\适配层-说明.md §五）：
 //   {"mode":"range","range":[lo,hi]}       nd = |m-t| / (hi-lo)       ← 固定跨度，权重才真的能比
 //   {"mode":"pctrel","floor":f}            nd = |m-t| / max(|t|,f)    ← 旧口径（相对目标自归一化）
 //   {"mode":"abs","scale":s}               nd = |m-t| / s              ← 纯线性缩放到某个量级

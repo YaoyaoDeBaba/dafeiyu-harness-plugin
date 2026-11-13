@@ -3,14 +3,14 @@
 # 一条命令 = 起静态服 + 起浏览器 + 锁相位 + 参数活性预检 + 坐标下降搜索 + 出标准证据包。
 #
 # 用法（P2.6 之后的最少命令行 = 只给三样，其余全在 adapter 里）：
-#   pwsh -File _临时\闭环产线\T4\iter.ps1 -Adapter ...\adapters\fire-ray.json -Budget 20 -Out ...\runs\r1
+#   pwsh -File <包目录>\harness\iter.ps1 -Adapter ...\adapters\fire-ray.json -Budget 20 -Out ...\runs\r1
 # 用法（老调用，显式给目标与白名单，行为与 P2.5 一致）：
 #   pwsh -File …\iter.ps1 -Target '{"widthPx":32,"distM":3.6}' -Params widthPx,distM -Budget 60 -Out …\r2
 #   pwsh -File …\iter.ps1 -Adapter …\adapters\demo-480x270-medium.json -Target …\target.png -Out …
 #
 # 适配层（P1/P2.5/P2.6）：
-#   本项目的一切"现场信息"（client 在哪、vfx.json 哪个块、哪张页面、怎么冻、档位分辨率、
-#   端口与浏览器 flag）都在 adapter.json 里，脚本不再写死。字段语义见 T4\适配层-说明.md。
+#   这个宿主的一切"现场信息"（client 在哪、vfx.json 哪个块、哪张页面、怎么冻、档位分辨率、
+#   端口与浏览器 flag）都在 adapter.json 里，脚本不再写死。字段语义见 harness\适配层-说明.md。
 #   -Adapter 缺省 = 脚本同目录的 adapter.json。
 #   浏览器/截图这一段已抽成边界（capture.mjs + capture.ps1），iter.ps1 只发 goto/eval/shot。
 #
@@ -35,7 +35,7 @@
 # 产出（-Out 下）：curve.csv / best.json / report.md / shots\{target,best,run}.png / shots\thumbs\ / logs\
 #
 # 纪律（继承 E0/E2）：
-#   只改 _镜像 下的 vfx.json（本体拒写 + 前后交哈希）；浏览器 --user-data-dir=适配层给的 prof 前缀 + run 名，
+#   只改镜像目录下的 vfx.json（本体拒写 + 前后交哈希）；浏览器 --user-data-dir=适配层给的 prof 前缀 + run 名，
 #   Start-Process -PassThru 按 PID 收尾（现由 capture.mjs 负责进程树）；端口来自适配层；不碰别人的 msedge。
 
 param(
@@ -127,9 +127,9 @@ function Test-PathUnder([string]$child, [string]$root) {
     return (([string]$r).Trim() -eq '1')
 }
 
-# ---------------- 0. 适配层（项目现场信息全在 adapter.json，脚本不写死） ----------------
+# ---------------- 0. 适配层（宿主现场信息全在 adapter.json，脚本不写死） ----------------
 # 四类信息：怎么改配置(config) / 哪张页面(page) / 怎么冻到某时刻(freeze) / 怎么起服务与浏览器(server+browser)。
-# 字段语义与样例见 T4\适配层-说明.md；换项目 = 换 adapter，脚本一行不动。
+# 字段语义与样例见 harness\适配层-说明.md；换项目 = 换 adapter，脚本一行不动。
 function Import-Adapter([string]$Path) {
     if (-not (Test-Path $Path)) { throw ('adapter 不存在: ' + $Path) }
     $a = Get-Content $Path -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
@@ -213,7 +213,7 @@ if (-not $Mirror) { throw 'adapter.clientRoot 是空的：请给出 client 根�
 if (-not $bound.ContainsKey('ToolDir') -or -not $ToolDir) { $ToolDir = $PSScriptRoot }
 if (-not $bound.ContainsKey('MetricsJs') -or -not $MetricsJs) { if ($A.tools) { $MetricsJs = [string]$A.tools.metricsJs } }
 if (-not $bound.ContainsKey('BodyClient') -or -not $BodyClient) { if ($A.guard) { $BodyClient = [string]$A.guard.bodyClient } }
-if (-not $MetricsJs) { throw 'adapter 没给 tools.metricsJs，且命令行没传 -MetricsJs —— 指标脚本是产线必需项' }
+if (-not $MetricsJs) { throw 'adapter 没给 tools.metricsJs，且命令行没传 -MetricsJs —— 指标脚本是跑一轮的必需项' }
 $MetricsJs = Resolve-AbsPath $MetricsJs 'tools.metricsJs' $PSScriptRoot
 if (-not (Test-Path $MetricsJs)) { throw ('metrics 脚本不存在: ' + $MetricsJs + '（检查 adapter.tools.metricsJs；相对路径按 harness/ 展开）') }
 $BodyClient = Resolve-AbsPath $BodyClient 'guard.bodyClient' $adapterDir
@@ -245,7 +245,7 @@ if (-not $bound.ContainsKey('StaticPort') -or $StaticPort -le 0) { $StaticPort =
 if (-not $bound.ContainsKey('CdpPort') -or $CdpPort -le 0) { $CdpPort = [int]$A.server.cdpPort }
 
 # 冻帧协议（P2.6）：脚本内部只认一个抽象动作「跳到某时刻并截图」，两种协议各给一种实现——
-#   noloop-step：页面开 __noloop + window.step(n,ms) 手动推进到 targetTimeMs（项目页 mergeProbe 那种）
+#   noloop-step：页面开 __noloop + window.step(n,ms) 手动推进到 targetTimeMs（示例宿主页那种）
 #   url-time   ：页面自己按 ?time=<秒> 冻住，**没有推进过程**，targetTimeMs 直接换算成秒填进 URL
 $freezeProto = [string]$A.freeze.protocol
 
@@ -423,7 +423,7 @@ if ($protectPaths.Count) {
 else {
     Write-Output '[guard][warn] adapter 没声明 guard.protectPaths：本轮没有任何"写回本体"保护（applier 只保证 out≠base），证据包会标 guardEnforced:false。想保护就在 adapter.guard 里声明它'
 }
-# 本体守卫（P2.6）：adapter 不给 guard.bodyClient 时（宿主是 _临时 里的自建页）就不做本体对比，
+# 本体守卫（P2.6）：adapter 不给 guard.bodyClient 时（宿主是临时自建页）就不做本体对比，
 # 只把"没给"这件事打出来，绝不假装比过。
 $bodyJson = ''
 if ($BodyClient) { $bodyJson = Join-Path $BodyClient $cfgRel }
@@ -487,10 +487,10 @@ elseif ($A['target']) {
     }
 }
 else {
-    throw '目标帧没有来源：命令行没给 -Target，adapter 也没有 target 节（P2.6 优先级：-Target > adapter.target > 报错）'
+    throw '目标帧没有来源：命令行没给 -Target，adapter 也没有 target 节（优先级：-Target > adapter.target > 报错）'
 }
 
-# ---------------- 2. 白名单解析（P2.6：命令行 -Params > adapter.params > 内置默认） ----------------
+# ---------------- 2. 白名单解析（P2.6：命令行 -Params > adapter.params > 报错，不许静默兜底） ----------------
 # 参数块从"基线配置"里取：vfx-block 形态是 effects.<Effect>.<Block>；flat-params 形态就是 params 对象
 $baseFull = Get-Content $baseJson -Raw | ConvertFrom-Json -AsHashtable
 if ($applyFormat -eq 'flat-params') {

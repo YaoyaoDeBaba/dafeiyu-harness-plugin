@@ -22,7 +22,9 @@ Selfloop 引擎的第一个领域适配包。**引擎不认识这里的任何词
 
 三份都带 `"domain": "vfx-render"`，所以 `selfloop_list_adapters` 会把它们归到同一组。（`domain` 是可选字段，缺了照样能跑。）
 
-> 注意：`harness/适配层-说明.md` 里写的是 `adapters\xxx.json`（旧位置）。那份文档在 `harness/` 冻结清单里，本轮不动；字段语义一致，只是路径写法旧了。
+三份示例描述的都是同一套示例现场（**案例 A**：一个 2D 游戏项目的渲染管线，见包根 README「案例与来源」）。它们用来演示"换项目只换 adapter"——本包不依赖任何具体项目，你把自己的现场写成 adapter 就行。
+
+> 注意：`harness/适配层-说明.md` 里 §4.4 / §5.4 举例的 `adapters\xxx.json` 是**旧位置**的写法。字段语义完全一样，示例现在都在 `domains/vfx-render/adapters/`。
 
 ## 换题材只改这里
 
@@ -32,7 +34,7 @@ adapter 每个字段的语义见 `harness/适配层-说明.md`（v3 全部字段
 ## 这个领域的现场要求
 
 - **client 位置不由包决定**：三份 adapter 的 `clientRoot` 都是 `%VFX_LOOP_CLIENT%` 模板（= 你自己的 client 根目录），浏览器候选是 `%ProgramFiles(x86)%` / `%ProgramFiles%` / `%LOCALAPPDATA%` 模板。设好环境变量就能跑，包内零本机绝对路径。
-- **宿主页面**：`page.file` 指向 client 里的冻帧页（如 `_dev/mergeProbe.html`），那不是本包的东西。
+- **宿主页面**：`page.file` 指向 client 里的冻帧页（示例是 `_dev/mergeProbe.html`），那不是本包的东西。
 - **Windows 专用**：执行器是 PowerShell + Edge/Chromium，非 Windows 会在入口直接中文报错。
 
 ## 这个领域已知的天花板
