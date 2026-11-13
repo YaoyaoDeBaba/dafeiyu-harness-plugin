@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const mod = await import('../lib/index.js')
-const { name, inject, apply, selfloopProbeTool, selfloopListAdaptersTool, DEFAULT_ADAPTER, DEFAULT_DOMAIN } = mod
+const { name, apply, selfloopProbeTool, selfloopListAdaptersTool, DEFAULT_ADAPTER, DEFAULT_DOMAIN } = mod
 const { HARNESS_REQUIRED, parseAdapter, listAdapters, groupByDomain } = await import('../core/adapter.js')
 const { resolveRequest, contentType, createStaticHandler, MIME } = await import('../static/server.mjs')
 
@@ -75,10 +75,12 @@ function walkSchema(node, at, requireAll = false) {
   if (node.type === 'array' && node.items) walkSchema(node.items, `${at}[]`, requireAll)
 }
 
-test('插件名与 inject 声明（正名后叫 selfloop）', () => {
+test('插件名，且**不导出插件级 inject**（宿主会把 pending 挂死）', () => {
   assert.equal(name, 'selfloop')
-  // tools 必须是「可选注入」：宿主某代不暴露 tools 时，插件不应整行不激活（静默不加载）
-  assert.deepEqual(inject, { required: [], optional: ['tools'] })
+  // 0.3.1 的实测：export const inject = { required: [], optional: ['tools'] }
+  // → 本宿主 fiberPhase 永远 pending，apply 一次都没跑，工具与技能全消失。
+  // 所以这条断言不是风格偏好，是装机事故的护栏：插件级 inject 必须不存在。
+  assert.ok(!('inject' in mod), '不许导出插件级 inject：本宿主会 pending 到永不激活（见 README 安装验收）')
 })
 
 test('宿主没有 tools 服务时：apply 不抛、工具不注册、但要喊一声', () => {
@@ -498,6 +500,14 @@ test('宿主没有 skills 服务 / 没有 inject 时 apply 不抛错（工具照
   assert.equal(tools.length, 2)
 })
 
+test('既没有 ctx.get 也没有 ctx.tools：apply 只 warn，不抛（失联也要响）', () => {
+  const warns = []
+  const ctx = { logger: { warn: (m) => warns.push(m) } }
+  assert.doesNotThrow(() => apply(ctx))
+  assert.equal(warns.length, 1)
+  assert.match(warns[0], /tools/)
+})
+
 test('Cordis 式 ctx.inject：按可选依赖挂技能，deps 只声明 skills', () => {
   const tools = []
   const skills = []
@@ -533,10 +543,10 @@ test('locale 双语 key 完全一致，title 是「权臣」/ Selfloop，描述�
   }
 })
 
-test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.3.0', () => {
+test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.3.2', () => {
   const pkg = readJson('package.json')
   assert.equal(pkg.name, 'dsh-selfloop')
-  assert.equal(pkg.version, '0.3.0')
+  assert.equal(pkg.version, '0.3.2')
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.main, 'lib/index.js')
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')

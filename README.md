@@ -97,6 +97,20 @@ pwsh -NoProfile -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\
 
 `dependencies.playwright` 是运行期依赖：`install_bundle` 会顺带 `npm install`（约 18.2 MB，需要能访问 npm registry）。浏览器二进制**不在**这一步。
 
+### 装完必须验三条（裸 node 测试不算证据）
+
+0.3.1 撞过最坏的一种失败：包能装、测试 27/27 全绿，但插件在这个宿主里 `fiberPhase` 永远 `pending`——fiber 从没激活、`apply()` 一次都没跑，两个工具和技能全消失，控制台一条错都没有。根因是插件级导出的 `inject`（`{ required: [], optional: ['tools'] }`）：本宿主把 `optional` 当成"等不到就永远等"。
+
+所以装完/升级后按这三条验，**缺一条就算没装上**：
+
+| # | 判据 | 怎么看 |
+|---|---|---|
+| 1 | `fiberPhase` = `active` | `plugin_manager` 的 `list_plugins` 里找 `include:selfloop` 那行；`pending` 就是没激活 |
+| 2 | 两个工具真在 | 新会话里 `selfloop_probe` / `selfloop_list_adapters` 能调用（工具列表要开新会话才刷新） |
+| 3 | 技能真在 | 技能目录里出现 `selfloop` |
+
+`node test/plugin.test.mjs` 全绿只证明"模块本身没崩"：它跑在裸 node 里、不经过宿主的 fiber 生命周期，**pending 这种问题它看不见**。
+
 ## 首装成本与失败处理
 
 这个包不带浏览器二进制，第一轮跑产线需要本机有一个浏览器，两条路：
@@ -217,7 +231,7 @@ test/plugin.test.mjs             25 个用例（不进包）
 
 ```powershell
 cd <包目录>
-node test/plugin.test.mjs      # 25 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫
+node test/plugin.test.mjs      # 28 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）
 ```
 
 测试不起宿主、不装 profile、不开端口、不跑产线。
