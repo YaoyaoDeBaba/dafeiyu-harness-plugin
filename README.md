@@ -99,17 +99,31 @@ pwsh -NoProfile -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\
 
 ### 装完必须验三条（裸 node 测试不算证据）
 
-0.3.1 撞过最坏的一种失败：包能装、测试 27/27 全绿，但插件在这个宿主里 `fiberPhase` 永远 `pending`——fiber 从没激活、`apply()` 一次都没跑，两个工具和技能全消失，控制台一条错都没有。根因是插件级导出的 `inject`（`{ required: [], optional: ['tools'] }`）：本宿主把 `optional` 当成"等不到就永远等"。
+三个版本连起来演了一遍"怎么拿到服务"这件事：
 
-所以装完/升级后按这三条验，**缺一条就算没装上**：
+| 版本 | 写法 | 实际结果 |
+|---|---|---|
+| 0.3.0 | `inject = ['tools']` + `ctx.tools.register(...)` | ✅ `active`（声明了 inject，宿主等 tools 激活才调 apply） |
+| 0.3.1 | `inject = { required: [], optional: ['tools'] }` | ⏳ `pending` —— 本宿主把 `optional` 当成"等不到就永远等"，`apply()` 一次没跑，工具与技能静默消失 |
+| 0.3.2 | 无 inject + `ctx.get('tools', true)`，拿不到退回 `ctx.tools` | ❌ `failed` —— `cannot get property "tools" without inject`：未声明 inject 时**直接属性访问**会被 Proxy 抛 |
+
+三条硬规则（都吃过亏）：
+
+1. **不导出插件级 `inject`**（含 `{required:[], optional:[...]}` 这种"看着软"的写法）；
+2. **不在 `apply` 里直接读 `ctx.<服务>`** —— 未声明 inject 时那是抛异常；
+3. **不在 `apply` 里用 `ctx.get` 同步取一次** —— 服务还没 ACTIVE 时它按设计返回 `undefined`，不是"不存在"。
+
+正确姿势只有一个：`ctx.inject(deps, cb)` 订阅，框架在服务就绪时回调。服务永远没有时就只是这段不生效——这才是"软"。
+
+装完/升级后按这三条验，**缺一条就算没装上**：
 
 | # | 判据 | 怎么看 |
 |---|---|---|
-| 1 | `fiberPhase` = `active` | `plugin_manager` 的 `list_plugins` 里找 `include:selfloop` 那行；`pending` 就是没激活 |
+| 1 | `fiberPhase` = `active` | `plugin_manager` 的 `list_plugins` 里找 `include:selfloop` 那行；`pending` / `failed` 都算没上，`failed` 的 `diagnostic` 会点名是哪个属性 |
 | 2 | 两个工具真在 | 新会话里 `selfloop_probe` / `selfloop_list_adapters` 能调用（工具列表要开新会话才刷新） |
 | 3 | 技能真在 | 技能目录里出现 `selfloop` |
 
-`node test/plugin.test.mjs` 全绿只证明"模块本身没崩"：它跑在裸 node 里、不经过宿主的 fiber 生命周期，**pending 这种问题它看不见**。
+`node test/plugin.test.mjs` 全绿只证明"模块本身没崩"：它跑在裸 node 里、不经过宿主的 fiber 生命周期，**pending / failed 这类问题它看不见**。
 
 ## 首装成本与失败处理
 
@@ -231,7 +245,7 @@ test/plugin.test.mjs             25 个用例（不进包）
 
 ```powershell
 cd <包目录>
-node test/plugin.test.mjs      # 28 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）
+node test/plugin.test.mjs      # 29 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）
 ```
 
 测试不起宿主、不装 profile、不开端口、不跑产线。

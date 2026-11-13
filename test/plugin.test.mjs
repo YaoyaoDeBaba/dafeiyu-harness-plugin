@@ -16,11 +16,14 @@ const { resolveRequest, contentType, createStaticHandler, MIME } = await import(
 const ADAPTER_DIR = join(ROOT, 'domains', 'vfx-render', 'adapters')
 const readJson = (rel) => JSON.parse(readFileSync(join(ROOT, rel), 'utf8'))
 
-// 假 ctx：tools.register 收集工具；skills.register 收集技能（模拟宿主挂了 skills 服务）
+// 假 ctx：cordis 的 inject(deps, cb) 在服务就绪时回调；这里同步回调模拟"服务已在"
 function mockCtx({ withSkills = false } = {}) {
   const tools = []
   const skills = []
-  const ctx = { tools: { register: (tool) => (tools.push(tool), () => {}) } }
+  const ctx = {
+    tools: { register: (tool) => (tools.push(tool), () => {}) },
+    inject: (_deps, cb) => cb(ctx),
+  }
   if (withSkills) ctx.skills = { register: (skill) => (skills.push(skill), () => {}) }
   return { ctx, tools, skills }
 }
@@ -83,30 +86,29 @@ test('插件名，且**不导出插件级 inject**（宿主会把 pending 挂死
   assert.ok(!('inject' in mod), '不许导出插件级 inject：本宿主会 pending 到永不激活（见 README 安装验收）')
 })
 
-test('宿主没有 tools 服务时：apply 不抛、工具不注册、但要喊一声', () => {
-  const warns = []
-  const ctx = {
-    get: () => null, // 模拟宿主未登记 tools
-    logger: { warn: (m) => warns.push(m) },
-    inject: (_deps, cb) => cb({ skills: { register: () => () => {} } }),
-  }
-  assert.doesNotThrow(() => apply(ctx))
-  assert.equal(warns.length, 1, '缺 tools 必须留一条 warn（失败要响，不许静默）')
-  assert.match(warns[0], /tools/)
-})
-
-test('宿主暴露 tools 服务时：走 ctx.get 注册两个工具', () => {
+test('宿主没有 tools 服务（inject 回调等不到）：apply 不抛、工具不注册', () => {
   const tools = []
   const ctx = {
-    get: (n, opt) => {
-      assert.equal(n, 'tools')
-      assert.equal(opt, true, 'ctx.get 第二个参数必须是 true（可选），否则缺服务会抛')
-      return { register: (t) => (tools.push(t), () => {}) }
+    // 真宿主里 ctx.inject 在服务 ACTIVE 时才回调；服务永远没有 → 回调不跑，这是"软"
+    inject: (_deps, _cb) => {},
+    get: () => undefined,
+    logger: { warn: () => {} },
+  }
+  assert.doesNotThrow(() => apply(ctx))
+  assert.equal(tools.length, 0)
+})
+
+test('服务就绪时走 ctx.inject 回调注册两个工具（不在 apply 里同步读服务）', () => {
+  const tools = []
+  const ctx = {
+    // 服务没就绪时 inject 的回调还没被叫过，ctx.get 也按设计返回 undefined
+    get: () => undefined,
+    inject: (deps, cb) => {
+      if (deps.includes('tools')) cb({ tools: { register: (t) => (tools.push(t), () => {}) } })
     },
-    inject: (_d, cb) => cb({}),
   }
   apply(ctx)
-  assert.equal(tools.length, 2)
+  assert.equal(tools.length, 2, '就绪后回调必须把两个工具挂上')
 })
 
 test('apply 注册恰好 2 个工具，名字合法且带 execute/render', () => {
@@ -500,39 +502,45 @@ test('宿主没有 skills 服务 / 没有 inject 时 apply 不抛错（工具照
   assert.equal(tools.length, 2)
 })
 
-test('既没有 ctx.get 也没有 ctx.tools：apply 只 warn，不抛（失联也要响）', () => {
+test('既没有 ctx.inject 也没有 ctx.get：apply 只 warn，不抛（失联也要响）', () => {
   const warns = []
   const ctx = { logger: { warn: (m) => warns.push(m) } }
   assert.doesNotThrow(() => apply(ctx))
-  assert.equal(warns.length, 1)
-  assert.match(warns[0], /tools/)
+  assert.ok(warns.some((m) => /tools/.test(m)), '缺 tools 必须留一条 warn')
 })
 
-test('ctx.get 返回 null 但 ctx.tools 在：要退回直取，不能把工具弄丢', () => {
+test('老宿主没有 ctx.inject 时：走 ctx.get 同步探测，绝不碰 ctx.tools 属性', () => {
   const tools = []
   const ctx = {
-    get: () => null, // 宿主登记了 tools 却没给值（或代际差异）——别当结论
-    tools: { register: (t) => (tools.push(t), () => {}) },
-    inject: (_d, cb) => cb({}),
+    get: (n, opt) => {
+      assert.equal(opt, true, 'ctx.get 第二个参数必须是 true（可选）')
+      return n === 'tools' ? { register: (t) => (tools.push(t), () => {}) } : undefined
+    },
+    // 0.3.2 就是这么挂的：未声明 inject 时直接读 ctx.tools 会被 cordis Proxy 抛
+    get tools() {
+      throw new Error('cannot get property "tools" without inject')
+    },
   }
-  assert.doesNotThrow(() => apply(ctx))
-  assert.equal(tools.length, 2, 'ctx.get 给 null 时必须退回 ctx.tools，否则就是 active 但工具消失')
+  assert.doesNotThrow(() => apply(ctx), '绝不能为了兜底去直接读 ctx.tools')
+  assert.equal(tools.length, 2)
 })
 
-test('Cordis 式 ctx.inject：按可选依赖挂技能，deps 只声明 skills', () => {
+test('Cordis 式 ctx.inject：tools 与 skills 各订阅一次，回调里拿作用域服务', () => {
   const tools = []
   const skills = []
   const seen = []
   const ctx = {
-    tools: { register: (t) => (tools.push(t), () => {}) },
-    skills: { register: (s) => (skills.push(s), () => {}) },
+    get: () => undefined,
     inject: (deps, cb) => {
       seen.push(deps)
-      cb(ctx)
+      cb({
+        tools: { register: (t) => (tools.push(t), () => {}) },
+        skills: { register: (s) => (skills.push(s), () => {}) },
+      })
     },
   }
   apply(ctx)
-  assert.deepEqual(seen, [['skills']])
+  assert.deepEqual(seen, [['tools'], ['skills']])
   assert.equal(tools.length, 2)
   assert.equal(skills.length, 1)
   assert.equal(skills[0].name, 'selfloop')
@@ -554,10 +562,10 @@ test('locale 双语 key 完全一致，title 是「权臣」/ Selfloop，描述�
   }
 })
 
-test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.3.2', () => {
+test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.3.3', () => {
   const pkg = readJson('package.json')
   assert.equal(pkg.name, 'dsh-selfloop')
-  assert.equal(pkg.version, '0.3.2')
+  assert.equal(pkg.version, '0.3.3')
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.main, 'lib/index.js')
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
