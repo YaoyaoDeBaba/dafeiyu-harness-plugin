@@ -77,7 +77,34 @@ function walkSchema(node, at, requireAll = false) {
 
 test('插件名与 inject 声明（正名后叫 selfloop）', () => {
   assert.equal(name, 'selfloop')
-  assert.deepEqual(inject, ['tools'])
+  // tools 必须是「可选注入」：宿主某代不暴露 tools 时，插件不应整行不激活（静默不加载）
+  assert.deepEqual(inject, { required: [], optional: ['tools'] })
+})
+
+test('宿主没有 tools 服务时：apply 不抛、工具不注册、但要喊一声', () => {
+  const warns = []
+  const ctx = {
+    get: () => null, // 模拟宿主未登记 tools
+    logger: { warn: (m) => warns.push(m) },
+    inject: (_deps, cb) => cb({ skills: { register: () => () => {} } }),
+  }
+  assert.doesNotThrow(() => apply(ctx))
+  assert.equal(warns.length, 1, '缺 tools 必须留一条 warn（失败要响，不许静默）')
+  assert.match(warns[0], /tools/)
+})
+
+test('宿主暴露 tools 服务时：走 ctx.get 注册两个工具', () => {
+  const tools = []
+  const ctx = {
+    get: (n, opt) => {
+      assert.equal(n, 'tools')
+      assert.equal(opt, true, 'ctx.get 第二个参数必须是 true（可选），否则缺服务会抛')
+      return { register: (t) => (tools.push(t), () => {}) }
+    },
+    inject: (_d, cb) => cb({}),
+  }
+  apply(ctx)
+  assert.equal(tools.length, 2)
 })
 
 test('apply 注册恰好 2 个工具，名字合法且带 execute/render', () => {
