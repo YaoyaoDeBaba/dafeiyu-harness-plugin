@@ -580,10 +580,10 @@ test('locale 双语 key 完全一致，title 是「权臣」/ Selfloop，描述�
   }
 })
 
-test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.3.7', () => {
+test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.3.8', () => {
   const pkg = readJson('package.json')
   assert.equal(pkg.name, 'dsh-selfloop')
-  assert.equal(pkg.version, '0.3.7')
+  assert.equal(pkg.version, '0.3.8')
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.main, 'lib/index.js')
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
@@ -1144,4 +1144,92 @@ test('模板例外：template:true 的字段模板不硬错，返回 template:tr
   const bad = join(dir, 'no-tpl.json')
   writeFileSync(bad, JSON.stringify({ ...good, clientRoot: '' }))
   assert.throws(() => parseAdapter(bad, join(ROOT, 'harness')), /clientRoot（空串/)
+})
+
+// ---------------------------------------------------------------- 第三方 3D 台改造后的示例（0.3.8）
+// 与 C4（字段模板）同一类：示例随包，但这份代表的是「第三方台**改造后**的形态」，不是开箱即用。
+// 守的是两件事：① 中性化没退化（%ENV% + 相对路径、零盘符）；② 真正值钱的三条实测判据没被抄坏。
+const DRIVE_SEP = String.fromCharCode(92)
+const driveLike = (letter) => letter + ':' + DRIVE_SEP // 拼出来：源码里不出现"字母:反斜杠"
+
+function checkThirdParty3d(file) {
+  const text = readFileSync(file, 'utf8')
+  const raw = JSON.parse(text)
+  // ① 中性化：不许有任何盘符（包里那条便携性测试也会红，这里先点死）
+  const driveRe = new RegExp('(?<![A-Za-z0-9])[A-Za-z]:' + DRIVE_SEP + DRIVE_SEP)
+  assert.ok(!driveRe.test(text), '示例里出现了盘符绝对路径（换台机器就跑不了）：' + (driveRe.exec(text)?.[0] ?? ''))
+  assert.equal(raw.clientRoot, '%VFX_LOOP_3D_CLIENT%', 'clientRoot 必须靠环境变量，像 minimal.json 那样')
+  for (const p of [raw.config.path, raw.page.file, raw.server.staticScript]) {
+    assert.ok(p && !isAbsolute(p) && !/^[A-Za-z]:/.test(p), '其余路径全部相对：' + p)
+  }
+  // ② 关键选择：url-time + strict + 扁平回读
+  assert.equal(raw.freeze.protocol, 'url-time', '这个宿主没有 step/playFx，只能 url-time')
+  assert.equal(raw.freeze.clock, 'n/a', 'url-time 没有推进过程，clock 必须是 n/a')
+  assert.equal(raw.freeze.verify, 'strict', '冻帧自检要 strict（同 URL 连拍两张逐字节比）')
+  assert.match(raw.freeze.urlTemplate, /\{sec\}/, 'urlTemplate 必须含 {sec}')
+  assert.equal(raw.config.format, 'flat-params')
+  assert.match(raw.page.readyExpr, /__ready/, 'readyExpr 要有"首帧"标记')
+  assert.match(raw.page.readyExpr, /__cfgLoaded/, 'readyExpr 还要有"配置真落地"标记（少了会抢拍）')
+  assert.match(raw.page.readbackExpr, /params\(\)/, 'readbackExpr 要指向扁平回读接口')
+  // ③ 三条判据的实测阈值：200 档 + 松一档的 warmFrac，不许被抄回默认值
+  assert.deepEqual(raw.metrics.map((m) => m.extract), ['cov', 'bbox', 'warmFrac'], '三条提取器要原样保留')
+  const [cov, bbox, warm] = raw.metrics
+  assert.equal(cov.opts.luma, 200, 'cov 的 luma 必须实测到 200（40 时恒等 0.98）')
+  assert.equal(bbox.opts.luma, 200, 'bbox 的 luma 必须实测到 200（150 时宽度恒 640）')
+  assert.equal(bbox.opts.field, 'w', 'bbox 取宽度（对 length/radius 敏感）')
+  assert.equal(warm.opts.luma, 100)
+  assert.ok(warm.opts.rMin < 140, 'warmFrac 的 rMin 要比提取器默认 140 松（白芯 r/g≈1.05 会被漏掉）')
+  for (const m of raw.metrics) {
+    assert.ok(m.norm?.mode === 'range' && m.norm.range.length === 2, m.id + ' 要有归一区间')
+    assert.ok(m.weight > 0, m.id + ' 权重要 > 0')
+  }
+  // ④ 两条惩罚都指向真实存在的 metric id（缺了 iter.ps1 会报错，这里提前钉住）
+  const ids = raw.metrics.map((m) => m.id)
+  assert.deepEqual(raw.score.penalties.map((p) => p.id), ['noEmber', 'flatFrame'])
+  for (const p of raw.score.penalties) {
+    for (const id of ids) {
+      if (p.when.includes(id)) assert.ok(ids.includes(id))
+    }
+  }
+  assert.match(raw.score.penalties[0].when, /cov/, 'noEmber 要挂在 cov 上')
+  assert.match(raw.score.penalties[1].when, /bboxW/, 'flatFrame 要挂在 bboxW 上')
+  // ⑤ 话要说清：这是改造后的形态，宿主侧还有活要干
+  assert.match(raw.packageNote || '', /不是开箱即用/)
+  assert.match(raw.packageNote || '', /host-adaptation\.md/, '要指到宿主改造清单')
+  // ⑥ 引擎口径：能解析、走 apply_params、协议一致
+  const a = parseAdapter(file, join(ROOT, 'harness'))
+  assert.equal(a.template, false)
+  assert.equal(a.configFormat, 'flat-params')
+  assert.equal(a.freeze.protocol, 'url-time')
+  assert.equal(a.tools.apply.split(/[\\/]/).pop(), 'apply_params.js')
+  assert.ok(a.params.list.length >= 3, '白名单至少三根轴')
+  return { raw, a }
+}
+
+test('T22 examples/third-party-3d.json：中性化没退化、url-time + 扁平参数、三条实测判据、零盘符', () => {
+  const file = join(ROOT, 'examples', 'third-party-3d.json')
+  assert.ok(existsSync(file), 'examples/third-party-3d.json 必须随包（files 里有 examples）')
+  const { a } = checkThirdParty3d(file)
+  // 弄坏能红：三个变异体必须各自被 checkThirdParty3d 拒掉
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-t22-'))
+  const good = JSON.parse(readFileSync(file, 'utf8'))
+  const cases = [
+    ['把冻帧协议改成 noloop-step（宿主没有 step/playFx）', (o) => { o.freeze.protocol = 'noloop-step'; delete o.freeze.stepMs }],
+    ['把第一条 extract 换成 p160（判据被抄坏）', (o) => { o.metrics[0].extract = 'p160' }],
+    ['往 page.file 里塞一个盘符', (o) => { o.page.file = driveLike('D') + 'work' + DRIVE_SEP + 'fxbench' }],
+    ['把 cov 的 luma 抄回提取器默认 40', (o) => { o.metrics[0].opts.luma = 40 }],
+  ]
+  try {
+    for (const [why, mutate] of cases) {
+      const o = structuredClone(good)
+      mutate(o)
+      const p = join(dir, 'mutant.json')
+      writeFileSync(p, JSON.stringify(o, null, 2))
+      assert.throws(() => checkThirdParty3d(p), `弄坏没红：${why}`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+  // probe 也得能读它（对外体检口，别只让 parseAdapter 认）
+  assert.equal(a.freeze.protocol, 'url-time')
 })

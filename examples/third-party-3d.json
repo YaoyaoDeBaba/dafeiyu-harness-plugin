@@ -1,0 +1,149 @@
+{
+  "schema": "closed-loop-adapter/3",
+  "domain": "vfx-render",
+  "topic": "第三方轻量 3D 特效台改造成文件驱动宿主后的形态（火焰射线 Ember Lance 案例）：扁平 params json + ?time=<秒> 自冻。这不是开箱即用的一份 adapter，是先按 skills/selfloop/references/host-adaptation.md 把宿主改好之后的产物。",
+  "name": "example-third-party-3d",
+  "clientRoot": "%VFX_LOOP_3D_CLIENT%",
+
+  "config": {
+    "path": "_dev/fxbench/bench-params.json",
+    "block": "fxbench.ember-lance",
+    "format": "flat-params",
+    "note": "flat-params → 走 apply_params.js。文件是扁平 {params:{...}}，键名必须与页面 PARAMS 完全一致（apply_params 对未知键直接退出码 4，不会静默加死键）。文件由宿主侧新增，是页面 PARAMS 默认值的快照。"
+  },
+
+  "page": {
+    "file": "_dev/fxbench/index.html",
+    "query": "?time={sec}&seed={seed}",
+    "readyExpr": "String(!!(window.__ready === true && window.__cfgLoaded === true))",
+    "readbackExpr": "JSON.stringify(window.bench.params())",
+    "note": "readyExpr 必须双标记：window.__ready = 首帧画完了；window.__cfgLoaded = 配置真的落地了（或明确退回默认值）。只有前者会抢在参数生效之前截图，于是每一轮都在量同一张图。readbackExpr 指向宿主侧新加的扁平回读接口 params()，iter.ps1 拿它逐键比对 want/got，证明参数真被页面吃到。"
+  },
+
+  "freeze": {
+    "protocol": "url-time",
+    "clock": "n/a",
+    "targetTimeMs": 1190,
+    "seed": 17,
+    "urlTemplate": "_dev/fxbench/index.html?time={sec}&seed={seed}",
+    "verify": "strict",
+    "note": "选 url-time 而不是 noloop-step 的理由：这个宿主没有 window.step / window.playFx（noloop-step 要求这两个，iter.ps1 会实测，缺了直接拒），动画本来就是 t+seed 的纯函数，最朴素的路子就是让页面自己按 ?time=<秒> 冻住。?time 的语义是效果时间轴上的秒数（t = time / duration，本案 duration=1.7）——1190ms → 1.19s → t=0.70：射线全长已出、命中冲击球正亮，三块内容都在画面里，判据不会因为「还没打出去」而全零。clock=n/a：url-time 没有推进过程，写 wall/virtual 会被 iter.ps1 拒。verify=strict：同 URL 连拍两张逐字节比，比不过就报错——这是唯一能证明「页面真的吃 ?time=」的硬证据；同时必须有一条「故意不冻」的对照，见 host-adaptation.md。"
+  },
+
+  "target": {
+    "mode": "params",
+    "params": {
+      "length": 8.4,
+      "radius": 0.34,
+      "flow": 12.5,
+      "sphereRadius": 0.46,
+      "haloSize": 0.85,
+      "flameGain": 1.2
+    },
+    "note": "target.mode=params：用这组值渲一张当目标帧（更长更粗更亮的一根），搜索再把这组值猜回来。换真目标图时改成 mode=png + path，别的字段一个字不用动。"
+  },
+
+  "params": {
+    "mode": "list",
+    "list": ["length=5.8", "radius=0.19", "flow=7.2"],
+    "note": "三个起跑值 = 配置里的现值。这三根是先验判断的活旋钮（几何长度 / 粗细 / 轴向流速），正式跑之前仍要做一轮活性扫描；不动的换成 scale 型亮度旋钮（flameGain / haloGain 这类）。"
+  },
+
+  "render": {
+    "tier": "low",
+    "width": 640,
+    "height": 360,
+    "note": "640×360 与浏览器参数里的 --force-device-scale-factor=1 一起把 canvas 钉成 640×360（页面按 clientWidth×dpr 算，dpr=1 才没有 1.5/2 倍抖动）。tier 在 url-time 下没有运行时档位接口可用，iter.ps1 会跳过，不报错。"
+  },
+
+  "server": {
+    "staticPort": 8300,
+    "cdpPort": 9500,
+    "browserProfilePrefix": "prof_3d_",
+    "staticScript": "../static/server.mjs",
+    "bind": "127.0.0.1",
+    "note": "端口故意避开别的示例（8290/9490、8301/9501）。staticScript 相对 harness/ 展开，指包自带静态服（全部 no-store，改完参数刷新就能拿到新 json——对这个宿主是刚需：file:// 下 fetch 会被 CORS 拦，配置根本读不到）。"
+  },
+
+  "browser": {
+    "exe": "",
+    "exeCandidates": [
+      "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe",
+      "%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe",
+      "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe",
+      "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"
+    ],
+    "args": [
+      "--headless=new",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-extensions",
+      "--hide-scrollbars",
+      "--mute-audio",
+      "--disable-gpu-vsync",
+      "--enable-unsafe-swiftshader",
+      "--use-gl=angle",
+      "--use-angle=swiftshader",
+      "--force-device-scale-factor=1",
+      "--window-size={width},{height}",
+      "--remote-debugging-port={cdpPort}",
+      "--user-data-dir={profile}",
+      "about:blank"
+    ],
+    "note": "--use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader 三件套是这类纯 WebGL2 宿主的前提：无头 + 无 GPU 的机器上要拿到 WebGL2 只能走 SwiftShader（实测系统 Edge headless 下 WebGL2 可用、两帧逐字节一致）。不装 playwright、不下 740MB Chromium。"
+  },
+
+  "metrics": [
+    {
+      "id": "cov",
+      "extract": "cov",
+      "opts": { "luma": 200 },
+      "norm": { "mode": "range", "range": [0.004, 0.03] },
+      "weight": 0.35,
+      "note": "亮核面积（只算 luma>200 的炽热部分）。阈值必须实测、不能抄：这个场景整幅天空+地面都在 luma 40~170，luma=40 时 cov 恒等于 0.98（实测），完全没有区分度。"
+    },
+    {
+      "id": "bboxW",
+      "extract": "bbox",
+      "opts": { "luma": 200, "field": "w" },
+      "norm": { "mode": "range", "range": [80, 520] },
+      "weight": 0.3,
+      "note": "亮区横向跨度，对 length / radius 直接敏感（实测 length 5.8→8.6、radius .19→.42 时 277px→303px）。同样必须 luma=200：luma=150 会把地平线那条亮带算进来，bbox 宽度恒为 640（实测），等于没量。"
+    },
+    {
+      "id": "warmFrac",
+      "extract": "warmFrac",
+      "opts": { "luma": 100, "rMin": 120, "rg": 1.1, "gb": 0.85 },
+      "norm": { "mode": "range", "range": [0.02, 0.16] },
+      "weight": 0.35,
+      "note": "暖色占比（色系轴）——火焰射线这类暖色特效唯一能进距离的色维度。参数比提取器默认松一档（rMin 140→120）：爆炸球白芯 r≈255 但 r/g 只有 1.05，卡太死会把最亮的部分漏掉。实测 0.074（默认参数）→0.094（放大后）。"
+    }
+  ],
+
+  "score": {
+    "type": "l1",
+    "penalties": [
+      { "id": "noEmber", "when": "cov <= 0.001 || warmFrac <= 0.004", "add": 0.5 },
+      { "id": "flatFrame", "when": "bboxW <= 40", "add": 0.3 }
+    ],
+    "note": "noEmber：亮核几乎没了（射线没打出来 / 全黑 / 被参数拍到界外）= 主体塌陷，+0.5。flatFrame：横向跨度塌成一个小团（长度被压到接近 0）= 结构没了，+0.3。两个 key 都是上面 metrics 的 id，缺失会直接报错而不是静默不罚。"
+  },
+
+  "tools": {
+    "metricsJs": "metrics2.js",
+    "capture": "capture.mjs",
+    "apply": "apply_params.js"
+  },
+
+  "guard": {
+    "protectPaths": [],
+    "bodyClient": "",
+    "note": "接第三方台时这一节别学成空数组：把**原素材目录**填进来（相对 adapter 目录或 %ENV% 模板都行），本轮纪律是原目录一个字节都不许改。示例里留空是因为包里没有可指向的第三方素材；fixture 宿主（examples/host/）本身就不随包。"
+  },
+
+  "packageNote": "这是第三方台改造后的形态，不是开箱即用：包内不带这份 fixture 宿主（_dev/fxbench/ 与 bench-params.json 都在你自己的现场）。要跑先按 skills/selfloop/references/host-adaptation.md 在宿主侧做三件事——① 参数在页面 init 之前注入（同步 IIFE 的宿主只能在它之前塞，否则输入框已经抄过默认值）；② readyExpr 补上「配置真落地」这个标记；③ 冻结后隐藏所有会变的 DOM、画完一帧就退 rAF。做完再把 clientRoot 指到现场（设 %VFX_LOOP_3D_CLIENT% 或用 selfloop_probe 的 clientRoot 参数）。",
+
+  "retarget": {
+    "note": "换宿主：改 clientRoot / config.path / page.file 三处 → 宿主能吃 ?time= 就是 url-time，有 window.step + playFx 就改 noloop-step（那时要补 freeze.stepMs，clock 写 wall 或 virtual）→ 再按新画面的亮度 / 色系**实测**重挑 metrics 的 luma 阈值与 norm 区间。本份的 200 是从「luma=40 时 cov 恒等于 0.98」这个反例里逼出来的，抄不得。改造清单见 skills/selfloop/references/host-adaptation.md。"
+  }
+}

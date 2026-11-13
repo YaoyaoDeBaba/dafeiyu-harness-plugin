@@ -116,9 +116,12 @@ pwsh -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\vfx-render\
 
 引擎通用部分就上面这些。**具体领域的现场要求、示例 adapter、已知天花板看 `references/domains-vfx.md`**（今天只有一个领域：vfx 渲染）。
 
+第一次接**不是自己的页面**（第三方台、别人做的 demo、你只拿到 dist 的那种）：先做宿主改造，再看领域文档。改造清单在 `references/host-adaptation.md`（参数提前注入 / readyExpr 双标记 / 隐藏会变的 DOM / 冻完就退 rAF / 扁平回读接口），改造完的 adapter 形态看 `examples/third-party-3d.json`。
+
 references 一览：
 
 - `references/workflow.md` —— 五步流程、活性扫描五分法、每步的判据与失败含义
 - `references/metrics.md` —— 指标定义、跨工具换算、底噪、档位表
 - `references/pitfalls.md` —— 按症状查坑（构建 / 参数 / 测量 / 传递）
+- `references/host-adaptation.md` —— 新宿主怎么接：五步改造、阈值实测、冻帧协议怎么选、反证要求
 - `references/domains-vfx.md` —— vfx-render 领域：现场怎么接、三份 adapter、进程卫生、题目外的话

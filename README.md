@@ -42,6 +42,7 @@
 | 自带静态服（不再依赖外部临时静态脚本） | `static/server.mjs` |
 | 首个领域的 3 份示例适配器（火焰射线 / 闪电链 / url-time demo） | `domains/vfx-render/adapters/` |
 | 一份不绑任何项目的最小示例（自己写 adapter 就从它改） | `examples/minimal.json` |
+| 第三方台改造后的示例（**不是开箱即用**：宿主侧要先按 `skills/selfloop/references/host-adaptation.md` 做五步改造） | `examples/third-party-3d.json` |
 | `selfloop` 技能（宿主有 `ctx.skills` 时自动注册） | `skills/selfloop/` |
 
 **这个插件不跑闭环**：工具只读文件，不起浏览器、不开端口、不花预算。真跑一轮是 `harness/iter.ps1` 的事。
@@ -195,11 +196,12 @@ domains/vfx-render/adapters/     首个领域的 3 份示例适配器
 domains/vfx-render/README.md     首个领域说明（观测/判定/搜索怎么落地）
 harness/                         执行器：跑一轮的必需件（见下；改动要进 CHANGELOG 并同步上游原件）
 examples/minimal.json            不绑任何项目的最小 adapter（自己写就从它改）
+examples/third-party-3d.json     第三方台改造后的形态（要跑得先改造宿主，见 references/host-adaptation.md）
 static/server.mjs                静态服：node server.mjs <root> <port> [host]
-skills/selfloop/                 技能：SKILL.md + references/（通用方法 + domains-vfx.md）
+skills/selfloop/                 技能：SKILL.md + references/（通用方法 + 宿主改造 + domains-vfx.md）
 locale/{zh,en}.json              插件清单里的标题与描述（权臣 / Selfloop）
 CHANGELOG.md                     改动记录（随包分发，`files` 里有它）
-test/plugin.test.mjs             54 个用例（不进包）
+test/plugin.test.mjs             55 个用例（不进包）
 ```
 
 `harness/` 里逐件的作用：
