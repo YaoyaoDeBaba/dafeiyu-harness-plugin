@@ -580,10 +580,10 @@ test('locale 双语 key 完全一致，title 是「权臣」/ Selfloop，描述�
   }
 })
 
-test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.3.4', () => {
+test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.3.5', () => {
   const pkg = readJson('package.json')
   assert.equal(pkg.name, 'dsh-selfloop')
-  assert.equal(pkg.version, '0.3.4')
+  assert.equal(pkg.version, '0.3.5')
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.main, 'lib/index.js')
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
@@ -803,6 +803,27 @@ test('T16 target.mode=params 但 params 为空：一条 warning，不抛', () =>
   const ok = parseAdapter(join(ADAPTER_DIR, 'fire-ray.json'), join(ROOT, 'harness'))
   assert.deepEqual(ok.target.params, { widthPx: 30, distM: 8 })
 })
+
+test('T16b probe 的 clientRoot 参数能盖掉环境变量（宿主继承不到 %VFX_LOOP_CLIENT%）', () => {
+  // 弄坏能红：把 opts.clientRoot 去掉 → 两条都红（第二条会多出"环境变量没设置"告警）
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-cr-'))
+  mkdirSync(join(dir, 'resource', 'lab', 'vfx'), { recursive: true })
+  writeFileSync(join(dir, 'resource', 'lab', 'vfx', 'vfx.json'), JSON.stringify({ effects: { FireRay: { blk: {} } } }))
+  const file = join(ADAPTER_DIR, 'fire-ray.json')
+
+  const a = parseAdapter(file, join(ROOT, 'harness'), { clientRoot: dir })
+  assert.equal(a.clientRoot, dir)
+  assert.equal(a.configFileExists, true, '覆盖之后要真的指到配置文件')
+  assert.ok(a.warnings.some((w) => /显式覆盖/.test(w)), '覆盖这件事要留一句账')
+  assert.ok(!a.warnings.some((w) => /clientRoot 里的环境变量/.test(w)), 'clientRoot 覆盖了就不该再报它那条环境变量')
+  // 注意：fire-ray 的 guard.protectPaths 里还有 %VFX_LOOP_BODY_CLIENT%，那条该继续报（别误伤）
+
+  // 相对路径不接受：没有可靠基准
+  assert.throws(() => parseAdapter(file, join(ROOT, 'harness'), { clientRoot: 'client' }), /绝对路径/)
+  // 不存在的路径也不接受：宁可不给，别给一个假现场
+  assert.throws(() => parseAdapter(file, join(ROOT, 'harness'), { clientRoot: join(dir, 'nope') }), /不存在/)
+})
+
 
 test('T17 probe 输出 schema 说得出 template / guard / target / params（新键全进 required）', async () => {
   // 弄坏能红：只加 property 不加 required → walkSchema(requireAll) 那条（以及下面逐键点名）红

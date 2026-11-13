@@ -51,6 +51,7 @@
 解析一份 adapter.json 描述的现场，返回：`domain`（所属领域）/ `clientRoot` / 配置文件路径与是否存在 / 参数块 / 冻帧协议（`noloop-step` | `url-time`，含 clock、步长、冻结时刻、seed）/ 视口档位 / 端口 / **判据口径**（每条指标 = 提取器 + 权重 + 归一区间 + 是否启用）/ 距离公式与惩罚项 / 目标与白名单来源（`target` / `params`）/ `template`（是不是字段模板）/ `guard`（`protectPaths` + `enforced`）/ 包内 harness 是否齐全 / `warnings`。
 
 - `adapter`：adapter.json 的**绝对路径**；省略时读包内 `domains/vfx-render/adapters/fire-ray.json`
+- `clientRoot`：可选，**绝对路径**，直接盖掉 adapter 里的 `clientRoot` / `%VFX_LOOP_CLIENT%`。宿主进程常常继承不到那条环境变量（用户在自己 shell 里设的），这个参数就是为它准备的——省掉「设变量 + 重启宿主」；必须真实存在，相对路径和不存在都直接报错。
 - 硬错（缺 `name`/`clientRoot`/`config`/`page`/`freeze`/`render`/`server`、`freeze.protocol` 不认、`config.format` 不认、`noloop-step` 缺 `stepMs`、`clock` 口径不对）**与 `iter.ps1` 的 `Import-Adapter` 同口径**，不多拦
 - 能解析但开跑会炸的（配置文件不在、浏览器没装、脚本指不到、`score.type` 不是 `l1`）只进 `warnings`，不当错误
 - `guard.protectPaths` 没写只 warn（`enforced:false`），不当错误——但这时改参脚本没有"拒写本体"的保护
@@ -195,7 +196,7 @@ examples/minimal.json            不绑任何项目的最小 adapter（自己写
 static/server.mjs                静态服：node server.mjs <root> <port> [host]
 skills/selfloop/                 技能：SKILL.md + references/（通用方法 + domains-vfx.md）
 locale/{zh,en}.json              插件清单里的标题与描述（权臣 / Selfloop）
-test/plugin.test.mjs             52 个用例（不进包）
+test/plugin.test.mjs             53 个用例（不进包）
 ```
 
 `harness/` 里逐件的作用：
@@ -256,7 +257,7 @@ test/plugin.test.mjs             52 个用例（不进包）
 
 ```powershell
 cd <包目录>
-node test/plugin.test.mjs      # 52 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）、写护栏（段边界/大小写/junction/端到端拒写）
+node test/plugin.test.mjs      # 53 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）、写护栏（段边界/大小写/junction/端到端拒写）
 ```
 
 测试不起宿主、不装 profile、不开端口、不跑产线。

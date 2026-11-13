@@ -194,7 +194,7 @@ export function distanceRule(scoreType) {
 }
 
 // 解析一份 adapter；harnessDir 用来展开 server.staticScript / tools.* 这些"相对 harness 的"路径
-export function parseAdapter(file, harnessDir) {
+export function parseAdapter(file, harnessDir, opts = {}) {
   const a = readJsonFile(file)
   // 模板例外（template:true）：包内 harness/adapter.json 是**字段模板**，name / clientRoot / config.path /
   // config.block / page.file 都是有意留空的。拿"缺字段（空串）"硬错去拦它，用户看到的只会是
@@ -273,12 +273,20 @@ export function parseAdapter(file, harnessDir) {
   }
   const adapterDir = resolve(file, '..')
   const clientRootRaw = String(a.clientRoot ?? '')
+  // 显式覆盖（probe 的 clientRoot 参数）：宿主进程常常看不到 %VFX_LOOP_CLIENT% —— 那条环境变量是
+  // 用户在自己的 shell 里设的，插件进程不一定继承。这时允许直接给绝对路径，省掉"设变量/重启宿主"这一步。
+  const override = String(opts?.clientRoot ?? '').trim()
+  if (override && !isAbsolute(override)) fail(`clientRoot 覆盖值必须是绝对路径（收到 ${override}）—— 相对路径没有可靠的基准，不如不给`)
+  if (override && !existsSync(override)) fail(`clientRoot 覆盖值不存在：${override}`)
   // 空串 ≠ %环境变量% 没展开：
   //   空串 = 这份 adapter 少写了一个必填项 → 硬错（与 iter.ps1 Import-Adapter 同口径）；
   //   "%NOPE_X%" = 机器上还没设变量 → 只记账（老测试钉住了这条：probe 不该因为没设变量就拒绝解析）。
   if (!isTemplate && !clientRootRaw.trim()) fail(`adapter 缺字段：clientRoot（空串，${file}）—— 写 client 根目录，或 %ENV% 模板`)
-  const clientRoot = resolveWithWarn(adapterDir, clientRootRaw, 'clientRoot', warnings)
-  if (clientRoot && !isAbsolute(clientRootRaw)) {
+  let clientRoot = override || resolveWithWarn(adapterDir, clientRootRaw, 'clientRoot', warnings)
+  if (override) {
+    warnings.push(`clientRoot 用了显式覆盖：${override}（adapter 里写的是 ${clientRootRaw || '（空）'}；环境变量那条不再检查）`)
+  }
+  if (clientRoot && !override && !isAbsolute(clientRootRaw)) {
     warnings.push(`clientRoot 是相对路径（${clientRootRaw}）：按 adapter 所在目录展开成 ${clientRoot}（iter.ps1 同口径）`)
   }
   // clientRoot 没解析出来（通常是 %环境变量% 没设）时不要拿 cwd 去拼一个假路径骗人
