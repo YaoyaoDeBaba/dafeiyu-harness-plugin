@@ -1,0 +1,178 @@
+# dsh-vfx-loop
+
+> **① Windows 专用**｜harness 基于 PowerShell + Edge/Chromium（`taskkill`、`Win32_Process`、`Get-NetTCPConnection`）。Mac/Linux 会在**入口直接报错退出**（`本适配器需要 Windows（harness 基于 PowerShell + Edge）；当前平台 <xxx> 不受支持。`），不会跑到一半才炸。上游已定案：**不把 .ps1 重写成 Node**（.ps1 是产品资产，重写几千行只换"理论上能跑 Linux"，不划算）。
+>
+> **② Node ≥ 22.19**｜`engines.node` = `^22.19.0 || >=24.0.0`。
+>
+> **③ 首次运行要下载浏览器**｜Playwright Chromium 约 **740 MB**（只装 headless shell 约 **290 MB**）；用系统 Edge 则**零下载**。失败怎么办 → 见下一节「首装成本与失败处理」。
+
+VFX 闭环产线的 DSH 插件（P4 可安装版）。装上之后你得到：
+
+| 得到什么 | 在哪 |
+|---|---|
+| 两个只读工具 `vfx_probe` / `vfx_list_adapters` | 模型侧工具目录 |
+| 跑一轮的必需件（`iter.ps1` + 7 个伴生脚本 + 默认 adapter + 适配层字段说明） | `harness/` |
+| 自带静态服（替掉对项目根 `_tmp_static.js` 的依赖） | `static/server.mjs` |
+| 3 份示例适配器（火焰射线 / 闪电链 / url-time demo） | `adapters/` |
+| `vfx-closed-loop` 技能（宿主有 `ctx.skills` 时自动注册） | `skills/vfx-closed-loop/` |
+
+**这个插件不跑产线**：工具只读文件，不起浏览器、不开端口、不花预算。真跑一轮是 `harness/iter.ps1` 的事。
+
+## 首装成本与失败处理（细节）
+
+这个包不带浏览器二进制，第一轮跑产线需要本机有一个浏览器，两条路：
+
+| 路线 | 一次性成本 | 落到哪 |
+|---|---|---|
+| **Edge 引擎（默认）** | **0 MB**，用系统已装的 msedge | 已在 `%ProgramFiles(x86)%` / `%ProgramFiles%` 里 |
+| Playwright 自带 Chromium | **约 740 MB**（只要无头版 **约 290 MB**），耗时数分钟 | 用户级缓存 `%LOCALAPPDATA%\ms-playwright`，可被多个 Playwright 工具共用 |
+
+装 Chromium（只有想用 `--engine playwright` / `DSH_CAPTURE_ENGINE=playwright` 才需要）：
+
+```powershell
+cd <包目录>
+npx playwright install chromium               # 约 740 MB
+npx playwright install --only-shell chromium   # 只要无头版，约 290 MB
+```
+
+**下载失败了怎么办**（这几种都有明确报错，不会静默降级）：
+
+| 症状 | 怎么办 |
+|---|---|
+| `npx playwright install` 卡在 0% / 超时 / `ECONNRESET` | 设镜像再重试：`$env:PLAYWRIGHT_DOWNLOAD_HOST='<你的镜像地址>'`，然后重跑上面那条 |
+| 报 `Executable doesn't exist at ...` | 就是没装成：重跑 `npx playwright install chromium`；磁盘满了先清 `%LOCALAPPDATA%\ms-playwright` |
+| 报 `playwright 加载失败` | 依赖没装上：在包目录 `npm install` 或交给 `install_bundle` |
+| 公司网/代理拦 npm | 配 `npm config set proxy` / `https-proxy`，或直接走 Edge 引擎（零下载） |
+
+**下载失败会在返回里说人话**：`vfx_probe` 在没找到 Chromium 时会把「多大 / 怎么补 / 不装怎么办」写进 `warnings`；
+`harness/capture.mjs` 起浏览器失败时也会把同样的中文原因与补救提示直接回给调用方（不是只写进某个 `.log`）。
+
+## 便携性：包内没有本机绝对路径
+
+包要能搬走，所以 adapter 里的路径全是**模板**，运行时展开（`iter.ps1` 与 `lib/adapter.js` 同一口径）：
+
+| 模板 | 含义 |
+|---|---|
+| `%VFX_LOOP_CLIENT%` | **你自己的 client 根目录**（`_镜像\<分支>\client` 那种），示例 adapter 的 `clientRoot` 就是它 |
+| `%VFX_LOOP_BODY_CLIENT%` | 可选：本体 client 目录，填了才做「本体 vfx.json 前后哈希一致」的守卫 |
+| `%VFX_LOOP_DEMO_HOST%` | 只给 `demo-url-time.json` 用：那个 demo 宿主页面所在目录 |
+| `%ProgramFiles(x86)%` / `%ProgramFiles%` / `%LOCALAPPDATA%` | 浏览器候选路径 |
+
+用法：设一次环境变量就能跑，**不用改包里的文件**（包里也没有可改的本机路径了）：
+
+```powershell
+$env:VFX_LOOP_CLIENT = '<你的 client 根目录>'
+# 或者不改环境变量，直接命令行给：
+pwsh -NoProfile -File <包目录>\harness\iter.ps1 -Adapter <包目录>\adapters\fire-ray.json -Mirror '<你的 client 根目录>' -Budget 20 -Out <输出目录>
+```
+
+`-Root`（旧语义"项目根"）**默认空**：运行时按 `命令行 > adapter.clientRoot 的上级 > $PSScriptRoot\..` 推导，推不出来就中文报错。
+
+
+## 工具
+
+### `vfx_probe { adapter? }`
+
+解析一份 adapter.json 描述的渲染现场，返回：`clientRoot` / 配置文件路径与是否存在 / 参数块 / 冻帧协议（`noloop-step` | `url-time`，含 clock、步长、冻结时刻、seed）/ 视口档位 / 端口 / **指标口径**（每条指标 = 提取器 + 权重 + 归一区间 + 是否启用）/ 距离公式与惩罚项 / 包内 harness 是否齐全 / `warnings`。
+
+- `adapter`：adapter.json 的**绝对路径**；省略时读包内 `adapters/fire-ray.json`
+- 硬错（缺 `name`/`clientRoot`/`config`/`page`/`freeze`/`render`/`server`、`freeze.protocol` 不认、`config.format` 不认、`noloop-step` 缺 `stepMs`、`clock` 口径不对）**与 `iter.ps1` 的 `Import-Adapter` 同口径**，不多拦
+- 能解析但开跑会炸的（配置文件不在、浏览器没装、脚本指不到、`score.type` 不是 `l1`）只进 `warnings`，不当错误
+
+### `vfx_list_adapters {}`
+
+列出包内适配器：题材、参数块、冻帧协议、档位、指标条数，以及**现在能不能跑**（`runnable` = `clientRoot` 指得到配置文件）。示例里的 `clientRoot` 是 `%VFX_LOOP_CLIENT%` 模板，没设那个环境变量时 `runnable=false` 且 reason 会说清是哪个变量没设。
+
+## 安装
+
+产物是一个 npm 包（`npm pack` 出的 tgz）或一个目录。两条正路：
+
+1. **界面**：DSH → **Plugins** → **Add plugin** → 选这个目录（或解压后的目录）
+2. **有 `plugin_manager` 工具的会话**：`install_bundle`，`target` 传该包的绝对目录
+
+`install_bundle` 会做包安装与 bundle 选中，别手动改 profile 的 `package.json` / `cordis.patch.yml`、别在 profile 目录里跑 pnpm。
+
+**装完要不要重启？** 新装一个 bundle 一般靠 HMR 就生效，**但工具列表要开新会话才稳**（当前会话的 tool set 已经组装好了）。只有"替换掉一个已装的同版本包"才必须重启 DSH（要加载新的 JS 模块代）。
+
+`dependencies.playwright` 是运行期依赖：`install_bundle` 会顺带 `npm install`（约 18.2 MB，需要能访问 npm registry）。浏览器二进制**不在**这一步，见下。
+
+## 首次要做的三件事
+
+1. **给 `clientRoot` 赋值**：包内 3 份示例都写 `%VFX_LOOP_CLIENT%`，设环境变量即可（见上面「便携性」），不用改包。
+   其余字段已经是包内相对路径（`server.staticScript` → `../static/server.mjs`，`tools.metricsJs` → `metrics2.js`），也不用改。
+   `guard.bodyClient` 默认空 = 不做本体守卫（报告里会明写 `n/a`，绝不假装比过）；要守卫就给它赋值。
+2. **准备浏览器**（二选一）：
+   - **Edge 引擎（默认，零下载）**：`adapters/*.json` 的 `browser.exeCandidates` 已经是 `%ProgramFiles(x86)%` / `%ProgramFiles%` 模板，本机装了 Edge 就命中
+   - Playwright 自带 Chromium：`npx playwright install chromium`（约 740 MB；只要无头 `npx playwright install --only-shell chromium` 约 290 MB）
+3. **跑一轮**：
+   ```powershell
+   pwsh -NoProfile -File <包目录>\harness\iter.ps1 `
+     -Adapter <包目录>\adapters\fire-ray.json -Budget 20 -Out <你自己的输出目录>
+   ```
+   三个输入就够：adapter + 预算 + 输出目录。目标是 png / 参数 / 默认帧都在 adapter 的 `target` 节里。
+
+## 浏览器进程卫生（宿主被强杀也不会留孤儿）
+
+`harness/capture.mjs` 有三条守卫（评审 §4.1）：
+
+1. **父进程死亡看门狗**：浏览器旁边挂一个独立 pwsh 小进程，**每 10 秒**查一次"父进程还在吗"，父没了就 `taskkill /T /F` 杀整棵树 + 按 `--user-data-dir` 补刀剩下的 renderer/gpu。
+   实测注意：`spawn(pwsh, …, { detached: true })` 在 Windows 上会**立刻退出、一行都不执行**，所以这里用 `detached: false`；也不用 `cmd` 批处理（`stdio: 'ignore'` 时管道会挂死）。
+2. **关闭时杀整棵树**：`browser.close()` 只是"请求"，带不走 renderer/gpu，所以再按 PID `taskkill /T /F`。
+3. **启动时清孤儿**：只杀「`--user-data-dir` 指向**本包的 profile 根**」**且**「父进程已不存在」的进程。
+   **判据是"父进程/连接没了"，不是"跑了多久"** —— 一次完整产线单步就可能 30~90 秒，按时间硬杀会误伤正在干活的会话。
+
+profile 落在 `%TEMP%\dsh-vfx-loop\`（可用 `-ProfileRoot` 或 `server.profileRoot` 改），**不落在包目录里**（装成 node_modules 后可能只读，而且清孤儿需要一个只属于本包的临时目录来圈范围）。
+
+## 目录
+
+```
+lib/index.js         两个工具 + 技能注册（入口，exports "."）
+lib/adapter.js       adapter 解析与口径（硬错口径对齐 iter.ps1）
+static/server.mjs    静态服：node server.mjs <root> <port> [host]（与项目根 _tmp_static.js 同签名）
+adapters/            3 份示例适配器
+harness/             跑一轮的必需件（见下）
+skills/              vfx-closed-loop 技能（SKILL.md + 3 篇 references）
+locale/{zh,en}.json  插件清单里的标题与描述
+```
+
+`harness/` 里逐件的作用：
+
+| 文件 | 作用 |
+|---|---|
+| `iter.ps1` | 主循环：解析 adapter → 起静态服 → 冻帧 → 搜索 → 出证据包（934 行） |
+| `capture.ps1` | 浏览器边界的 PowerShell 半边（NDJSON 管道，被 iter.ps1 dot-source） |
+| `capture.mjs` | 浏览器边界的 Node 半边（edge / playwright 两个引擎，7 个命令） |
+| `score.js` | 距离：`d = Σ(nd×w)/Σw + Σpenalty.add` |
+| `metrics2.js` | 指标提取（png → cov/lapVar/warmFrac/coldFrac/covCore/ratioCore） |
+| `finalize.js` | 收尾：`curve.csv` / `best.json` / `report.md` |
+| `apply.js` | 改参：`vfx-block` 形态（vfx.json 的 `effects.<E>.<B>`） |
+| `apply_params.js` | 改参：`flat-params` 形态（扁平 `{params:{...}}`） |
+| `adapter.json` | `iter.ps1` 不带 `-Adapter` 时的默认适配层 |
+| `适配层-说明.md` | adapter 字段语义（v3 全部字段 + 优先级） |
+| `package.json` | **只做一件事**：把这一层钉成 `"type": "commonjs"`。包根是 `"type": "module"`，而 `score/metrics2/finalize/apply/apply_params` 是照抄的 CommonJS 原件（`require`），不钉的话 node 会当 ESM 跑，报 `require is not defined`（实测过） |
+
+这 11 个文件里，`score.js` / `metrics2.js` / `finalize.js` / `apply.js` / `apply_params.js` / `适配层-说明.md` 六件仍与 `_资产\lab\harness\`（稳定版）**逐字节相同**（SHA256 对得上）；本轮整改只动了 `iter.ps1` / `capture.ps1` / `capture.mjs` / `adapter.json`（清绝对路径 + 孤儿守卫 + profile 根），另加了一个 4 行的 `package.json`。
+
+## 已知限制
+
+1. **Windows 专用，Mac/Linux 跑不了（入口直接拒绝）**：`iter.ps1` / `capture.ps1` 是 PowerShell；`iter.ps1` 用 `Get-NetTCPConnection`（Windows 专有），`capture.mjs` 的进程收尾用 `Win32_Process` 扫描 + `taskkill`。
+   三个入口各有一道平台守卫：`iter.ps1`（`$IsWindows`，非 Windows → 一行中文错误 + `[Environment]::Exit(2)`；用 `exit 2` 在 `&` 调用下会变 1，实测）、`capture.ps1`（dot-source 场景用 `throw`，避免 `exit` 连带关掉调用方）、`capture.mjs`（`process.platform !== 'win32'` → `start` 直接回 `ok:false`）。
+   `score.js` / `metrics2.js` / `finalize.js` / `apply*.js` / `static/server.mjs` 都是纯 Node，跨平台没问题。**不做跨平台重写**（上游已定案）。
+2. **Chromium 不在包里**：740 MB 在用户级缓存（可被多个 Playwright 工具共用），只要无头版约 290 MB。要"随包分发"得用 `PLAYWRIGHT_BROWSERS_PATH=0`（包目录 +740 MB），**本版没做**。默认的 Edge 引擎零下载。
+3. **只验到工具层**：`vfx_probe` / `vfx_list_adapters` 的返回结构、硬错口径、harness 齐全性都有测试；但"装进真 profile 后工具在会话目录里出现"**未验证**（本轮纪律不装 profile）。
+4. **技能注册依赖 `ctx.skills`**：宿主没挂 skills 服务时静默跳过（两个工具照常）。此时 `skills/` 里的文件仍在包内，可手工拷到 `.dsh\skills\`。
+5. **`demo-url-time.json` 只是格式示例**：它的 `clientRoot` 是 `%VFX_LOOP_DEMO_HOST%`，包里**不带**那个 demo 宿主页面。设了那个变量 `runnable=true`，否则 `false`。它的价值是示范 `url-time` 协议 + `flat-params` 形态长什么样。
+6. **`icon.png` 是占位**（256×256，806 B），只保证能解析、不超 256 KiB。
+7. **`engines.dsh` 只写下界** `>=0.2.1-rc.2`（本机实测 0.2.2-rc.2）。跨 0.3 未验证。
+8. **没写 `meta.detail`**：插件详情页回退到本 README。
+9. **包内零本机绝对路径**，并且有测试钉住（`test/plugin.test.mjs` 会全文扫「盘符+冒号+反斜杠」那种本机路径，命中就红）；日志文件也不许进包（`files` 里有 `!**/*.log`）。
+10. **`package.json` 保留 `"private": true`（写清原因）**：本包的装机形态是「目录 / `git+https`」，不依赖 npm registry；`npm publish` 属于发版动作，改这一行要和"改 profile pin + 重启宿主"同一窗口做。真要发 npm：删掉 `private` 并加 `publishConfig.access`。
+
+## 测试
+
+```powershell
+cd <包目录>
+node test/plugin.test.mjs      # 22 个用例：schema/返回值互验、harness 齐全、adapter 可解析、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫
+```
+
+测试不起宿主、不装 profile、不开端口、不跑产线。

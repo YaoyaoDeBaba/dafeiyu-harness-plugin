@@ -1,0 +1,108 @@
+{
+  "schema": "closed-loop-adapter/2",
+  "topic": "闪电链 / 雷光球（冷色分叉型）：分叉细节 + 冷色占比（火柱的 warmFrac 在这支恒为 0，换 coldFrac）",
+  "packageNote": "随插件分发版：server.staticScript / tools.metricsJs 用相对 harness/ 的包内路径；clientRoot 用 %VFX_LOOP_CLIENT% 模板，浏览器候选用 %ProgramFiles(x86)%/%ProgramFiles% 模板。包内零本机绝对路径。",
+  "name": "fanren-lab-chain-lightning",
+  "clientRoot": "%VFX_LOOP_CLIENT%",
+  "config": {
+    "path": "resource/lab/vfx/vfx.json",
+    "block": "effects.ChainLightning.bolt"
+  },
+  "page": {
+    "file": "_dev/mergeProbe.html",
+    "query": "?seed={seed}",
+    "readyExpr": "String(!!(window.__ready === true && window.__t3_stale === undefined && document.readyState === \"complete\"))"
+  },
+  "freeze": {
+    "protocol": "noloop-step",
+    "stepMs": 16,
+    "targetTimeMs": 80,
+    "seed": 12345
+  },
+  "render": {
+    "tier": "ultra",
+    "width": 640,
+    "height": 360
+  },
+  "server": {
+    "staticPort": 8281,
+    "cdpPort": 9481,
+    "browserProfilePrefix": "prof_p25_chain_",
+    "staticScript": "../static/server.mjs",
+    "bind": "127.0.0.1"
+  },
+  "browser": {
+    "exe": "",
+    "exeCandidates": [
+      "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe",
+      "%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe",
+      "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe",
+      "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"
+    ],
+    "args": [
+      "--headless=new",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-extensions",
+      "--hide-scrollbars",
+      "--mute-audio",
+      "--disable-gpu-vsync",
+      "--enable-unsafe-swiftshader",
+      "--use-gl=angle",
+      "--use-angle=swiftshader",
+      "--force-device-scale-factor=1",
+      "--window-size={width},{height}",
+      "--remote-debugging-port={cdpPort}",
+      "--user-data-dir={profile}",
+      "about:blank"
+    ]
+  },
+  "metrics": [
+    {
+      "id": "cov",
+      "extract": "cov",
+      "opts": { "luma": 40 },
+      "norm": { "mode": "range", "range": [0, 0.2] },
+      "weight": 0.35,
+      "note": "亮区面积：管体积/粗细/长度（替代火柱的 prof 槽位）"
+    },
+    {
+      "id": "lapVar",
+      "extract": "lapVar",
+      "opts": { "luma": 40 },
+      "norm": { "mode": "range", "range": [40, 1500] },
+      "weight": 0.35,
+      "note": "细节能量：管分支/毛刺；本支目标 952、起点 1656，跨度取 [40,1500]（火柱那套 [200,4000] 会把本支的 d 压成噪声）"
+    },
+    {
+      "id": "tone",
+      "extract": "coldFrac",
+      "opts": { "luma": 20, "delta": 8 },
+      "norm": { "mode": "range", "range": [0, 0.15] },
+      "weight": 0.3,
+      "note": "色温：冷色占比（b>r+8）。火柱的 warmFrac 在本支 40 帧里恒为 0，整维失效 → 换这个"
+    }
+  ],
+  "score": {
+    "type": "l1",
+    "penalties": [
+      {
+        "id": "coreGone",
+        "when": "ratioCore <= 0 || covCore < 0.5 * T.covCore",
+        "add": 0.5,
+        "note": "核心塌陷闸门（沿用火柱语义）：雷光球没落地时触发"
+      }
+    ]
+  },
+  "tools": {
+    "metricsJs": "metrics2.js",
+    "capture": "capture.mjs"
+  },
+  "guard": {
+    "bodyClient": "",
+    "note": "本体守卫：填你自己的本体 client 目录（或 %VFX_LOOP_BODY_CLIENT% 模板）才做前后哈希对比；留空 = 不做并明说 n/a。"
+  },
+  "retarget": {
+    "note": "闪电链实例。与 fire-ray.json 只差 8 个字段：name / config.block / freeze.targetTimeMs(320→80) / render.tier(low→ultra) / server.staticPort+cdpPort / server.browserProfilePrefix / metrics 第三节 extract(warmFrac→coldFrac)+range / retarget.note。代码零改动。"
+  }
+}

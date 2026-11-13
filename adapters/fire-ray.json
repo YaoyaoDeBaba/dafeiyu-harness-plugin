@@ -1,0 +1,121 @@
+{
+  "schema": "closed-loop-adapter/3",
+  "topic": "火焰射线 / 火柱（暖色体积型）：粗细长短 + 亮面积 + 暖色占比，本项目基准题材",
+  "packageNote": "随插件分发版：server.staticScript / tools.metricsJs 用相对 harness/ 的包内路径；clientRoot 用 %VFX_LOOP_CLIENT% 模板（= 你自己 client 根目录），浏览器候选用 %ProgramFiles(x86)%/%ProgramFiles% 模板。包内零本机绝对路径，换机器只设环境变量，不改包。",
+  "name": "fanren-lab-fire-ray",
+  "clientRoot": "%VFX_LOOP_CLIENT%",
+  "config": {
+    "path": "resource/lab/vfx/vfx.json",
+    "block": "effects.FireRay.fireBeamG1M1",
+    "format": "vfx-block"
+  },
+  "page": {
+    "file": "_dev/mergeProbe.html",
+    "query": "?seed={seed}",
+    "readyExpr": "String(!!(window.__ready === true && window.__t3_stale === undefined && document.readyState === \"complete\"))"
+  },
+  "freeze": {
+    "protocol": "noloop-step",
+    "clock": "virtual",
+    "stepMs": 16,
+    "targetTimeMs": 320,
+    "seed": 12345,
+    "note": "clock=virtual：推进前把 performance.now 换成每调用 +16ms 的虚拟钟。火柱走 M2_G1Passthrough 直通层，它的 uTime 是墙上时间（M2_G1Passthrough.js:636-660），不冻就会两次跑差一个 16ms 量子、决策指纹不稳。"
+  },
+  "target": {
+    "mode": "params",
+    "params": { "widthPx": 30, "distM": 8.0 },
+    "note": "P2.6：目标帧从命令行搬进配置。等价于 P2.5 的 -Target targets\\GC.json（同一个参数渲染出来的帧）。"
+  },
+  "params": {
+    "mode": "list",
+    "list": ["widthPx", "distM"],
+    "note": "P2.6：白名单从命令行搬进配置。等价于 P2.5 的 -Params widthPx,distM（初值取块内现值）。"
+  },
+  "render": {
+    "tier": "low",
+    "width": 640,
+    "height": 360
+  },
+  "server": {
+    "staticPort": 8290,
+    "cdpPort": 9490,
+    "browserProfilePrefix": "prof_p26_fire_",
+    "staticScript": "../static/server.mjs",
+    "bind": "127.0.0.1"
+  },
+  "browser": {
+    "exe": "",
+    "exeCandidates": [
+      "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe",
+      "%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe",
+      "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe",
+      "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"
+    ],
+    "args": [
+      "--headless=new",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-extensions",
+      "--hide-scrollbars",
+      "--mute-audio",
+      "--disable-gpu-vsync",
+      "--enable-unsafe-swiftshader",
+      "--use-gl=angle",
+      "--use-angle=swiftshader",
+      "--force-device-scale-factor=1",
+      "--window-size={width},{height}",
+      "--remote-debugging-port={cdpPort}",
+      "--user-data-dir={profile}",
+      "about:blank"
+    ]
+  },
+  "metrics": [
+    {
+      "id": "cov",
+      "extract": "cov",
+      "opts": { "luma": 40 },
+      "norm": { "mode": "range", "range": [0, 0.3] },
+      "weight": 0.35,
+      "note": "亮区面积：管体积/粗细/长度（火柱的主形状轴）"
+    },
+    {
+      "id": "lapVar",
+      "extract": "lapVar",
+      "opts": { "luma": 40 },
+      "norm": { "mode": "range", "range": [200, 4000] },
+      "weight": 0.35,
+      "note": "细节能量：管结构/毛刺；火柱好档实测 1214~3799，跨度取 [200,4000]"
+    },
+    {
+      "id": "tone",
+      "extract": "warmFrac",
+      "opts": { "luma": 80, "rMin": 140, "rg": 1.15, "gb": 0.9 },
+      "norm": { "mode": "range", "range": [0, 0.55] },
+      "weight": 0.3,
+      "note": "色温：暖色占比（火柱最强的一维；闪电链那边换成 coldFrac）"
+    }
+  ],
+  "score": {
+    "type": "l1",
+    "penalties": [
+      {
+        "id": "coreGone",
+        "when": "ratioCore <= 0 || covCore < 0.5 * T.covCore",
+        "add": 0.5,
+        "note": "核心塌陷闸门：亮区核心被压没 / 只剩不到目标一半，直接罚 0.5"
+      }
+    ]
+  },
+  "tools": {
+    "metricsJs": "metrics2.js",
+    "capture": "capture.mjs"
+  },
+  "guard": {
+    "bodyClient": "",
+    "note": "本体守卫：填你自己的本体 client 目录（或 %VFX_LOOP_BODY_CLIENT% 模板）才会做「本体 vfx.json 前后哈希一致」的对比；留空 = 不做，且报告里明说 n/a，绝不假装比过。"
+  },
+  "retarget": {
+    "note": "火柱实例 · v3。换一支特效仍然只改本文件；本轮新把 target / params 两节从命令行搬进来。最少命令行 = -Adapter 本文件 -Budget N -Out 目录。"
+  }
+}

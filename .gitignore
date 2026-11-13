@@ -1,0 +1,14 @@
+# 依赖与构建产物（bundle 的 dist 由上游决定，这里不生成）
+node_modules/
+pnpm-lock.yaml.bak
+
+# 运行时产物：跑一轮闭环产生的证据包、浏览器 profile、日志
+runs/
+prof_*/
+_install-*.log
+*.log
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+desktop.ini

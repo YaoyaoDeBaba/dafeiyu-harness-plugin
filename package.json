@@ -1,0 +1,49 @@
+{
+  "name": "dsh-vfx-loop",
+  "version": "0.2.0",
+  "private": true,
+  "description": "VFX 闭环产线插件：vfx_probe / vfx_list_adapters 两个只读工具 + 包内 harness（iter.ps1 等 8 件跑一轮的必需件）+ 自带静态服 + 3 份适配器 + vfx-closed-loop 技能。Windows 优先。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "icon": "./icon.png",
+  "files": [
+    "lib",
+    "locale/*.json",
+    "adapters",
+    "harness",
+    "static",
+    "skills",
+    "cordis.patch.yml",
+    "icon.png",
+    "README.md",
+    "!**/*.log"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.1-rc.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node test/plugin.test.mjs"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "vfx",
+    "closed-loop"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.65.0"
+  }
+}

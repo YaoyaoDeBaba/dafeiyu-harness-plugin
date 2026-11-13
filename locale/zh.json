@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "VFX 闭环",
+    "description": "把技能特效按一张目标帧自动调参的产线。插件带两个只读工具（vfx_probe 解析适配层、vfx_list_adapters 列示例题材）、包内 harness（iter.ps1 等跑一轮的必需件）、自带静态服与 3 份适配器，并把 vfx-closed-loop 技能装进来。工具本身不起浏览器、不开端口；真跑一轮按 README 调 harness。Windows 专用（harness 基于 PowerShell + Edge，非 Windows 会在入口直接报错），需要 Node ≥22.19，首次跑 Playwright 引擎要下载 Chromium 约 740 MB（用系统 Edge 则零下载）。"
+  }
+}

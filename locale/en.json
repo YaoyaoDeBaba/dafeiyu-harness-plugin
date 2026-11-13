@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "VFX closed loop",
+    "description": "Tunes skill VFX parameters toward a target frame. The bundle ships two read-only tools (vfx_probe parses an adapter, vfx_list_adapters lists the example subjects), the run-time harness (iter.ps1 and its seven companions), a bundled static server, three example adapters, and the vfx-closed-loop skill. The tools start no browser and open no port; run the harness as the README describes. Windows only (the harness is PowerShell + Edge and refuses to start elsewhere), Node >= 22.19, and the first Playwright run downloads ~740 MB of Chromium (zero download with the system Edge)."
+  }
+}
