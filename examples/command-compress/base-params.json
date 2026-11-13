@@ -1,0 +1,10 @@
+{
+  "name": "example-command-compress",
+  "note": "包体积预算示例的基线参数。cmdloop.mjs 只读这份文件，把候选值写进 <run>/params/eNNN.json，绝不回写这里。四个参数都是整数档位：level 0-9 / strategy 0-3 / windowBits 9-15 / memLevel 1-9。",
+  "params": {
+    "level": 6,
+    "strategy": 0,
+    "windowBits": 12,
+    "memLevel": 8
+  }
+}

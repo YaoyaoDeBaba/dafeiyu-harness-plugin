@@ -15,13 +15,16 @@
 //      repeat=1 显式关闭并 warn；非法配置中文硬错；预算不够时硬错（不偷偷少跑几次）
 //   ⑫ 弄坏能红 ×2（0.4.1）：stableAlways（判定恒真）→ ⑪ 的不稳定断言必红；
 //      noStability（整段删掉）→ ⑪ 的 stability 字段断言必红
+//   ⑬ 真实非图形目标（包体积预算）：压缩示例跑一轮 drop > 30%，且每一轮都无损解压
+//   ⑭ 同 seed 两次 hash 一致（压缩示例，独立一条 —— 它证明的是"语料与搜索都可复现"）
+//   ⑮ 弄坏能红（0.4.2）：把目标改成一个"起点参数就命中"的值 → ⑬ 的降幅断言必红（起点距离为 0，降幅 null）
 //
 // 变异开关（只给测试用，见 harness/cmdlib.mjs 的 MUTANT）：
 //   CMDLOOP_MUTANT=flatZero|noTimeout|stableAlways|noStability node test/command.test.mjs
 // 不设时行为完全正常。
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -474,6 +477,87 @@ test('⑫-2 弄坏能红：整段删掉（CMDLOOP_MUTANT=noStability）→ ⑪-1
   assert.ok(!/^## 观测稳定性闸/m.test(readFileSync(join(out, 'report.md'), 'utf8')), '报告里也不该有那一节')
   // 但它照样"看起来跑完了"—— 这正是没这个闸的时候证据包的样子：谁也看不出观测没验过
   assert.equal(typeof best.dropPct, 'number')
+})
+
+// ---------------------------------------------------------------- ⑬⑭⑮ 真实非图形目标：包体积预算（0.4.2）
+// 这条测的不是"新功能"，而是**这套引擎在一个完全非图形的真实目标上到底能不能用**：
+// 语料当场生成、zlib 真压真解、ratio 是实测的字节比。数字都是这份示例自己的实测值。
+const COMPRESS_ADAPTER = join(ROOT, 'examples', 'command-compress.json')
+
+// 跑一轮压缩要 2.5 秒上下；⑬ 与 ⑮ 共用同一次 run（⑭ 必须独立跑第二次才能比 hash）
+let cmpRun
+function compressRun() {
+  if (!cmpRun) {
+    const out = tmp('compress')
+    const r = runCli(['--adapter', COMPRESS_ADAPTER, '--out', out, '--budget', '60', '--seed', '12345'])
+    cmpRun = { r, out, best: existsSync(join(out, 'best.json')) ? readJson2(join(out, 'best.json')) : null }
+  }
+  return cmpRun
+}
+
+test('⑬ 包体积预算示例跑一轮：ratio 0.3902 → 0.3721（drop 89.4% > 30%），每一轮都必须无损解压', () => {
+  const { r, out, best } = compressRun()
+  assert.equal(r.status, 0, `压缩示例该跑通，实际 exit=${r.status}\n${r.out.slice(-2000)}`)
+  assert.ok(best, 'best.json 必须存在')
+  // 门槛按实测定：实测 89.4%，这里只钉 30%（不虚高；真坏了掉到 0 附近也会红）
+  assert.ok(best.dropPct > 30, `降幅应 > 30%，实测 ${best.dropPct}%（start=${best.startDist} best=${best.bestDist}）`)
+  // 观测量本身要对得上"包体积"这件事：起点 ratio ≈ 0.3902，最佳 ratio ≈ 0.3721
+  const startRow = best.curve.find((c) => c.note === 'start')
+  assert.ok(Math.abs(startRow.m_ratio - 0.390232) < 0.001, `起点 ratio 实测 ${startRow.m_ratio}，应约 0.3902`)
+  assert.ok(Math.abs(best.bestDist) < 0.005, `最佳距离实测 ${best.bestDist}（= |ratio 0.3721 − 目标 0.37|），应 < 0.005`)
+  // 无损：每一轮都解压比对通过，且 penalty 一次都没被触发
+  for (const c of best.curve) {
+    assert.equal(c.m_roundtrip, 1, `第 ${c.seq} 次评估解压比对失败（roundtrip=0）—— 方案作废`)
+    assert.equal(c.pen, 0, `第 ${c.seq} 次评估被 penalty 罚了 ${c.pen}`)
+  }
+  // 证据包该有的都在（与 ① 同口径）
+  for (const f of ['curve.csv', 'best.json', 'report.md']) assert.ok(existsSync(join(out, f)), `缺 ${f}`)
+  assert.ok(best.stability.ok, '确定性的压缩命令必须过稳定性闸')
+  assert.ok(best.meta.msPerEval > 0 && best.meta.msPerEval < 2000, `单次评估 ${best.meta.msPerEval}ms，不像是在跑一次真压缩`)
+})
+
+test('⑭ 同 seed 跑两次（压缩示例）best.json 的 hash 必须一致', () => {
+  const a = compressRun()
+  const out2 = tmp('compress-b')
+  const r2 = runCli(['--adapter', COMPRESS_ADAPTER, '--out', out2, '--budget', '60', '--seed', '12345'])
+  assert.equal(r2.status, 0, r2.out)
+  const b2 = readJson2(join(out2, 'best.json'))
+  assert.match(a.best.hash, /^[0-9a-f]{64}$/)
+  assert.equal(a.best.hash, b2.hash, '同 seed 同参数换目录重跑，hash 必须一致（语料与搜索都得可复现）')
+  assert.deepEqual(
+    a.best.curve.map((c) => [c.seq, c.params, c.dist]),
+    b2.curve.map((c) => [c.seq, c.params, c.dist]),
+    '同 seed 的评估序列必须逐点一致',
+  )
+})
+
+test('⑮ 弄坏能红：目标改成"起点参数就命中"的值 → ⑬ 的降幅断言必红（降幅算不出来 = null）', () => {
+  // 把示例整份抄进临时目录，再把目标 ratio 改成**起点参数跑出来的那个 ratio**
+  // （也就是"默认参数直接命中"—— 任务里点名的那个反例）。
+  const site = tmp('compress-mut')
+  cpSync(join(ROOT, 'examples', 'command-compress'), join(site, 'command-compress'), { recursive: true })
+  const mut = JSON.parse(JSON.stringify(readJson2(COMPRESS_ADAPTER)))
+  mut.name = 'compress-mut-hit-by-start'
+  mut.config.path = 'command-compress/base-params.json'
+  mut.observe.cmd = 'node ./command-compress/probe.mjs'
+  // 起点参数跑一次，拿到"默认就命中"的那个值（不抄常数，免得示例改了口径这条还假装成立）
+  const pf = join(site, 'start-params.json')
+  const baseParams = readJson2(join(ROOT, 'examples', 'command-compress', 'base-params.json')).params
+  writeFileSync(pf, JSON.stringify({ params: baseParams }), 'utf8')
+  const probe = spawnSync(process.execPath, [join(site, 'command-compress', 'probe.mjs'), pf], { encoding: 'utf8' })
+  assert.equal(probe.status, 0, `探针要能跑：${probe.stderr}`)
+  mut.target.metrics.ratio = JSON.parse(probe.stdout).ratio
+  const file = join(site, 'adapter.json')
+  writeFileSync(file, JSON.stringify(mut, null, 2), 'utf8')
+
+  const out = tmp('compress-mut-out')
+  const r = runCli(['--adapter', file, '--out', out, '--budget', '14', '--seed', '12345'])
+  assert.equal(r.status, 0, r.out)
+  const best = readJson2(join(out, 'best.json'))
+  // 起点就命中 → 起点距离 0 → 降幅算不出来（null，不编一个 0%），⑬ 那句 assert.ok(dropPct > 30) 必红
+  assert.equal(best.startDist, 0, '目标 = 起点参数跑出来的值，起点距离必须是 0')
+  assert.equal(best.dropPct, null, '起点距离为 0 时降幅无从计算（null）')
+  assert.ok(!(best.dropPct > 30), '这条落在这份实现上不可能成立 —— ⑬ 的降幅断言真的接着实现')
 })
 
 // ---------------------------------------------------------------- 极小 JSON-Schema 子集校验器（与 plugin.test.mjs 同口径）

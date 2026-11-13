@@ -1,0 +1,26 @@
+{
+  "schema": "closed-loop-adapter/3",
+  "domain": "command",
+  "topic": "包体积预算：给定语料，把压缩后体积调到目标比例（37%），同时必须可无损解压 —— 真实非图形目标的第二个示例",
+  "name": "example-command-compress",
+  "config": { "path": "command-compress/base-params.json", "format": "flat-params" },
+  "observe": {
+    "type": "command",
+    "cmd": "node ./command-compress/probe.mjs",
+    "timeoutMs": 30000,
+    "parse": "json",
+    "stability": { "repeat": 3, "maxSpread": 0.02 },
+    "metrics": [
+      { "id": "ratio", "field": "ratio", "norm": { "mode": "abs", "scale": 1 }, "weight": 0.8 },
+      { "id": "roundtrip", "field": "roundtrip", "norm": { "mode": "abs", "scale": 1 }, "weight": 0 }
+    ]
+  },
+  "target": { "mode": "metrics", "metrics": { "ratio": 0.37, "roundtrip": 1 } },
+  "params": { "mode": "list", "list": ["level", "strategy", "windowBits", "memLevel"] },
+  "score": {
+    "type": "l1",
+    "penalties": [{ "id": "roundtripBroken", "when": "roundtrip <= 0", "add": 0.5 }]
+  },
+  "guard": { "protectPaths": [] },
+  "packageNote": "能直接跑：node harness/cmdloop.mjs --adapter examples/command-compress.json --out runs/cmp1 --budget 60。观测 = 跑一次 node examples/command-compress/probe.mjs（当场用固定 seed 生成约 256KB 的类 JSON 日志，按参数 deflate + inflate 逐字节比对，打印一行 JSON）。`ratio` 是压缩后/原始；`roundtrip` 是解压比对结果（1/0）。判据里 roundtrip 的 weight 是 0：它不进距离，只给 penalty 用 —— 解压坏了 +0.5，等于方案作废。四个参数都是整数档位，`strategy` 在 0 起跑时会被「零基参数走绝对步长 0.05 + 四舍五入回 0」判成 dead，这是真的（见 command-observe.md 第 8 节）。"
+}

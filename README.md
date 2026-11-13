@@ -45,6 +45,7 @@
 | 一份不绑任何项目的最小示例（自己写 adapter 就从它改） | `examples/minimal.json` |
 | 第三方台改造后的示例（**不是开箱即用**：宿主侧要先按 `skills/selfloop/references/host-adaptation.md` 做五步改造） | `examples/third-party-3d.json` |
 | **命令观测的能跑示例**（观测 = 一条命令的 stdout，含一个故意无效的参数）+ 双入口执行器 `cmdloop.mjs`（纯 node、跨平台） | `examples/command-echo.json` + `examples/command-demo/`、`harness/cmdloop.mjs` |
+| **真实非图形目标的示例**（包体积预算：给定语料把压缩率调到 37%，解压坏了 +0.5 惩罚；四个 zlib 参数里 `strategy` 实测是假轴） | `examples/command-compress.json` + `examples/command-compress/` |
 | `selfloop` 技能（宿主有 `ctx.skills` 时自动注册） | `skills/selfloop/` |
 
 **这个插件不跑闭环**：工具只读文件，不起浏览器、不开端口、不花预算。真跑一轮是执行器的事——截图链路 `harness/iter.ps1`（Windows），命令链路 `harness/cmdloop.mjs`（跨平台）。
@@ -211,13 +212,15 @@ examples/minimal.json            不绑任何项目的最小 adapter（自己写
 examples/third-party-3d.json     第三方台改造后的形态（要跑得先改造宿主，见 references/host-adaptation.md）
 examples/command-echo.json       命令观测示例（能直接跑）：观测 = 一条 node 命令的 stdout
 examples/command-demo/           上面那份的配套：probe.mjs（读参数算两个指标）+ base-params.json
+examples/command-compress.json    真实非图形目标示例（包体积预算：压到 37% + 无损解压惩罚）
+examples/command-compress/       上面那份的配套：probe.mjs（当场造语料、真压真解）+ base-params.json
 static/server.mjs                静态服：node server.mjs <root> <port> [host]
 skills/selfloop/                 技能：SKILL.md + references/（通用方法 + 宿主改造 + 命令观测 + domains-vfx.md）
 locale/{zh,en}.json              插件清单里的标题与描述（权臣 / Selfloop）
 CHANGELOG.md                     改动记录（随包分发，`files` 里有它）
 test/plugin.test.mjs             55 个用例（不进包）
 test/hue.test.mjs                12 个用例（色相判据，不进包）
-test/command.test.mjs            11 个用例（命令观测 + 两条弄坏能红，不进包）
+test/command.test.mjs            21 个用例（命令观测 + 弄坏能红 + 包体积预算示例，不进包）
 ```
 
 `harness/` 里逐件的作用：
@@ -288,4 +291,5 @@ node test/plugin.test.mjs      # 54 个用例：schema/返回值互验、harness
 ## 案例与来源
 
 `harness/` 的执行器最早移植自**案例 A**（一个 2D 游戏项目的渲染管线），之后在本包里独立演进、已与上游分叉；示例 adapter 描述的是案例 A 的现场，用来演示"换项目只换 adapter"。除此之外，本包不依赖任何具体项目。
+
 
