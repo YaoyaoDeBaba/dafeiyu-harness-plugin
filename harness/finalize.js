@@ -41,6 +41,9 @@ function pv(params) { // 按白名单顺序取值，输出数组（顺序本身�
 function f6(v) { const n = Number(v); return Number.isFinite(n) ? n.toFixed(6) : ''; }
 function d4(v) { const n = Number(v); return Number.isFinite(n) ? n.toFixed(4) : ''; }
 function num(v) { const n = Number(v); return Number.isFinite(n) ? String(parseFloat(n.toFixed(4))) : ''; }
+// 直方图类指标（hueHist）的值是数组：r6/num 会把它变成 null/空串，报告里就看不见了。
+// run.json 留原数组（谁要复算谁自己算距离），报告表格里只标桶数——18 个数塞不进一格。
+function metricCell(v) { return Array.isArray(v) ? '[' + v.length + '桶]' : num(v); }
 function pad(s, n) { s = String(s); return s + ' '.repeat(Math.max(0, n - s.length)); }
 function padL(s, n) { s = String(s); return ' '.repeat(Math.max(0, n - s.length)) + s; }
 
@@ -118,7 +121,10 @@ const bestJson = {
             params: e.params, dist: r6(e.dist), pen: e.pen,
             mvals: e.mvals || null, parts: e.parts || null
         };
-        for (const id of MID) o['m_' + id] = r6(metricOf(e, id));
+        for (const id of MID) {
+            const v = metricOf(e, id);
+            o['m_' + id] = Array.isArray(v) ? v : r6(v);
+        }
         for (const id of MID) o['nd_' + id] = r6(ndOf(e, id));
         return o;
     }),
@@ -270,7 +276,7 @@ md.push('| 轮 | ' + WL.map((k) => '`' + k + '`').join(' | ') + ' | d | ' + MID.
 md.push('|---|' + WL.map(() => '---').join('|') + '|---|' + MID.map(() => '---').join('|') + '|');
 for (const rr of roundRows) {
     const w = rr.win;
-    md.push('| ' + rr.round + ' | ' + WL.map((k) => num(w.params[k])).join(' | ') + ' | **' + d4(w.dist) + '** | ' + MID.map((id) => num(metricOf(w, id))).join(' | ') + ' |');
+    md.push('| ' + rr.round + ' | ' + WL.map((k) => num(w.params[k])).join(' | ') + ' | **' + d4(w.dist) + '** | ' + MID.map((id) => metricCell(metricOf(w, id))).join(' | ') + ' |');
 }
 md.push('');
 }

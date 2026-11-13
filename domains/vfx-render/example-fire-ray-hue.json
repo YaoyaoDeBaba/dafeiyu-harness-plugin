@@ -1,0 +1,133 @@
+{
+  "schema": "closed-loop-adapter/3",
+  "domain": "vfx-render",
+  "topic": "火焰射线 / 火柱（暖色体积型）· 色相版：在对称示例的三条形状/色温指标上补一条 hueHist，让「更暖/更黄」第一次进入搜索空间",
+  "packageNote": "fire-ray.json 的色相变体：其余字段（clientRoot / 端口 / 冻结 / 白名单 / 惩罚）与它同构，只有 name、端口、指标组不同。放在 domains/vfx-render/ 根而不是 adapters/ 是有意的——adapters/ 的三份清单被测试逐一点名，新判据不该顺手改掉别人的口径。",
+  "name": "example-fire-ray-hue",
+  "clientRoot": "%VFX_LOOP_CLIENT%",
+  "config": {
+    "path": "resource/lab/vfx/vfx.json",
+    "block": "effects.FireRay.fireBeamG1M1",
+    "format": "vfx-block"
+  },
+  "page": {
+    "file": "_dev/mergeProbe.html",
+    "query": "?seed={seed}",
+    "readyExpr": "String(!!(window.__ready === true && window.__t3_stale === undefined && document.readyState === \"complete\"))",
+    "readbackExpr": "JSON.stringify(VfxConfig.raw().effects.FireRay.fireBeamG1M1)",
+    "note": "readbackExpr 是本宿主专属（示例页暴露的 VfxConfig 全局），与 fire-ray.json 同一句：证明参数真的被吃到。"
+  },
+  "freeze": {
+    "protocol": "noloop-step",
+    "clock": "virtual",
+    "stepMs": 16,
+    "targetTimeMs": 320,
+    "seed": 12345,
+    "note": "与 fire-ray.json 同一套冻帧口径（virtual 钟；火柱 uTime 走墙上时间，不冻就对不齐相位）。"
+  },
+  "target": {
+    "mode": "params",
+    "params": { "widthPx": 30, "distM": 8.0 },
+    "note": "目标帧写在配置里：先按 target.params 渲一张当目标；命令行 -Target 仍可覆盖。"
+  },
+  "params": {
+    "mode": "list",
+    "list": ["widthPx", "distM"],
+    "note": "白名单写在配置里（初值取块内现值）；命令行 -Params 仍可覆盖。"
+  },
+  "render": {
+    "tier": "low",
+    "width": 640,
+    "height": 360
+  },
+  "server": {
+    "staticPort": 8292,
+    "cdpPort": 9492,
+    "browserProfilePrefix": "prof_p26_firehue_",
+    "staticScript": "../static/server.mjs",
+    "bind": "127.0.0.1"
+  },
+  "browser": {
+    "exe": "",
+    "exeCandidates": [
+      "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe",
+      "%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe",
+      "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe",
+      "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"
+    ],
+    "args": [
+      "--headless=new",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-extensions",
+      "--hide-scrollbars",
+      "--mute-audio",
+      "--disable-gpu-vsync",
+      "--enable-unsafe-swiftshader",
+      "--use-gl=angle",
+      "--use-angle=swiftshader",
+      "--force-device-scale-factor=1",
+      "--window-size={width},{height}",
+      "--remote-debugging-port={cdpPort}",
+      "--user-data-dir={profile}",
+      "about:blank"
+    ]
+  },
+  "metrics": [
+    {
+      "id": "cov",
+      "extract": "cov",
+      "opts": { "luma": 40 },
+      "norm": { "mode": "range", "range": [0, 0.3] },
+      "weight": 0.28,
+      "note": "亮区面积（体积/粗细/长度）。原 0.35 × 0.8 = 0.28：三条老指标等比例让出 20%，彼此相对重要性不变。"
+    },
+    {
+      "id": "lapVar",
+      "extract": "lapVar",
+      "opts": { "luma": 40 },
+      "norm": { "mode": "range", "range": [200, 4000] },
+      "weight": 0.28,
+      "note": "细节能量（结构/毛刺）。原 0.35 → 0.28，口径与跨度一个字没改。"
+    },
+    {
+      "id": "tone",
+      "extract": "warmFrac",
+      "opts": { "luma": 80, "rMin": 140, "rg": 1.15, "gb": 0.9 },
+      "norm": { "mode": "range", "range": [0, 0.55] },
+      "weight": 0.24,
+      "note": "色温：暖色占比（原 0.30 → 0.24）。它只回答「够不够暖」，答不了「暖到哪个色相」，所以下面补 hue。"
+    },
+    {
+      "id": "hue",
+      "extract": "hueHist",
+      "opts": { "luma": 40, "minSat": 0.15 },
+      "norm": { "mode": "abs", "scale": 9 },
+      "weight": 0.2,
+      "note": "色相直方图（18 桶×20°，饱和×亮度加权）。距离是环形 L1，单位「桶」，18 桶时上限 9（半圈），abs/9 压到 0~1。给 0.2 是当「并列时的偏航修正」：几何/细节接近时它能把「更黄/更橙」分开，但压不过形状轴（两条形状各 0.28）。"
+    }
+  ],
+  "score": {
+    "type": "l1",
+    "penalties": [
+      {
+        "id": "coreGone",
+        "when": "ratioCore <= 0 || covCore < 0.5 * T.covCore",
+        "add": 0.5,
+        "note": "核心塌陷闸门：亮区核心被压没 / 只剩不到目标一半，直接罚 0.5（与 fire-ray.json 同口径）"
+      }
+    ]
+  },
+  "tools": {
+    "metricsJs": "metrics2.js",
+    "capture": "capture.mjs"
+  },
+  "guard": {
+    "protectPaths": ["%VFX_LOOP_BODY_CLIENT%"],
+    "bodyClient": "",
+    "note": "写护栏：与 fire-ray.json 同口径（subtree、模板展开失败硬错）。"
+  },
+  "retarget": {
+    "note": "色相判据示例。想复用到别的特效：改 config.block / target / params，指标组里把 hue 保留（它是通用色相量），其余三条按题材换。色相桶是绝对色相（不随场景白平衡自适应），跨场景比距离前先确认两边的色调映射一致。"
+  }
+}

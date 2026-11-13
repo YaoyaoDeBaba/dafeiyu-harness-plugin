@@ -7,7 +7,7 @@
 | 项 | 值 |
 |---|---|
 | 观测 | 冻帧后的 PNG（同 seed + 同绝对毫秒 + 同档位 + 同分辨率） |
-| 探针 | `harness/metrics2.js` → `cov / lapVar / warmFrac / coldFrac / covCore / ratioCore` |
+| 探针 | `harness/metrics2.js` → `cov / lapVar / warmFrac / coldFrac / hueHist / hueMean / covCore / ratioCore` |
 | 判据 | `harness/score.js` 的 `d = Σ(nd_i × w_i) / Σw_i + Σpenalty.add` |
 | 参数空间 | adapter 的 `params` 白名单（`mode: list`），如 `["widthPx","distM"]` |
 | 配置 | client 里的 `resource/lab/vfx/vfx.json`，参数块 `effects.<Effect>.<Block>` |
@@ -35,6 +35,8 @@
 - 惩罚 `coreGone`：`ratioCore <= 0 || covCore < 0.5 * T.covCore` → `+0.5`（核心塌陷闸门）
 
 闪电链把 `warmFrac` 换成 `coldFrac`（火柱的暖色在雷光上恒为 0，不换就是拿常量算距离）。
+
+**想量「色相」时**：`warmFrac` 只回答「够不够暖」，答不了「暖到哪个色相」（更暖 → 无解就是这么来的）。用 `example-fire-ray-hue.json`（在 `domains/vfx-render/` 根，不在 `adapters/`）：第 4 条 `hue = hueHist`（权重 `0.20`，`abs:9`），老三条等比例让位 `.28/.28/.24`。它的距离是环形 L1（跨 0°/360°），是 18 桶 × 20° 分辨率——**20° 以内的偏移看不见**，那种情况看 `diag.hueMean` 或换更细的桶。
 
 ## 现场怎么接（包内零绝对路径）
 

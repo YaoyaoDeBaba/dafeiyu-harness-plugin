@@ -32,7 +32,7 @@ export const HARNESS_ROLES = {
   'capture.ps1': '浏览器边界的 PowerShell 半边（NDJSON 管道，iter.ps1 dot-source 它）',
   'capture.mjs': '浏览器边界的 Node 半边（edge / playwright 两个引擎，7 个命令）',
   'score.js': '距离：按 adapter.metrics + score 算 nd×w，命中 penalties 就加 add',
-  'metrics2.js': '指标提取：从 png 算 cov/lapVar/warmFrac/coldFrac/covCore/ratioCore',
+  'metrics2.js': '指标提取：从 png 算 cov/lapVar/warmFrac/coldFrac/hueHist/hueMean/covCore/ratioCore',
   'finalize.js': '收尾：curve.csv / best.json / report.md',
   'apply.js': '改参（vfx-block 形态：vfx.json 里 effects.<E>.<B>）',
   'apply_params.js': '改参（flat-params 形态：扁平 {params:{...}}）',
@@ -188,7 +188,8 @@ function normalizePenalties(score) {
 }
 
 export function distanceRule(scoreType) {
-  const base = 'd = Σ(nd_i × w_i) / Σw_i + Σpenalty.add；nd_i = |a_i − t_i| 按各指标 norm 归一（range/pctrel/abs/identity，clamp 可选）'
+  const base = 'd = Σ(nd_i × w_i) / Σw_i + Σpenalty.add；nd_i = |a_i − t_i| 按各指标 norm 归一（range/pctrel/abs/identity，clamp 可选）；'
+    + '直方图类指标（如 hueHist）改算环形 L1 距离再按 norm 归一（目标值当 0，跨 0°/360° 边界算 1 格）'
   if (scoreType === 'l1') return base
   return `${base}；但 adapter.score.type=${scoreType || '（缺）'} —— score.js 只实现 l1，跑起来会在打分那步报错`
 }

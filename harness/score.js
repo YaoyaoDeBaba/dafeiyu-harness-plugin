@@ -4,6 +4,11 @@
 //   nd_i = 第 i 个指标的归一化差（norm.mode 决定，见下）
 //   d    = Σ w_i·nd_i / Σ w_i  +  Σ 命中的 penalty.add
 //
+// 标量指标 nd = norm(|m − t|)；**直方图类指标**（值是一个和为 1 的数组，如 hueHist）nd = norm(环形 L1, 0)，
+// 环形 L1 见 metrics2.js 的 circularL1：质量沿色相环搬、跨 0°/360° 边界只算 1 格。两条共用同一套 norm，
+// 所以 `{mode:"abs",scale:9}` 就能把 18 桶的直方图距离压到 0~1，权重语义与标量指标一致。
+// pctrel 对直方图没有意义（分母是目标值，直方图没有单个目标值 = 0），别用。
+//
 // 归一化（每个指标自己的 norm，字段语义见 harness\适配层-说明.md §五）：
 //   {"mode":"range","range":[lo,hi]}       nd = |m-t| / (hi-lo)       ← 固定跨度，权重才真的能比
 //   {"mode":"pctrel","floor":f}            nd = |m-t| / max(|t|,f)    ← 旧口径（相对目标自归一化）
@@ -24,15 +29,24 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { circularL1 } = require('./metrics2.js');
 
 // ---------------------------------------------------------------- 归一化
-function normalize(m, t, cfg, id) {
-    const v = Number(m);
-    if (!Number.isFinite(v)) throw new Error('候选缺指标 ' + id);
-    const tv = Number(t);
-    if (!Number.isFinite(tv)) throw new Error('目标缺指标 ' + id);
+// 标量指标：nd = norm(|m-t|)；直方图指标：nd = norm(环形 L1 距离, 目标值取 0)。
+// 两条都走同一个 applyNorm，所以 range/pctrel/abs/identity 的语义、clamp、权重全都不变。
+function asHist(v, id, side) {
+    if (!Array.isArray(v)) throw new Error(id + ': ' + side + '是标量，另一边是直方图（同一条指标两边必须同类）');
+    const out = new Array(v.length);
+    for (let i = 0; i < v.length; i++) {
+        const x = Number(v[i]);
+        if (!Number.isFinite(x) || x < 0) throw new Error(id + ': ' + side + '直方图第 ' + i + ' 桶不是非负数（收到 ' + JSON.stringify(v[i]) + '）');
+        out[i] = x;
+    }
+    return out;
+}
+
+function applyNorm(diff, tv, cfg, id) {
     const norm = cfg.norm || { mode: 'identity' };
-    const diff = Math.abs(v - tv);
     let nd;
     if (norm.mode === 'range') {
         const r = norm.range;
@@ -54,6 +68,22 @@ function normalize(m, t, cfg, id) {
     }
     if (norm.clamp) nd = Math.min(1, Math.max(0, nd));
     return nd;
+}
+
+function normalize(m, t, cfg, id) {
+    if (Array.isArray(m) || Array.isArray(t)) {
+        const a = asHist(m, id, '候选');
+        const b = asHist(t, id, '目标');
+        if (a.length !== b.length) throw new Error(id + ': 直方图长度不一致（候选 ' + a.length + ' 桶，目标 ' + b.length + ' 桶）');
+        if (cfg.norm && cfg.norm.mode === 'pctrel') throw new Error(id + ': 直方图指标不支持 norm.mode=pctrel（没有单个目标值做分母，会除出 Infinity）');
+        // 环形 L1 的单位是"桶"（18 桶时 0~9，半圈）；adapter 用现成的 norm 把它压到自己的尺度。
+        return applyNorm(circularL1(a, b), 0, cfg, id);
+    }
+    const v = Number(m);
+    if (!Number.isFinite(v)) throw new Error('候选缺指标 ' + id);
+    const tv = Number(t);
+    if (!Number.isFinite(tv)) throw new Error('目标缺指标 ' + id);
+    return applyNorm(Math.abs(v - tv), tv, cfg, id);
 }
 
 // ---------------------------------------------------------------- 惩罚式（极小解析器，无 eval）
@@ -212,7 +242,7 @@ function main() {
         out.push(rec);
     }
     out.sort((a, b) => a.d - b.d);
-    console.log('target=' + tKey + '  ' + P.metrics.map((m) => m.id + '=' + trow[m.id]).join(' ') + (trow.covCore !== undefined ? ' covCore=' + trow.covCore : ''));
+    console.log('target=' + tKey + '  ' + P.metrics.map((m) => m.id + '=' + (Array.isArray(trow[m.id]) ? '[' + trow[m.id].length + '桶]' : trow[m.id])).join(' ') + (trow.covCore !== undefined ? ' covCore=' + trow.covCore : ''));
     for (const r of out) {
         const comp = P.metrics.map((m) => m.id + ' ' + r.parts[m.id].toFixed(4)).join(' / ');
         console.log(r.id.padEnd(16) + 'd=' + r.d.toFixed(4) + '  (' + comp + (r.pens.length ? '  pen[' + r.pens.join('+') + ']=' + r.pen : '  pen=0') + ')');

@@ -133,6 +133,92 @@ function makePx(img) {
     };
 }
 
+// ---------------------------------------------------------------- 色相（HSB）
+// 色相是**环形**量：0° 与 340° 是邻居，不是两端。这里只做两件事：
+//   ① 把像素转成 HSB，按「饱和度 × 亮度」加权投进 18 个 20° 等宽桶（灰/黑/白权重趋 0，不进直方图）；
+//   ② 直方图之间的比较走 circularL1（可跨 0°/360° 的 L1 运输距离），别用朴素 |a-b| 求和。
+const HUE_BINS = 18;                       // 每桶 20°：0~20, 20~40, …, 340~360
+const HUE_BIN_DEG = 360 / HUE_BINS;
+
+// HSB 的 H（0~360）。灰（max==min）色相无定义，回 0 兜底——调用方用 sat 权重把它挡在外面。
+function hueDeg(r, g, b, mx, mn) {
+    if (mx === mn) return 0;
+    const d = mx - mn;
+    let h;
+    if (mx === r) h = (g - b) / d;
+    else if (mx === g) h = 2 + (b - r) / d;
+    else h = 4 + (r - g) / d;
+    h *= 60;
+    if (h < 0) h += 360;
+    if (h >= 360) h -= 360;
+    return h;
+}
+
+// 一遍扫像素，同时攒三样东西：18 桶权重、总权重、圆均值用的 (Σw·cos, Σw·sin)。
+// 口径（与 warmFrac 对齐）：luma **>=** luma 才算数（暗部不进）；饱和度 < minSat 直接跳过；
+// 权重 = sat × val —— 这一条同时是"低饱和不计入"和"权重"的实现，删了它灰图就会开始计数。
+function hueAcc(px, o) {
+    const lumaMin = Number.isFinite(Number(o.luma)) ? Number(o.luma) : 40;
+    const minSat = Number.isFinite(Number(o.minSat)) ? Number(o.minSat) : 0.15;
+    const acc = new Float64Array(HUE_BINS);
+    const { data, ch, lum, n } = px;
+    let sumW = 0, cosSum = 0, sinSum = 0;
+    for (let i = 0; i < n; i++) {
+        if (lum[i] < lumaMin) continue;
+        const p = i * ch;
+        const r = data[p], g = ch >= 3 ? data[p + 1] : data[p], b = ch >= 3 ? data[p + 2] : data[p];
+        const mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+        if (!mx) continue;
+        const mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+        const sat = (mx - mn) / mx;
+        const val = mx / 255;
+        const wgt = (sat >= minSat) ? sat * val : 0;
+        if (!(wgt > 0)) continue;
+        const h = hueDeg(r, g, b, mx, mn);
+        let k = Math.floor(h / HUE_BIN_DEG);
+        if (k >= HUE_BINS) k = HUE_BINS - 1;
+        acc[k] += wgt;
+        sumW += wgt;
+        const rad = h * Math.PI / 180;
+        cosSum += wgt * Math.cos(rad);
+        sinSum += wgt * Math.sin(rad);
+    }
+    return { acc, sumW, cosSum, sinSum };
+}
+
+// 环形 L1（直方图之间的 L1 运输距离，允许跨 0°/360° 边界）：
+//   把候选的质量沿色相环搬到目标上，搬过 1 个桶记 1；最后一桶与第一桶相邻。
+//   在"从哪个桶切开圆环"里取最省的那种：d = min_cut Σ_{j=1..n-1} |Σ_{i<cut+j}(a_i − b_i)|。
+//   单位是**桶**：18 桶时 0~9（半圈）。350°→10° 只花 1，350°→180° 要 8。
+// 退化：两边都空（整张灰）→ 0；只有一边空 → 满距离 n/2（不假装"差不多"）。
+function circularL1(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b)) throw new Error('circularL1: 两边都必须是直方图数组');
+    const n = a.length;
+    if (!n || b.length !== n) throw new Error('circularL1: 直方图长度不一致或为空（' + n + ' vs ' + b.length + '）');
+    let sa = 0, sb = 0;
+    for (let i = 0; i < n; i++) {
+        const x = Number(a[i]), y = Number(b[i]);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) {
+            throw new Error('circularL1: 第 ' + i + ' 桶不是非负数（' + a[i] + ' / ' + b[i] + '）');
+        }
+        sa += x; sb += y;
+    }
+    const half = n / 2;
+    if (!(sa > 0) && !(sb > 0)) return 0;
+    if (!(sa > 0) || !(sb > 0)) return half;
+    let best = Infinity;
+    for (let cut = 0; cut < n; cut++) {
+        let run = 0, d = 0;
+        for (let j = 1; j < n; j++) {
+            const i = (cut + j) % n;
+            run += a[i] / sa - b[i] / sb;
+            d += Math.abs(run);
+        }
+        if (d < best) best = d;
+    }
+    return best;
+}
+
 // ---------------------------------------------------------------- 提取器注册表
 // 约定：fn(px, opts, ref) -> number | null
 //   px  候选帧（当前图）的像素视图
@@ -207,6 +293,37 @@ const EXTRACTORS = {
             return +(c / px.n).toFixed(5);
         }
     },
+    hueHist: {
+        desc: '色相直方图：18 桶×20°，权重=饱和度×亮度（灰/黑/白不计入），输出和为 1 的数组；整张无彩色 → 18 个 0',
+        defaults: { luma: 40, minSat: 0.15 },
+        fn(px, o) {
+            const s = hueAcc(px, o);
+            const out = new Array(HUE_BINS).fill(0);
+            if (!(s.sumW > 0)) return out;                 // 明确的空直方图（不是 NaN）
+            let sum = 0;
+            for (let i = 0; i < HUE_BINS; i++) {
+                out[i] = +(s.acc[i] / s.sumW).toFixed(6);
+                sum += out[i];
+            }
+            // 四舍五入的残差补回最大的桶：保证和恰为 1，下游 norm/权重才对得上
+            let k = 0;
+            for (let i = 1; i < HUE_BINS; i++) if (out[i] > out[k]) k = i;
+            out[k] = out[k] + (1 - sum);
+            return out;
+        }
+    },
+    hueMean: {
+        desc: '色相圆均值（0~360；同样按饱和度×亮度加权；整张无彩色 → 0）——给人看报告用的标量',
+        defaults: { luma: 40, minSat: 0.15 },
+        fn(px, o) {
+            const s = hueAcc(px, o);
+            if (!(s.sumW > 0)) return 0;
+            let m = Math.atan2(s.sinSum, s.cosSum) * 180 / Math.PI;
+            m = ((m % 360) + 360) % 360;
+            const r = +m.toFixed(2);
+            return r >= 360 ? 0 : r;                       // 359.999° 四舍五入成 360 会破坏 0~360 口径
+        }
+    },
     cov: {
         desc: '亮区面积：luma > luma 的像素占全图比例（0~1）',
         defaults: { luma: 40 },
@@ -259,6 +376,7 @@ function diagnostics(px, ref) {
         lapVar40: EXTRACTORS.lapVar.fn(px, EXTRACTORS.lapVar.defaults),
         warmFrac: EXTRACTORS.warmFrac.fn(px, EXTRACTORS.warmFrac.defaults),
         coldFrac: EXTRACTORS.coldFrac.fn(px, EXTRACTORS.coldFrac.defaults),
+        hueMean: EXTRACTORS.hueMean.fn(px, EXTRACTORS.hueMean.defaults),
         bboxW: EXTRACTORS.bbox.fn(px, EXTRACTORS.bbox.defaults),
         bboxH: EXTRACTORS.bbox.fn(px, { luma: 40, field: 'h' })
     };
@@ -345,4 +463,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { EXTRACTORS, resolvePlan, planText, extractOne, decodePng, makePx, diagnostics };
+module.exports = { EXTRACTORS, resolvePlan, planText, extractOne, decodePng, makePx, diagnostics, circularL1, hueAcc, HUE_BINS, HUE_BIN_DEG };
