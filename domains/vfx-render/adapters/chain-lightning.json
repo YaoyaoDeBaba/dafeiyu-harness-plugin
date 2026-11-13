@@ -1,5 +1,6 @@
 {
   "schema": "closed-loop-adapter/2",
+  "domain": "vfx-render",
   "topic": "闪电链 / 雷光球（冷色分叉型）：分叉细节 + 冷色占比（火柱的 warmFrac 在这支恒为 0，换 coldFrac）",
   "packageNote": "随插件分发版：server.staticScript / tools.metricsJs 用相对 harness/ 的包内路径；clientRoot 用 %VFX_LOOP_CLIENT% 模板，浏览器候选用 %ProgramFiles(x86)%/%ProgramFiles% 模板。包内零本机绝对路径。",
   "name": "fanren-lab-chain-lightning",

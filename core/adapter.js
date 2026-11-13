@@ -1,9 +1,16 @@
-// adapter 解析层：把 iter.ps1 的 Import-Adapter 那套判据搬过来，让 vfx_probe / vfx_list_adapters
-// 在"开跑之前"就说清一份 adapter 到底指向什么现场。
+// core/adapter.js —— 闭环契约的**领域无关**解析层（三层里的中间层）。
+//
+// 一份 adapter 描述的是任何"可测目标 + 可调参数"的现场：观测在哪、怎么冻、判据怎么配、搜索轴给谁。
+// vfx 只是今天挂上来的第一个领域（domains/vfx-render/），所以这里不出现任何题材词。
+// 判据口径与执行器 harness/iter.ps1 的 Import-Adapter 逐条对齐（见下面的注释），不自己发明更严的规则。
+//
+// 被谁引用：lib/index.js（工具入口）→ 本文件。本文件不引用 lib/，也不改 harness/。
 //
 // 唯一的纪律：**硬错只报 iter.ps1 自己会抛的那几种**（否则 probe 会拒绝 iter.ps1 明明接受的配置，
 // 等于把工具做得比产线还严）；其余一律进 warnings —— 比如 score.type 不是 l1，是 score.js 才炸，
 // 不是 iter.ps1 炸，那就记账不拦。
+//
+// 向后兼容：adapter 的 `domain` 字段**可选**。缺了照样解析、照样能跑，只是在清单里归到"未标注领域"。
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 
@@ -292,6 +299,8 @@ export function parseAdapter(file, harnessDir) {
     adapterResolved: resolve(file),
     adapterName: String(a.name),
     schemaVersion: String(a.schema ?? ''),
+    // 领域标注（可选）：一眼看出这份 adapter 属于哪个题材包，如 vfx-render。缺字段 = 空串（照常跑）
+    domain: String(a.domain ?? ''),
     clientRoot,
     clientRootExists: existsSync(clientRoot),
     configFile,
@@ -332,9 +341,23 @@ export function parseAdapter(file, harnessDir) {
   }
 }
 
+// 适配器目录可能不再贴着包根（三层之后在 domains/<domain>/adapters/），
+// 所以 harness/ 要找：先看调用方给的，再向上逐级找"同级有 harness/iter.ps1"的那层。
+function guessHarnessDir(adapterDir) {
+  let d = resolve(adapterDir)
+  for (let i = 0; i < 4; i += 1) {
+    const cand = resolve(d, '..', 'harness')
+    if (existsSync(join(cand, 'iter.ps1'))) return cand
+    d = resolve(d, '..')
+  }
+  return ''
+}
+
 // 包内适配器清单：名字 + 适用题材 + 现在能不能跑
-export function listAdapters(dir) {
+// harnessDir 省略时按上面的规则向上找（给旧调用方式留活路）
+export function listAdapters(dir, harnessDir) {
   const out = []
+  const toolsDir = harnessDir || guessHarnessDir(dir)
   let names = []
   try {
     names = readdirSync(dir).filter((n) => n.toLowerCase().endsWith('.json')).sort()
@@ -344,10 +367,11 @@ export function listAdapters(dir) {
   for (const name of names) {
     const file = join(dir, name)
     try {
-      const a = parseAdapter(file, join(dir, '..', 'harness'))
+      const a = parseAdapter(file, toolsDir)
       out.push({
         file,
         name: a.adapterName,
+        domain: a.domain,
         topic: a.topic || `${a.block}（${a.freeze.protocol} · ${a.render.tier} ${a.render.width}x${a.render.height}）`,
         schemaVersion: a.schemaVersion,
         block: a.block,
@@ -365,6 +389,7 @@ export function listAdapters(dir) {
       out.push({
         file,
         name: '',
+        domain: '',
         topic: '',
         schemaVersion: '',
         block: '',
@@ -378,3 +403,25 @@ export function listAdapters(dir) {
   }
   return out
 }
+
+// 按领域分组（清单输出用）。缺 domain 的旧配置归到空串那一组，不丢、不报错。
+export function groupByDomain(adapters) {
+  const order = []
+  const map = new Map()
+  for (const a of adapters) {
+    const key = String(a.domain ?? '')
+    if (!map.has(key)) {
+      map.set(key, [])
+      order.push(key)
+    }
+    map.get(key).push(a)
+  }
+  // 有标注的领域排前面（按名字），未标注的垫底
+  order.sort((x, y) => (x === y ? 0 : x === '' ? 1 : y === '' ? -1 : x.localeCompare(y)))
+  return order.map((domain) => ({
+    domain,
+    count: map.get(domain).length,
+    files: map.get(domain).map((a) => a.file),
+  }))
+}
+

@@ -1,5 +1,6 @@
 {
   "schema": "closed-loop-adapter/3",
+  "domain": "vfx-render",
   "topic": "url-time 冻帧 + 扁平参数（flat-params）宿主示例：页面按 ?time=<秒> 自冻，没有 window.step；宿主页面不在包内",
   "packageNote": "格式示例：url-time 冻帧 + flat-params 改参。clientRoot 用 %VFX_LOOP_DEMO_HOST% 模板（= 那个 demo 宿主页面所在目录，包里不带它）；不设这个变量时本份 runnable=false，但 parse 仍然成立，用来示范两种协议/两种改参形态。",
   "name": "trial-demo-url-time",

@@ -1,4 +1,4 @@
-// VFX 闭环 · 插件自带静态服
+// Selfloop · 插件自带静态服（领域无关，只认"给一个目录"）
 //
 // 用法与项目根的 _tmp_static.js 完全一致（iter.ps1 就是在 Start-Process 里按这个签名起它的）：
 //   node server.mjs <root> <port> [host]

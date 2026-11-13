@@ -1,7 +1,7 @@
-# VFX 闭环 · Host 半边（P4 可安装版）
-# 一行 bundle 行：装上就注册 vfx_probe / vfx_list_adapters 两个只读工具，
-# 并在宿主有 skills 服务时把包内 skills/vfx-closed-loop 注册成技能。
+# Selfloop（权臣）· Host 半边（可安装版）
+# 一行 bundle 行：装上就注册 selfloop_probe / selfloop_list_adapters 两个只读工具，
+# 并在宿主有 skills 服务时把包内 skills/selfloop 注册成技能。
 # 不跑产线（不起浏览器、不开端口、不花预算）——真跑一轮用包内 harness/iter.ps1。
 - insert:
-    - id: vfx-loop
-      name: 'dsh-vfx-loop'
+    - id: selfloop
+      name: 'dsh-selfloop'
