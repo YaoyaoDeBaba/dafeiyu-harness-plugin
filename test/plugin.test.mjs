@@ -508,6 +508,17 @@ test('既没有 ctx.get 也没有 ctx.tools：apply 只 warn，不抛（失联�
   assert.match(warns[0], /tools/)
 })
 
+test('ctx.get 返回 null 但 ctx.tools 在：要退回直取，不能把工具弄丢', () => {
+  const tools = []
+  const ctx = {
+    get: () => null, // 宿主登记了 tools 却没给值（或代际差异）——别当结论
+    tools: { register: (t) => (tools.push(t), () => {}) },
+    inject: (_d, cb) => cb({}),
+  }
+  assert.doesNotThrow(() => apply(ctx))
+  assert.equal(tools.length, 2, 'ctx.get 给 null 时必须退回 ctx.tools，否则就是 active 但工具消失')
+})
+
 test('Cordis 式 ctx.inject：按可选依赖挂技能，deps 只声明 skills', () => {
   const tools = []
   const skills = []
