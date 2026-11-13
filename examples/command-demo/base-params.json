@@ -1,0 +1,9 @@
+{
+  "name": "command-echo",
+  "note": "命令观测示例的基线参数。cmdloop.mjs 只读这份文件，把候选值写进 <run>/params/eNNN.json，绝不回写这里 —— 跑一轮不会弄脏源码目录。",
+  "params": {
+    "alpha": 2,
+    "beta": 2,
+    "ghost": 7
+  }
+}

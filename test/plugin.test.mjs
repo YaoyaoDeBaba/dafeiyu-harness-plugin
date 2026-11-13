@@ -580,10 +580,10 @@ test('locale 双语 key 完全一致，title 是「权臣」/ Selfloop，描述�
   }
 })
 
-test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.3.8', () => {
+test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.4.0', () => {
   const pkg = readJson('package.json')
   assert.equal(pkg.name, 'dsh-selfloop')
-  assert.equal(pkg.version, '0.3.8')
+  assert.equal(pkg.version, '0.4.0')
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.main, 'lib/index.js')
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
@@ -660,7 +660,10 @@ test('包内没有本机绝对路径（盘符形式，node_modules 除外）', (
   // 判据自己别被自己的样例命中：盘符正则用字符串拼，源码里不出现"字母:反斜杠"
   const sep = String.fromCharCode(92)
   const driveRe = new RegExp('(?<![A-Za-z0-9])[A-Za-z]:' + sep + sep)
-  const skip = /^(node_modules|\.git)$/
+  // 运行时产物目录一律跳过：证据包本来就该落在 run 目录（默认就叫 runs/，且 .gitignore 里已排除），
+  // 里面记本机绝对路径是**要求**（报告要能说清基线参数文件在哪）。不跳的话，谁在仓库里跑过一轮闭环，
+  // 这条"包内没有本机绝对路径"就会假红 —— 它该管的是随包分发的源码/配置，不是 run 产物。
+  const skip = /^(node_modules|\.git|runs|prof_.*)$/
   const binary = /\.(png|jpe?g|webp|gif|ico|tgz|zip)$/i
   const hits = []
   const walk = (dir, rel) => {

@@ -124,4 +124,19 @@ references 一览：
 - `references/metrics.md` —— 指标定义、跨工具换算、底噪、档位表
 - `references/pitfalls.md` —— 按症状查坑（构建 / 参数 / 测量 / 传递）
 - `references/host-adaptation.md` —— 新宿主怎么接：五步改造、阈值实测、冻帧协议怎么选、反证要求
+- `references/command-observe.md` —— **观测是一条命令的输出**：给非图形目标（耗时/延迟/日志计数/残差）写 adapter、`observe` 字段表、哪些口径是复用哪些是照抄、常见坑
 - `references/domains-vfx.md` —— vfx-render 领域：现场怎么接、三份 adapter、进程卫生、题目外的话
+
+## 两条执行器（选一个）
+
+| 目标是什么 | 用哪个 | 观测长什么样 |
+|---|---|---|
+| 画面 / 特效 / 任何"要渲染出来才能看"的东西 | `harness/iter.ps1`（Windows：PowerShell + Edge） | 浏览器冻帧截图 → `metrics2.js` 量像素 |
+| 一串数：构建耗时、接口延迟、日志里的错误数、求解残差、内存占用 | `harness/cmdloop.mjs`（纯 node，跨平台） | 跑一条命令 → 从 stdout 取数（`json` / `number` / `line:k=v`） |
+
+```bash
+# 命令观测：三样输入就够（adapter + 预算 + 输出目录）
+node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --budget 40
+```
+
+判据在两条链路里是**同一份** `harness/score.js`；搜索的判据口径也一致（活性预检 + 坐标下降），所以"哪个参数是活的""这轮算不算变好"的结论读法不变。命令链路的细节见 `references/command-observe.md`。

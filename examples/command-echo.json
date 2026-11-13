@@ -1,0 +1,22 @@
+{
+  "schema": "closed-loop-adapter/3",
+  "domain": "command",
+  "topic": "命令观测最小示例：观测来源是一条 node 命令的 stdout（不是截图），两个可测指标 loss/size + 一个故意无效的参数 ghost",
+  "name": "example-command-echo",
+  "config": { "path": "command-demo/base-params.json", "format": "flat-params" },
+  "observe": {
+    "type": "command",
+    "cmd": "node ./command-demo/probe.mjs",
+    "timeoutMs": 30000,
+    "parse": "json",
+    "metrics": [
+      { "id": "loss", "field": "loss", "norm": { "mode": "abs", "scale": 1 }, "weight": 1 },
+      { "id": "size", "field": "size", "norm": { "mode": "abs", "scale": 24 }, "weight": 0.5 }
+    ]
+  },
+  "target": { "mode": "params", "params": { "alpha": 1, "beta": 1 } },
+  "params": { "mode": "list", "list": ["alpha", "beta", "ghost"] },
+  "score": { "type": "l1", "penalties": [] },
+  "guard": { "protectPaths": [] },
+  "packageNote": "能直接跑（不依赖浏览器/端口/本机路径）：node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --budget 40。观测 = 跑一次 node examples/command-demo/probe.mjs（它读 SELFLOOP_PARAMS 指向的参数文件，打印一行 JSON）。target.mode=params 表示目标行由「用目标参数跑一次同一个命令」得到；也可以写 target.mode=metrics 直接给目标数值。ghost 是这个示例故意留的无效参数：改它命令输出会变（诊断字段），但两个指标一动不动 → 活性扫描判 dead。"
+}

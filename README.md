@@ -2,6 +2,7 @@
 
 这个包是个**通用闭环引擎**：给它一个能测的目标（一张图、一组数值、一段日志），再给一组能调的参数，它自己搜出最接近目标的那组值，并留下一份能复验的证据包。
 它不绑任何项目——换项目 = 换一份 adapter，引擎和执行器都不用动。
+**观测可以是命令输出**：除了「改配置 → 起浏览器 → 截图 → 量像素」这条渲染链路，还能「改参数 → 跑一条命令 → 从 stdout 取数」（`harness/cmdloop.mjs`，纯 node、跨平台）。所以构建耗时、接口延迟、日志里的错误数、求解残差也能进同一个闭环。
 包里那几份示例 adapter 描述的是一个 2D 游戏渲染管线的现场（案例 A，见文末「案例与来源」），只用来演示"换项目只换 adapter"。
 渲染/特效只是它接上的第一个领域（`domains/vfx-render/`），换成日志、接口、UI 状态同理。
 
@@ -16,9 +17,9 @@
 
 | 概念 | 是什么 | 谁配 |
 |---|---|---|
-| **观测** | 任意能给出可比较数值的探针（渲染图、日志、接口响应、UI 状态） | adapter 的 `page` / `freeze` / `tools.metricsJs` |
-| **判定** | 可配置的判据与距离（不做裁判，只做粗筛与报警） | adapter 的 `metrics` / `score` |
-| **搜索** | 可配置的参数空间（先扫活性，再选轴） | adapter 的 `params` + 执行器 `iter.ps1` |
+| **观测** | 任意能给出可比较数值的探针（渲染图、日志、接口响应、UI 状态） | 截图链路：adapter 的 `page` / `freeze` / `tools.metricsJs`；命令链路：adapter 的 `observe` |
+| **判定** | 可配置的判据与距离（不做裁判，只做粗筛与报警） | adapter 的 `metrics`（命令链路是 `observe.metrics`）/ `score`，两边共用 `score.js` |
+| **搜索** | 可配置的参数空间（先扫活性，再选轴） | adapter 的 `params` + 执行器（`iter.ps1` 截图 / `cmdloop.mjs` 命令） |
 
 引擎只解决**形**（粗细、长度、节奏、面积、亮度这类能算的量），不解决**色 / 质 / 味**，也不替人判断成品好不好看。
 
@@ -43,19 +44,21 @@
 | 首个领域的 3 份示例适配器（火焰射线 / 闪电链 / url-time demo） | `domains/vfx-render/adapters/` |
 | 一份不绑任何项目的最小示例（自己写 adapter 就从它改） | `examples/minimal.json` |
 | 第三方台改造后的示例（**不是开箱即用**：宿主侧要先按 `skills/selfloop/references/host-adaptation.md` 做五步改造） | `examples/third-party-3d.json` |
+| **命令观测的能跑示例**（观测 = 一条命令的 stdout，含一个故意无效的参数）+ 双入口执行器 `cmdloop.mjs`（纯 node、跨平台） | `examples/command-echo.json` + `examples/command-demo/`、`harness/cmdloop.mjs` |
 | `selfloop` 技能（宿主有 `ctx.skills` 时自动注册） | `skills/selfloop/` |
 
-**这个插件不跑闭环**：工具只读文件，不起浏览器、不开端口、不花预算。真跑一轮是 `harness/iter.ps1` 的事。
+**这个插件不跑闭环**：工具只读文件，不起浏览器、不开端口、不花预算。真跑一轮是执行器的事——截图链路 `harness/iter.ps1`（Windows），命令链路 `harness/cmdloop.mjs`（跨平台）。
 
 ## 工具
 
 ### `selfloop_probe { adapter? }`
 
-解析一份 adapter.json 描述的现场，返回：`domain`（所属领域）/ `clientRoot` / 配置文件路径与是否存在 / 参数块 / 冻帧协议（`noloop-step` | `url-time`，含 clock、步长、冻结时刻、seed）/ 视口档位 / 端口 / **判据口径**（每条指标 = 提取器 + 权重 + 归一区间 + 是否启用）/ 距离公式与惩罚项 / 目标与白名单来源（`target` / `params`）/ `template`（是不是字段模板）/ `guard`（`protectPaths` + `enforced`）/ 包内 harness 是否齐全 / `warnings`。
+解析一份 adapter.json 描述的现场，返回：`domain`（所属领域）/ `observe`（观测来源：`type` 空串 = 浏览器截图；`command` = 跑一条命令、`cmd` / `cwd` / `timeoutMs` / `parse` / 取数指标）/ `clientRoot` / 配置文件路径与是否存在 / 参数块 / 冻帧协议（`noloop-step` | `url-time`，含 clock、步长、冻结时刻、seed）/ 视口档位 / 端口 / **判据口径**（每条指标 = 提取器 + 权重 + 归一区间 + 是否启用）/ 距离公式与惩罚项 / 目标与白名单来源（`target` / `params`；命令观测还认 `target.mode=metrics`）/ `template`（是不是字段模板）/ `guard`（`protectPaths` + `enforced`）/ 包内 harness 是否齐全 / `warnings`。
 
 - `adapter`：adapter.json 的**绝对路径**；省略时读包内 `domains/vfx-render/adapters/fire-ray.json`
 - `clientRoot`：可选，**绝对路径**，直接盖掉 adapter 里的 `clientRoot` / `%VFX_LOOP_CLIENT%`。宿主进程常常继承不到那条环境变量（用户在自己 shell 里设的），这个参数就是为它准备的——省掉「设变量 + 重启宿主」；必须真实存在，相对路径和不存在都直接报错。
 - 硬错（缺 `name`/`clientRoot`/`config`/`page`/`freeze`/`render`/`server`、`freeze.protocol` 不认、`config.format` 不认、`noloop-step` 缺 `stepMs`、`clock` 口径不对）**与 `iter.ps1` 的 `Import-Adapter` 同口径**，不多拦
+- 命令观测（`observe.type=command`）走另一套必填：`name` / `config` / `observe` / `target` / `params`，而 `clientRoot` / `page` / `freeze` / `render` / `server` **不是**必填（那是截图链路的现场描述），`config.format` 只认 `flat-params`
 - 能解析但开跑会炸的（配置文件不在、浏览器没装、脚本指不到、`score.type` 不是 `l1`）只进 `warnings`，不当错误
 - `guard.protectPaths` 没写只 warn（`enforced:false`），不当错误——但这时改参脚本没有"拒写本体"的保护
 
@@ -89,6 +92,15 @@ pwsh -NoProfile -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\
 ```
 
 `-Root`（旧语义「项目根」）**默认空**：运行时按 `命令行 > adapter.clientRoot 的上级 > $PSScriptRoot\..` 推导，推不出来就中文报错。
+
+### 命令观测（不需要浏览器、跨平台）
+
+```bash
+node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --budget 40
+```
+
+要调的不是画面而是"一串数"（构建耗时 / 接口延迟 / 日志里的错误数 / 求解残差）时走这条：adapter 里加一节 `observe`（`type: command` + `cmd` + `parse` + `metrics`），执行器跑命令、从 stdout 取数、用**同一份 `score.js`** 算距离、出同构证据包（`curve.csv` / `best.json` / `report.md` + `outputs/` 原始输出）。怎么给非图形目标写 adapter、常见坑，见 `skills/selfloop/references/command-observe.md`；字段表见 `harness/适配层-说明.md` 第六节。
+缺 `observe` 节的 adapter 行为完全不变（还是截图链路）。
 
 ## 安装
 
@@ -197,11 +209,15 @@ domains/vfx-render/README.md     首个领域说明（观测/判定/搜索怎么
 harness/                         执行器：跑一轮的必需件（见下；改动要进 CHANGELOG 并同步上游原件）
 examples/minimal.json            不绑任何项目的最小 adapter（自己写就从它改）
 examples/third-party-3d.json     第三方台改造后的形态（要跑得先改造宿主，见 references/host-adaptation.md）
+examples/command-echo.json       命令观测示例（能直接跑）：观测 = 一条 node 命令的 stdout
+examples/command-demo/           上面那份的配套：probe.mjs（读参数算两个指标）+ base-params.json
 static/server.mjs                静态服：node server.mjs <root> <port> [host]
-skills/selfloop/                 技能：SKILL.md + references/（通用方法 + 宿主改造 + domains-vfx.md）
+skills/selfloop/                 技能：SKILL.md + references/（通用方法 + 宿主改造 + 命令观测 + domains-vfx.md）
 locale/{zh,en}.json              插件清单里的标题与描述（权臣 / Selfloop）
 CHANGELOG.md                     改动记录（随包分发，`files` 里有它）
 test/plugin.test.mjs             55 个用例（不进包）
+test/hue.test.mjs                12 个用例（色相判据，不进包）
+test/command.test.mjs            11 个用例（命令观测 + 两条弄坏能红，不进包）
 ```
 
 `harness/` 里逐件的作用：
@@ -217,6 +233,8 @@ test/plugin.test.mjs             55 个用例（不进包）
 | `apply.js` | 改参：`vfx-block` 形态（vfx.json 的 `effects.<E>.<B>`），`--protect` 拒写本体 |
 | `apply_params.js` | 改参：`flat-params` 形态（扁平 `{params:{...}}`），同样走 `--protect` |
 | `writeguard.js` | 写护栏：判定 `out` 是否落在 `guard.protectPaths` 下（两个改参脚本共用） |
+| `cmdloop.mjs` | **命令观测入口**（0.4.0）：解析 `observe` → 跑命令 → 取数 → 预检 → 坐标下降 → 出同构证据包（+ `outputs/`）；纯 node、跨平台 |
+| `cmdlib.mjs` | `cmdloop.mjs` 的零件：`observe` 解析、命令执行（超时/退出码/解析/指标缺失全硬错）、参数文件、`iter.ps1` 坐标下降口径的照抄件 |
 | `adapter.json` | **字段模板**（`template:true`）：只有字段和注释，**不能直接跑**；`iter.ps1` 不带 `-Adapter` 时会被拒绝 |
 | `适配层-说明.md` | adapter 字段语义（v3 全部字段 + 优先级） |
 | `package.json` | **只做一件事**：把这一层钉成 `"type": "commonjs"`（包根是 `"type": "module"`，而 `score/metrics2/finalize/apply/apply_params` 是从上游原件（案例 A）移植来的 CommonJS 脚本） |
@@ -270,3 +288,4 @@ node test/plugin.test.mjs      # 54 个用例：schema/返回值互验、harness
 ## 案例与来源
 
 `harness/` 的执行器最早移植自**案例 A**（一个 2D 游戏项目的渲染管线），之后在本包里独立演进、已与上游分叉；示例 adapter 描述的是案例 A 的现场，用来演示"换项目只换 adapter"。除此之外，本包不依赖任何具体项目。
+

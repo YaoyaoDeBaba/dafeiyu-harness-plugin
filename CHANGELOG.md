@@ -3,6 +3,29 @@
 > 规矩：**改了 `harness/` 里的执行器就要在这里记一笔**，并注明"要不要回灌上游原件（案例 A，见 README「案例与来源」）"。
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
+## 0.4.0（未发布）· 观测来源可以是一条命令的输出
+
+> 前三版证明的是「渲染类目标可调」。这一版补的是**「任何可测目标可调」里最难的那半步**：观测不必是截图。
+> 新增入口 `harness/cmdloop.mjs`（纯 node、跨平台）跑「改参数 → 跑一条命令 → 从 stdout 取数 → 算判据 → 搜索 → 证据包」；
+> `harness/iter.ps1` 的浏览器闭环**一行没动**（动它要重验进程卫生与冻帧自检，不划算，所以做成并列入口而不是分支）。
+
+- **新增 `harness/cmdloop.mjs` + `harness/cmdlib.mjs`**：命令观测执行器。`cmdlib.mjs` 管"观测这一侧"（`observe` 解析、跑命令、取数、写参数文件），`cmdloop.mjs` 管"搜索 + 证据包"。只用 node 内置模块，Windows/macOS/Linux 都能跑。
+- **adapter 新增 `observe` 节**（缺省 = 老行为，旧 adapter 一个字不用改）：
+  `type: command` + `cmd`（`{params}` 占位、相对路径按 adapter 目录展开、**不走 shell**）+ `cwd` + `timeoutMs` + `parse`（`json` / `number` / `line:k=v`）+ `metrics[{id, field, weight, norm}]`。
+  `config` 沿用 `flat-params` 语义但**只读**：每次评估把候选值写成 `<run>/params/eNNN.json`，路径通过 `{params}` 占位或环境变量 `SELFLOOP_PARAMS` 交给命令（文档里写死只认这一种）；**绝不写 adapter / clientRoot**。
+  新目标模式 `target.mode=metrics`：直接给目标数值，不跑命令（命令链路才有意义）。
+- **判据一行代码没另写**：`cmdlib.mjs` 直接 `require` 同一份 `harness/score.js`（`plan` / `dist` / `planText`），所以 `norm`（range/pctrel/abs/identity + clamp）、权重、`penalty` 的 `when` 极小解析器、直方图环形 L1 在两条链路里语义逐条一致。
+- **搜索策略是"复制语义"而不是"复用代码"**：`iter.ps1` 是 PowerShell 且绑着静态服/浏览器/截图，为了共用去动它 = 拿跑通的产品资产换抽象。所以 `cmdloop.mjs` 自己实现坐标下降，但**逐条照抄** `iter.ps1` 的口径：`Get-Step`（±10%，零基参数走绝对步长 0.05）/ `New-Vector`（六位小数）/ `Key-Of`（白名单顺序 + 六位小数字符串，缓存命中不算评估）/ 预算闸 / 活性预检（+1 步，`Δd<=1e-9` 记 dead，全 dead 直接停）/ 每轮候选 `none + 每轴±1` / `pick < best-1e-9` 才算改进 / 连续 `maxStagnant` 轮不改进就停。差别的**唯一**一处：`random` 策略的随机源（`.NET Random` vs mulberry32），所以同 seed 的 random 轨迹**不跨执行器可比**，`coordinate`（默认）两边一致。
+- **失败要响（四类全硬错）**：命令超时（`命令超时（>Nms）`）/ 非零退出（带 `exit=` 与 stderr 前 200 字）/ 输出解析不出来（带前 200 字原文）/ 指标缺失（点名哪个字段）。**绝不当 0 静默通过**；硬错时也不留一份"看起来跑完了"的证据包。
+- **证据包与截图链路同构**：`curve.csv` / `best.json` / `report.md` 字段命名沿用（`round` / `eval_seq` / 参数列 / `dist` / `pen` / `m:<指标>` / `nd:<指标>`），末尾那列从 `png` 换成 `output`；额外 `outputs/`（每次评估的原始命令输出，**单份截断 4KB**）与 `params/`（每次评估交给命令的参数文件）。`best.json.hash` 口径照抄 `finalize.js`：只放决定"搜到哪"的东西，不放时间/路径/原始输出 → 换 `--out` 目录同 seed 重跑，hash 必须一致。
+- **`core/adapter.js` 解析 `observe` 节**（可选）：命令 adapter 的必填项换成 `name`/`config`/`observe`/`target`/`params`，并且**不再**对 `clientRoot`/`page`/`freeze`/`render`/`server`/浏览器候选/静态服/`metrics2.js` 逐条报"缺"（它们描述的是截图链路，报了只是噪音）；`config.format` 只认 `flat-params`。
+- **`lib/index.js` 的 probe 说得出 `observe`**：新增 `observe` 输出块（`type` / `cmdRaw` / `cmd` / `cwd` / `timeoutMs` / `parse` / `metricsCount` / `metrics`），`target` 增加 `metrics` 字段，**新键全部进 `required`**；命令 adapter 的 `note` 改指向 `cmdloop.mjs`（不再是"harness 是 Windows 专用"那句），渲染文本对命令观测**不再打印视口/端口/冻帧**这些不存在的字段。
+- **新增能跑的示例**：`examples/command-echo.json` + `examples/command-demo/`（`probe.mjs` 读参数、按 `loss=|α-1|+0.5|β-1|`、`size=20+5α+3β` 算两个指标并打印 JSON，**无随机**；`base-params.json` 是基线参数）。其中一个参数 `ghost` 是**故意无效**的：它让 stdout 变、但两个指标一动不动 → 活性扫描判 dead（证据包里 `Δd=0 / 输出同=否 / dead`，比"像素同"更严的那条口径）。
+- **新增 `test/command.test.mjs`（11 条，接进 `npm test`，现在 55 + 12 + 11）**：① 一轮收敛（drop > 50%）+ 证据包齐全（含 `outputs/` 每份 ≤4KB）；② 无效参数判 dead 且不进搜索轴；③ 超时硬错；④ 非零退出硬错；⑤ 输出解析失败硬错（json 与 number 两种）；⑥ 指标缺失硬错；⑦ 同 seed 换 `--out` 目录 `best.json` hash 一致（且轨迹逐点一致）；⑧ core/probe 层说得清 `observe` 且输出过 schema；⑨ 两条**弄坏能红**（`CMDLOOP_MUTANT=flatZero` 时 ① 的收敛断言必须塌、`=noTimeout` 时 ③ 的硬错断言必须塌，两条都写成可复跑的用例）。
+- **文档**：新增 `skills/selfloop/references/command-observe.md`（怎么给非图形目标写 adapter、三行示例、字段表、四条"参数怎么交给命令"的写死约定、活性扫描口径、**哪些是复用哪些是复制**、常见坑 + "命令必须确定性"那条纪律）；`harness/适配层-说明.md` 加第六节 `observe`（双执行器对照、字段表、四类硬错、证据包、实例）；`README.md` 顶部定位段补"观测可以是命令输出"、三个概念表与 `harness/` 逐件表补 `cmdloop.mjs` / `cmdlib.mjs`、新增"命令观测"用法段。
+- **`test/plugin.test.mjs` 的一处收窄（不是放宽）**：`包内没有本机绝对路径` 那条原来只跳过 `node_modules`/`.git`，于是**谁在仓库里跑过一轮闭环**（证据包默认落 `runs/`，`.gitignore` 里本来就排除了）就会假红——它该管的是随包分发的源码/配置，不是 run 产物。现在把 `runs`/`prof_*` 一起跳过。
+- **回灌提醒**：`harness/cmdloop.mjs` / `cmdlib.mjs` 是**新增**文件，上游原件（案例 A）里没有对应物，不需要回灌；`iter.ps1` 本轮零改动。
+
 ## 0.3.8（未发布）· 第三方台试刀沉淀成包里自带的能力
 
 > 上一轮是在**别人的**页面上把闭环跑通的（起点 0.2124 → 最好 0.0804，降 62.1% / 60 次评估）。这一版把那次试刀里**能带走的**部分变成包里的资产：一份中性化后的示例 + 一份宿主改造清单。执行器一行没改。
@@ -72,3 +95,4 @@
 ## 0.2.0 · 第一次装成插件
 
 - 闭环调参 harness（配置驱动）：活性扫描 → 搜索 → 证据包。
+
