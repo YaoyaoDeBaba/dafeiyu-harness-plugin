@@ -31,7 +31,7 @@ const score = require('./score.js');
 
 // ---------------------------------------------------------------- 常量 / 变异开关
 export const DEFAULT_TIMEOUT_MS = 30000;
-export const PARSE_MODES = ['json', 'number', 'line:k=v'];
+export const PARSE_MODES = ['json', 'number', 'line:k=v', 'image'];
 // 观测稳定性闸的默认值：**不写也要生效**（默认值就应该是安全的那一档）。
 // repeat=3 是"能看出抖动、又不至于把预算吃光"的最小可行样数（2 次只能比出一对差，3 次看得出趋势）。
 // maxSpread=2% 来自实测口径：命令链路的指标多是耗时/计数/残差，2% 以内的抖动通常来自调度与计时，
@@ -393,18 +393,33 @@ export function resolveCommandPlan(adapter, adapterFile, opts = {}) {
 
   const rawMetrics = Array.isArray(o.metrics) ? o.metrics : [];
   if (!rawMetrics.length) die('adapter.observe.metrics 是空数组：没有指标就没有判据，跑不了');
+  // parse=image（0.13.0）：命令产出一张 PNG，指标由 metrics2.js 的提取器算（extract + opts，opts.mask 就写在这里）。
+  // 这条不是"命令链路突然变成渲染链路"：观测仍然是"跑一条命令"，只是命令交出来的东西从数变成了一张图。
+  const isImageMode = parseMode === 'image';
+  const metrics2 = isImageMode ? require('./metrics2.js') : null;
   const metrics = rawMetrics.map((it) => {
     const id = String(it?.id ?? '');
     if (!id) die('observe.metrics 有一项缺 id：' + JSON.stringify(it));
     const weight = it?.weight === undefined ? 1 : Number(it.weight);
     if (!Number.isFinite(weight)) die(`observe.metrics.${id}.weight 不是数：${JSON.stringify(it?.weight)}`);
-    return {
+    const m = {
       id,
-      field: String(it?.field ?? id),
+      field: String(it?.field ?? (isImageMode ? (it?.extract ?? id) : id)),
       weight,
       norm: it?.norm ?? { mode: 'identity' },
       enabled: it?.enabled !== false,
     };
+    if (isImageMode) {
+      m.extract = String(it?.extract ?? id);
+      m.opts = it?.opts && typeof it.opts === 'object' && !Array.isArray(it.opts) ? it.opts : {};
+      if (!metrics2.EXTRACTORS[m.extract]) {
+        die(
+          `observe.metrics.${id}.extract=${m.extract} 不是 metrics2.js 的提取器（可用：${Object.keys(metrics2.EXTRACTORS).join(' / ')}）` +
+            ' —— parse=image 时 extract 是必填的（缺省取 id）',
+        );
+      }
+    }
+    return m;
   });
   const activeMetrics = metrics.filter((m) => m.enabled);
   if (!activeMetrics.length) die('observe.metrics 全部 enabled:false：没有参与打分的指标');
@@ -499,7 +514,15 @@ export function resolveCommandPlan(adapter, adapterFile, opts = {}) {
       timeoutMs,
       parse: parseMode,
       stability,
-      metrics: activeMetrics.map((m) => ({ id: m.id, field: m.field, weight: m.weight, norm: m.norm })),
+      metrics: activeMetrics.map((m) => ({
+        id: m.id,
+        field: m.field,
+        weight: m.weight,
+        norm: m.norm,
+        // parse=image 时这两项就是"用哪个提取器、掩膜怎么圈"——报告与指纹里必须看得见
+        ...(m.extract ? { extract: m.extract } : {}),
+        ...(m.opts ? { opts: m.opts } : {}),
+      })),
       metricIds: activeMetrics.map((m) => m.id),
     },
     metrics: activeMetrics,
@@ -590,6 +613,78 @@ export function computeDist(plan, row, trow) {
   return r;
 }
 
+// ---------------------------------------------------------------- 图片观测（0.13.0）
+// parse=image：命令只交出**一张图的路径**，指标由 metrics2.js 的提取器算（extract + opts，掩膜写在 opts.mask 里）。
+// 为什么命令链路要能看图：掩膜哨兵要判"掩膜是不是冻在同一小块像素"，就必须真的拿到掩膜位图与掩膜内指标；
+// 只靠命令自报的 JSON 永远证不了这件事（自报的 hash 可以随便填）。
+// 口径与截图链路一致：同一张图交给同一批提取器 —— 差别只在"图从哪来"，不在"怎么量"。
+function readImageObservation(plan, stdout) {
+  const text = String(stdout ?? '').trim();
+  if (!text) die('observe.parse=image 但 stdout 是空的：命令必须打印图片路径（一行）');
+  const lines = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  if (lines.length !== 1) {
+    die(`observe.parse=image 但 stdout 不是一行路径（收到 ${lines.length} 行）：命令只该打印图片路径，前 200 字：${JSON.stringify(text.slice(0, 200))}`);
+  }
+  const raw = lines[0].replace(/^["']|["']$/g, '');
+  const pngPath = isAbsolute(raw) ? resolve(raw) : resolve(plan.observe.cwd, raw);
+  if (!existsSync(pngPath)) {
+    die(`observe.parse=image 但图片不存在：${pngPath}（stdout 原文：${JSON.stringify(text.slice(0, 200))}）`);
+  }
+  const bytes = readFileSync(pngPath);
+  if (bytes.length < 8 || bytes[0] !== 0x89 || bytes[1] !== 0x50) {
+    die(`observe.parse=image 但那个文件不是 PNG（前 8 字节 ${bytes.subarray(0, 8).toString('hex')}）：${pngPath}`);
+  }
+  const pngSha = createHash('sha256').update(bytes).digest('hex');
+  const metrics2 = require('./metrics2.js');
+  // 提取器默认值必须在这里合上：extractOne 拿的是**已经解析好的**计划（resolvePlan 才做 defaults 合并），
+  // 少了这一步，cov 的 luma:40 / lapVar 的 luma:40 这些缺省值会变成 undefined（指标静默变 0）。
+  const plan2 = plan.metrics.map((m) => ({
+    id: m.id,
+    extract: m.extract,
+    opts: Object.assign({}, metrics2.EXTRACTORS[m.extract].defaults, m.opts || {}),
+  }));
+  let ex;
+  try {
+    ex = metrics2.extractOne(pngPath, plan2, null, false);
+  } catch (e) {
+    die(`observe.parse=image 量图失败（${pngPath}）：${e?.message ?? e}`);
+  }
+  const row = {};
+  for (const m of plan.metrics) {
+    const v = Number(ex[m.id]);
+    if (!Number.isFinite(v)) {
+      die(`指标缺失：图片量不出数字（metric ${m.id}，extract=${m.extract}）—— 不许当 0 静默通过`);
+    }
+    row[m.id] = v;
+  }
+  // 全帧口径的同一批指标：只给哨兵做"掩膜内变了但全帧没变（或反之）"的对照。
+  // 它**不进距离**、不进 curve，也不改变任何一条指标的既有语义。
+  const fullPlan = plan2.map((p) => ({ id: p.id, extract: p.extract, opts: Object.assign({}, p.opts, { mask: { mode: 'none' } }) }));
+  let fullEx = null;
+  try {
+    fullEx = metrics2.extractOne(pngPath, fullPlan, null, false);
+  } catch {
+    fullEx = null; // 对照失败不影响主判据（主判据已经量出来了）
+  }
+  const full = fullEx
+    ? Object.fromEntries(plan.metrics.map((m) => [m.id, Number(fullEx[m.id])]))
+    : null;
+  const maskInfo = ex.maskInfo || null;
+  const maskFallback = ex.maskFallback === true;
+  // maskHash 只在"真的圈出了一块掩膜"时给：回退全图 / 没写 mask → null（哨兵不拿全图当掩膜）。
+  const maskFp = maskInfo
+    ? {
+        maskHash: maskFallback ? null : maskInfo.maskHash || null,
+        masked: row,
+        full,
+        fallback: maskFallback,
+        mode: maskInfo.mode,
+        areaPct: maskInfo.areaPct ?? null,
+      }
+    : null;
+  return { row, pngSha, maskFp, fields: { png: pngPath, maskInfo, maskFallback, full } };
+}
+
 // 跑一次命令。返回 { row, fields, dist, stdout, stderr, ms, timedOut, stdoutSha, paramsFile, argv }
 // fields = 按 observe.parse 解析出来的原始字段表（硬不变量的 field 可以取它）。
 // 四类失败都是**中文硬错**：超时 / 非零退出 / 输出解析不出来 / 指标缺失。
@@ -633,12 +728,29 @@ export function evaluate(plan, opts) {
         `  stdout 前 200 字：${JSON.stringify(stdout.slice(0, 200))}  stderr 前 200 字：${JSON.stringify(stderr.slice(0, 200))}`,
     );
   }
-  const fields = parseOutput(stdout, plan.observe.parse, plan.observe.metricIds);
-  const row = rowFromFields(fields, plan.metrics);
+  const fields = plan.observe.parse === 'image' ? null : parseOutput(stdout, plan.observe.parse, plan.observe.metricIds);
+  const img = plan.observe.parse === 'image' ? readImageObservation(plan, stdout) : null;
+  const row = img ? img.row : rowFromFields(fields, plan.metrics);
+  const outFields = img ? img.fields : fields;
   // 目标自己那一次评估没有"目标行"可比 —— 不算距离（不是"距离 0"，是没有距离）
   const d = opts.trow ? computeDist(plan, row, opts.trow) : null;
   // fields 原样带上：硬不变量（invariants）的 field 除了指标 id，还可以取命令输出里的任意扁平字段。
-  return { row, fields, dist: d, stdout, stderr, ms, timedOut: false, stdoutSha: sha256Text(stdout), paramsFile, argv };
+  return {
+    row,
+    fields: outFields,
+    dist: d,
+    stdout,
+    stderr,
+    ms,
+    timedOut: false,
+    stdoutSha: sha256Text(stdout),
+    // 图片观测（0.13.0）：pngSha = 图片字节的 sha256；maskFp = 掩膜指纹（给评估循环的哨兵用）。
+    // 非图片观测时 pngSha='' / maskFp=null —— 既有行为一个字节都不变。
+    pngSha: img ? img.pngSha : '',
+    maskFp: img ? img.maskFp : null,
+    paramsFile,
+    argv,
+  };
 }
 
 // 证据包里的 outputs/：每次评估的原始命令输出，**截断到 4KB**（超了标 truncated:true，方便一眼看出不是全文）。

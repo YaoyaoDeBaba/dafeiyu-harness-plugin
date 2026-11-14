@@ -372,6 +372,8 @@ function buildContentMask(g, o) {
     }
     const areaPct = 100 * count / n;
     const bboxPct = bx1 >= 0 ? 100 * (bx1 - bx0 + 1) * (by1 - by0 + 1) / n : 0;
+    // 掩膜指纹（0.13.0）：同一块像素 → 同一个 hash；圈到别处 → 换 hash。没有掩膜就没有指纹。
+    const maskHash = m ? fnv1aMask(m) : null;
     // 「圈错」的自动拦截（0.12.0）：面积太小 = 大概率圈到小块高光/白芯，不是主体。
     // 这一条就是实验里那个病：luma:200 只剩枪口白芯，三个不同变体在三个时刻的掩膜内指标逐位相同
     // （7305.98|0.21296|0.11216）——最大连通域在"枪口团"和"射线"之间跳，等于把不同变体量成同一块像素。
@@ -385,7 +387,7 @@ function buildContentMask(g, o) {
         }
     }
     const base = Object.assign({}, extra, {
-        mode, dilate, minAreaPct, areaPct, largestPct: 100 * largestSize / n, bboxPct,
+        mode, dilate, minAreaPct, areaPct, largestPct: 100 * largestSize / n, bboxPct, maskHash,
         maskSuspicious: suspect.length > 0, maskSuspectReasons: suspect, maskWarn,
         luma: extra.luma === undefined ? null : extra.luma
     });
@@ -408,6 +410,8 @@ function scopeOf(px, o, ctx) {
             mode: r.mode, luma: r.luma, dilate: r.dilate, minAreaPct: r.minAreaPct,
             areaPct: +r.areaPct.toFixed(4), largestPct: +r.largestPct.toFixed(4),
             bboxPct: +(r.bboxPct == null ? 0 : r.bboxPct).toFixed(4),
+            // 掩膜指纹（0.13.0）：跨候选比"是不是同一块像素"。回退全图时用的是整帧，掩膜位图已作废 → null。
+            maskHash: r.maskFallback ? null : r.maskHash,
             maskFallback: r.maskFallback
         };
         // 模式专属口径原样回执：报告里必须能看出"这次用的是 roi 还是 content(luma:200)"
@@ -419,6 +423,19 @@ function scopeOf(px, o, ctx) {
         if (r.maskWarn && r.maskWarn.length) ctx.maskWarn = (ctx.maskWarn || []).concat(r.maskWarn);
     }
     return { m: r.m, count: r.count, maskFallback: r.maskFallback };
+}
+
+// 掩膜指纹（0.13.0 的哨兵用）：对掩膜位图做 FNV-1a 32 位，输出 8 位十六进制。
+// 为什么需要它：areaPct/bboxPct 只能说明"圈了多大"，说明不了"圈的是不是同一块像素"——
+// 第二轮实验里三个不同变体圈出的都是那块枪口白芯（面积/包围盒一样），指标逐位相同，量出来的却是"稳定的一比"。
+// 65k 像素 <1ms，放进 maskInfo 不心疼；只对**真实掩膜**给值（mode:none / 回退全图 → null）。
+function fnv1aMask(m) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < m.length; i++) {
+        h ^= m[i];
+        h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16).padStart(8, '0');
 }
 
 // 掩膜内的像素占比（分母 = 掩膜内像素数；全图时等于「占全图比例」）

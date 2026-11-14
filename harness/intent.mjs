@@ -136,6 +136,8 @@ export function intentTemplate(metricIds = [], chain = 'cmd') {
       '⑨ 硬不变量（0.7.0，可选但强烈建议）：invariants 数组，每条 {id, check, why} —— 不合格直接判废，不进距离（指标负责"像不像"，不变量负责"是不是"）。' +
         'check 只认：比较 {field, op:==|!=|<|<=|>|>=, value:<数字>} / 组合 {all:[…]}、{any:[…]}、{not:…}；field 是指标 id 或命令输出里的字段（可写 a.b）。' +
         '写错文法 / 字段取不到 = 硬错；不写 = 不拦，但会 warn「没写硬不变量：搜索会拿底线换分数」。截图链路暂不支持（写了会硬错）。',
+      '⑩ 掩膜哨兵（0.13.0，可选）：maskSentinel:true = 要求"掩膜冻在同一小块像素"必须被拦（命令链路默认就开着；' +
+        '只有 parse=image + opts.mask 的观测才有掩膜指纹）。截图链路不实现哨兵 —— 在那里写 true 会硬错（宁可拒跑，也不假装有哨兵）。',
     ],
     version: INTENT_VERSION,
     restate: '',
@@ -145,6 +147,7 @@ export function intentTemplate(metricIds = [], chain = 'cmd') {
     freeVsFixed: { fixed: [], free: [] },
     howWeVerify: { human: true, metrics: true, note: '' },
     invariants: [],
+    maskSentinel: false,
     uncertain: [],
     confirm: [],
     confirmed: false,
@@ -454,6 +457,21 @@ export function resolveIntent(opts = {}) {
     );
   }
 
+  // 掩膜哨兵（0.13.0）：intent 可以**要求**"掩膜冻住必须被拦"。
+  // 截图链路（iter.ps1 / finalize.js）不实现哨兵 → 与硬不变量同一处理：要求了就 fail-closed 硬错。
+  if (j.maskSentinel !== undefined && typeof j.maskSentinel !== 'boolean') {
+    die(`intent.maskSentinel 只认 true / false（收到 ${JSON.stringify(j.maskSentinel)}）—— 它表达的是"要不要必须拦掩膜冻住"，不是配置对象`);
+  }
+  const maskSentinel = j.maskSentinel === true;
+  if (chain === 'screenshot' && maskSentinel) {
+    die(
+      '截图链路不支持掩膜哨兵（intent.maskSentinel=true）\n' +
+        '  哨兵只在命令链路（cmdloop.mjs）里有：它要读掩膜位图与掩膜内指标向量，而 iter.ps1 的观测是页面指标、判定在 PowerShell 侧，\n' +
+        '  没有测试守着那个实现（和硬不变量同一处理：宁可拒跑，也不假装有哨兵）。\n' +
+        '  改法：把 intent.maskSentinel 去掉/改成 false（截图链路仍按原来的指标判据跑），或改走命令观测链路（cmdloop.mjs，parse=image + opts.mask）',
+    );
+  }
+
   const understood = String(j.understood ?? restate ?? '').trim();
 
   // ------------------------------------------------------------ v2.1：判据的来源与量法（不参与距离）
@@ -532,6 +550,8 @@ export function resolveIntent(opts = {}) {
     howWeVerify: hwv,
     // 硬不变量（0.7.0）：已经过文法校验的 [{id, why, check}]；空数组 = 不拦（cmdloop 会 warn）
     invariants,
+    // 掩膜哨兵（0.13.0）：intent 要求"掩膜冻住必须被拦"；false = 没这个要求（命令链路默认仍开着哨兵）
+    maskSentinel,
     confirm: confirmArr,
     understood,
     reason: degradedWhy.join('；'),
@@ -558,6 +578,8 @@ function skippedShape(o = {}) {
     howWeVerify: null,
     // 跳过需求转译 = 没有 invariants（不拦；cmdloop 会 warn 一句"搜索会拿底线换分数"）
     invariants: [],
+    // 跳过需求转译 = 也没人要求过哨兵（命令链路的哨兵仍按默认开着）
+    maskSentinel: false,
     confirm: [],
     understood: '',
     reason: o.reason || '',

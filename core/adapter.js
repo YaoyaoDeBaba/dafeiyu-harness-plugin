@@ -467,8 +467,8 @@ export function parseAdapter(file, harnessDir, opts = {}) {
   }
 
   if (isCommandObserve) {
-    if (!['json', 'number', 'line:k=v'].includes(observeParse)) {
-      warnings.push(`adapter.observe.parse=${observeParse} 不认识（只认 json | number | line:k=v）：cmdloop.mjs 会硬错`)
+    if (!['json', 'number', 'line:k=v', 'image'].includes(observeParse)) {
+      warnings.push(`adapter.observe.parse=${observeParse} 不认识（只认 json | number | line:k=v | image）：cmdloop.mjs 会硬错`)
     }
     if (!(observeTimeout > 0)) warnings.push('adapter.observe.timeoutMs 不是正数：cmdloop.mjs 会硬错')
     if (observeCmd && /[\\/]/.test(observeFirstTok) && !existsSync(observeCmd)) {

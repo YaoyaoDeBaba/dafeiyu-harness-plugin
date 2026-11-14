@@ -66,8 +66,8 @@ node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --
 | `observe.cmd` | ✅ | 要跑的命令。**不走 shell**（自带极小分词器，认空白与 `'` `"` 引号）；相对路径按 **adapter 所在目录**展开；可含 `{params}` 占位 |
 | `observe.cwd` | | 工作目录，默认 = adapter 所在目录 |
 | `observe.timeoutMs` | | 单次命令超时，默认 `30000`。超了**中文硬错**，不当 0 |
-| `observe.parse` | ✅ | `json`（stdout 是一个 JSON 对象）/ `number`（整个 stdout 是一个数，只能配 1 条指标）/ `line:k=v`（每行 `key=数值`） |
-| `observe.metrics[]` | ✅ | `{ id, field, weight, norm }`：`id` = 证据包列名（内部距离用的键），`field` = 输出里的字段名（缺省 = `id`），`norm`/`weight` 与 `score.js` 完全同义 |
+| `observe.parse` | ✅ | `json`（stdout 是一个 JSON 对象）/ `number`（整个 stdout 是一个数，只能配 1 条指标）/ `line:k=v`（每行 `key=数值`）/ `image`（stdout 是**一张 PNG 的路径**，指标由 `metrics2.js` 的提取器算；见 §2.3） |
+| `observe.metrics[]` | ✅ | `{ id, field, weight, norm }`：`id` = 证据包列名（内部距离用的键），`field` = 输出里的字段名（缺省 = `id`），`norm`/`weight` 与 `score.js` 完全同义。`parse=image` 时改为 `{ id, extract, opts, weight, norm }`（见 §2.3） |
 | `observe.stability` | | 稳定性闸（0.4.1 起）：`{ repeat: 3, maxSpread: 0.02 }`。**不写也生效**（默认就带闸）；`repeat: 1` = 显式关掉并 warn。见 §6 |
 | `target.mode` | ✅ | `params`（用目标参数跑一次命令取指标）/ `metrics`（直接给 `{指标: 数值}`，不跑命令） |
 | `config.path` | ✅ | 基线参数文件（扁平 `{params:{...}}` 或顶层扁平都行）。**只读**，从不回写 |
@@ -94,6 +94,44 @@ node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --
 - 命令超时 / 非零退出 → **硬错**（带 argv、退出码、stderr 前 200 字）。
 
 只有一种情况会被当成"没变化"：**跑成功了、数也取到了，但距离没动**——那就是参数 dead（见 §3）。
+
+### 2.3 图片观测（`parse:"image"`，0.13.0）：命令交出一张图，指标由 `metrics2.js` 算
+
+观测仍然是"跑一条命令"，只是命令交出来的东西从数变成了一张图。用途：目标要靠**渲染/画出来**、但不想起浏览器的那类现场。
+
+```json
+"observe": {
+  "type": "command",
+  "cmd": "node ./probe.mjs",                  // 写一张 PNG，stdout 只打印它的路径（一行）
+  "parse": "image",
+  "metrics": [
+    { "id": "mean", "extract": "mean", "opts": { "mask": { "mode": "roi", "rect": [40,40,100,100] } },
+      "norm": { "mode": "abs", "scale": 255 }, "weight": 1 }
+  ]
+}
+```
+
+- `metrics[].extract` = `metrics2.js` 的提取器 id（`mean / cov / lapVar / hueHist / …`，缺省 = `id`）；`opts` 原样交给提取器，`opts.mask` 就是掩膜口径（四种圈法见 `metrics.md` §8）。**写错 extract / 掩膜口径 → 中文硬错**，不静默当 0。
+- stdout **只能是图片路径那一行**（相对路径按 `observe.cwd` 展开）；文件不在 / 不是 PNG / 量不出数 → 硬错。
+- 图片的 sha256 进 `outputs/` 的 `pngSha` 与 `best.json` 的 `curve[].pngSha`；"输出同"比的是**图**，不是 stdout 里那行路径。
+- 指标仍然只认标量（`hueHist` 这种数组型提取器不能当命令链路的指标）。
+
+### 2.4 掩膜哨兵（`maskFrozen`，0.13.0）：拦"看起来很专业地量错"
+
+命令链路的评估循环**默认开着**一个哨兵，专门拦这类故障：**参数不同、观测 sha 不同，但掩膜圈的是同一块像素，
+掩膜内指标向量逐位相同**。第二轮实验里 `luma:200` 的 content 掩膜只圈到枪口白芯（recall 0.09~0.38），
+三个不同变体量出 `7305.98|0.21296|0.11216`——指标层看不出来，因为它"看起来很专业"。
+
+- 只在**带掩膜指纹**的观测上比对（`parse:"image"` + `opts.mask`；回退全图 / 没写 mask 的观测不参与）。
+- 同一轮（一次 `--out`）里凑够 **3 个**同组候选（maskHash 相同 + 掩膜内指标逐位相同；参数与观测 sha 都不同）→ **硬错 `maskFrozen`**，
+  错误里点名换 `roi` / `diff` 口径，并在 `nodes/` 的 `search` 节点写 `failed` + reason。
+  只对 `content / diff / chroma` 生效：`roi` 的 maskHash **本来就恒定**（固定矩形不看像素内容），同组只能说明"指标对参数不敏感"，
+  不是掩膜冻住 → 只 warn，不硬错。
+- 只有 **2 个** → 不硬错，只 warn（阈值边界；别把重复跑同一点当成"冻住"）。
+- 另外对照"掩膜内变了但全帧没变（或反之）"→ warn（同一类死法的早期信号，不改判据）。
+- `--no-mask-sentinel` 关掉（**会 warn 一句"本次不检测掩膜冻住"**，报告里写"已关闭"——不能看起来像"查过没问题"）。
+  intent 里写 `maskSentinel: true` 表示"要求必须拦"；此时再用 `--no-mask-sentinel` 是自相矛盾，硬错。
+- **哨兵只有命令链路有**：截图链路（`iter.ps1`）不动、也不实现它 —— 与硬不变量同一处理，在截图链路的 intent 里写 `maskSentinel:true` 会**硬错**（宁可拒跑，不假装有哨兵）。
 
 ---
 

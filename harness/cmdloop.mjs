@@ -3,7 +3,7 @@
 // 一条命令 = 解析 adapter.observe → 跑目标 → 扫参数活性 → 坐标下降 → 出证据包。
 // 它跟 harness/iter.ps1 是**并列的两个入口**，不是它的分支：
 //   iter.ps1   观测来源 = 浏览器截图（起静态服 + 浏览器 + 冻帧 + metrics2.js 量像素）
-//   cmdloop.mjs 观测来源 = 一条命令的 stdout（parse=json | number | line:k=v）
+//   cmdloop.mjs 观测来源 = 一条命令的 stdout（parse=json | number | line:k=v | image）
 // 判据那一层两边共用 score.js（本脚本 require 同一份），搜索那一层是**照抄 iter.ps1 的坐标下降语义**
 // （Get-Step / New-Vector / Key-Of / 预算与缓存 / 停滞停）——为什么是复制、差在哪，见 cmdlib.mjs 顶部。
 //
@@ -66,6 +66,167 @@ const { createLedger, summaryLines } = requireCjs('./ledger.js');
 // 运行期台帐句柄：main() 的 catch 要拿它补一条 failed 节点（"哪一步炸的"要留在台帐里）
 let RUN_LEDGER = null;
 let RUN_PHASE = '';
+// 掩膜哨兵（0.13.0）：触发时它自己已经写过 search failed 节点，catch 别再补一条重复的。
+let RUN_SENTINEL_FAILED = false;
+
+// ---------------------------------------------------------------- 掩膜哨兵（0.13.0）
+// 拦的是"看起来很专业地量错"：三个参数不同、输出 sha 不同，但掩膜圈的是**同一块像素**、掩膜内指标逐位相同。
+// 第二轮实验里 luma:200 的 content 掩膜只圈到枪口白芯（recall 0.09~0.38），三个不同变体量出 7305.98|0.21296|0.11216。
+// maskSuspicious 只能拦"圈太小"；拦不住"掩膜冻在同一小块像素"——那是两个不同故障。
+//
+// 口径：
+//   · 只对**带掩膜指纹**的观测生效（parse=image + opts.mask；没掩膜 / 回退全图的观测不参与）；
+//   · "同一轮" = 一次 run（--out 一次 = 一轮闭环）；
+//   · 同组 = maskHash 相同 且 掩膜内指标向量逐位相同；再要求**参数不同、观测 sha 不同**（重复跑同一点不算候选）；
+//   · 阈值 3：凑够 3 个 → 硬错；只有 2 个 → 只 warn（阈值边界，别把两次重复当"冻住"）。
+//   · 另外对照"掩膜内变了但全帧没变（或反之）"—— 那是同一类死法的早期信号，记 warn（不改判据、不硬错）。
+const MASK_SENTINEL_MUTANT = String(process.env.MASK_SENTINEL_MUTANT || '');
+const MASK_FROZEN_THRESHOLD = 3;
+
+function sameVec(a, b) {
+  if (!a || !b) return false;
+  for (const k of Object.keys(a)) if (!Object.is(a[k], b[k])) return false;
+  return true;
+}
+
+function fmtVec(v, ids) {
+  return ids.map((id) => id + '=' + (Number.isFinite(Number(v?.[id])) ? String(Number(v[id])) : '?')).join('  ');
+}
+
+function frozenMessage(group, metricIds) {
+  const g = group.slice(0, 8);
+  const cands = g.map((x) => `  seq=${x.seq}  ${x.paramsKey}  观测sha=${String(x.obsSha).slice(0, 12)}…`);
+  if (group.length > g.length) cands.push(`  …… 另有 ${group.length - g.length} 个同类候选`);
+  return [
+    `[掩膜哨兵] maskFrozen：同一轮里出现 ${group.length} 个候选 —— 参数不同、观测 sha 不同，但 maskHash 相同且掩膜内指标向量逐位相同。`,
+    '  这是"掩膜退化到同一小块像素"的典型信号。',
+    `  maskHash=${group[0].realHash}  mask mode=${group[0].mode || '?'}  掩膜内指标（逐位相同）：${fmtVec(group[0].masked, metricIds)}`,
+    ...cands,
+    '  为什么会这样：掩膜圈住的不是主体，而是同一块高光/白芯 —— 第二轮实验里 luma:200 的 content 掩膜只圈到枪口白芯',
+    '  （recall 0.09~0.38），三个不同变体量出逐位相同的数（7305.98|0.21296|0.11216）；指标层看不出来，因为它"看起来很专业"。',
+    '  改法：换掩膜口径 —— 用 roi（固定矩形，跨候选逐像素一致）或 diff（与空舞台差分），别只信 content 的亮度阈值。',
+    '  确知是误报：--no-mask-sentinel 关掉（会 warn「本次不检测掩膜冻住」）。',
+  ].join('\n');
+}
+
+function createMaskSentinel({ enabled, threshold, metricIds, onFrozen }) {
+  // 测试用的变异：threshold999 = 阈值改成 999（等于关掉）；constHash = 所有掩膜指纹换成常量（正常场景会被误报）。
+  const th = MASK_SENTINEL_MUTANT === 'threshold999' ? 999 : threshold;
+  const keyOfHash = (h) => (MASK_SENTINEL_MUTANT === 'constHash' ? 'CONST' : h);
+  const items = [];
+  const warnings = [];
+  return {
+    enabled,
+    threshold: th,
+    observe({ seq, paramsKey, obsSha, maskFp, phase }) {
+      if (!enabled || !maskFp) return;
+      // 回退全图 / 没有掩膜位图：算"看过"，但不拿全图当掩膜比对（否则整帧相同也会被误判成掩膜冻住）。
+      if (maskFp.fallback || !maskFp.maskHash) {
+        items.push({ seq, paramsKey, obsSha, maskHash: null, masked: maskFp.masked, full: maskFp.full, mode: maskFp.mode, phase });
+        return;
+      }
+      const entry = {
+        seq,
+        paramsKey,
+        obsSha,
+        realHash: maskFp.maskHash,
+        maskHash: keyOfHash(maskFp.maskHash),
+        masked: maskFp.masked,
+        full: maskFp.full,
+        mode: maskFp.mode,
+        areaPct: maskFp.areaPct,
+        phase,
+      };
+      items.push(entry);
+      const group = items.filter((it) => it.maskHash && it.maskHash === entry.maskHash && sameVec(it.masked, entry.masked));
+      // roi 的 maskHash **本来就恒定**（固定矩形不看像素内容）：它同组只能证明"指标对参数不敏感"，
+      // 证明不了"掩膜冻住"——那不是这个哨兵要拦的故障（记 warn，不硬错）。
+      const contentGroup = group.filter((x) => x.mode !== 'roi');
+      const nParams = new Set(contentGroup.map((x) => x.paramsKey)).size;
+      const nShas = new Set(contentGroup.map((x) => x.obsSha)).size;
+      if (Math.min(nParams, nShas) >= th) {
+        const err = new Error(frozenMessage(contentGroup, metricIds));
+        err.maskFrozen = true;
+        err.group = group.map((x) => ({ seq: x.seq, paramsKey: x.paramsKey, obsSha: x.obsSha }));
+        try {
+          onFrozen?.(err);
+        } catch {
+          // 台帐写不进去不能盖掉真正的错误（终端里那句中文才是要看的）
+        }
+        throw err;
+      }
+    },
+    finish() {
+      if (!enabled) {
+        return { enabled: false, threshold: th, candidates: 0, fallback: 0, frozen: 0, warnings: [] };
+      }
+      // 冻结分组（含"只有 2 个"的阈值边界）：只看有真掩膜的观测
+      const byKey = new Map();
+      for (const it of items) {
+        if (!it.maskHash) continue;
+        const key = it.maskHash + '|' + JSON.stringify(metricIds.map((id) => it.masked[id]));
+        if (!byKey.has(key)) byKey.set(key, []);
+        byKey.get(key).push(it);
+      }
+      let frozen = 0;
+      let frozenGroup = null;
+      let roiSame = 0;
+      for (const g of byKey.values()) {
+        const n = Math.min(new Set(g.map((x) => x.paramsKey)).size, new Set(g.map((x) => x.obsSha)).size);
+        if (g[0].mode === 'roi') {
+          // roi 的 maskHash 恒定是设计如此：同组只能说明"指标对参数不敏感"，不是掩膜冻住 → 不硬错
+          if (n >= 2 && n > roiSame) roiSame = n;
+          continue;
+        }
+        if (n > frozen) {
+          frozen = n;
+          frozenGroup = g;
+        }
+      }
+      if (roiSame >= 2) {
+        warnings.push(
+          `掩膜哨兵：${roiSame} 个候选在 \`roi\` 口径下掩膜内指标向量逐位相同 —— ` +
+            `roi 的 maskHash 本来就恒定（固定矩形不看像素内容），所以这不是"掩膜冻住"，而更像"指标对参数不敏感"。` +
+            `哨兵不硬错；要判这一条，得看不同候选的图（观测 sha）是否真的不同、以及指标是否量得到那个差别。`,
+        );
+      }
+      if (frozen >= 2 && frozen < th) {
+        warnings.push(
+          `掩膜哨兵：${frozen} 个候选的 maskHash 与掩膜内指标向量完全相同（参数与观测 sha 都不同）` +
+            ` —— 未到硬错阈值 ${th}，仅 warn。这已经是"掩膜冻在同一小块像素"的早期信号：` +
+            `掩膜 mode=${frozenGroup[0].mode || '?'} maskHash=${frozenGroup[0].realHash}；要么换 roi/diff，要么再多看几个候选。`,
+        );
+      }
+      // 掩膜内 vs 全帧：哪一边动了、哪一边没动（同一类死法的早期信号，只 warn）
+      const withFull = items.filter((it) => it.maskHash && it.full);
+      if (withFull.length >= 2) {
+        for (const id of metricIds) {
+          const mv = new Set(withFull.map((it) => it.masked[id]));
+          const fv = new Set(withFull.map((it) => it.full[id]));
+          if (mv.size > 1 && fv.size === 1) {
+            warnings.push(
+              `掩膜哨兵：指标 \`${id}\` 在候选间"掩膜内变了、全帧一点没变"（掩膜内 ${[...mv].slice(0, 4).join(' / ')}；` +
+                `全帧恒为 ${[...fv][0]}）—— 要么掩膜放大了量化噪声，要么全帧口径把它稀释没了。`,
+            );
+          } else if (fv.size > 1 && mv.size === 1) {
+            warnings.push(
+              `掩膜哨兵：指标 \`${id}\` 在候选间"全帧变了、掩膜内一点没变"（全帧 ${[...fv].slice(0, 4).join(' / ')}；` +
+                `掩膜内恒为 ${[...mv][0]}）—— 掩膜很可能冻在同一块像素，本次只有 ${withFull.length} 个候选、未到硬错阈值 ${th}。`,
+            );
+          }
+        }
+      }
+      return {
+        enabled: true,
+        threshold: th,
+        candidates: items.length,
+        fallback: items.filter((it) => !it.maskHash).length,
+        frozen,
+        warnings: [...new Set(warnings)],
+      };
+    },
+  };
+}
 
 const USAGE = `用法：
   node harness/cmdloop.mjs --adapter <a.json> --out <run目录> [选项]
@@ -82,6 +243,7 @@ const USAGE = `用法：
   --no-intent         显式跳过需求转译（放行的唯一姿势；台帐 nodes/01-intent.json 记 skipped 并写明原因）
   --no-invariants-warn  没写硬不变量时不再 warn（默认 warn：搜索会拿底线换分数）
   --no-fake-gate-warn   某条硬不变量一次都没拦住候选时不再 warn（0.8.0；报告里照写"本次未拦任何候选"）
+  --no-mask-sentinel    关掉掩膜哨兵（0.13.0；默认开：拦"掩膜退化到同一小块像素"；关掉时 warn 一句）
   --research <file>   调研产物（缺省读 <out>/research.json）；没有它 = 台帐记 skipped + warn 一行（不拒跑）
   --help              这份说明
 
@@ -137,6 +299,7 @@ function parseArgs(argv) {
     noIntent: false,
     noInvariantsWarn: false,
     noFakeGateWarn: false,
+    noMaskSentinel: false,
     help: false,
   };
   const takes = {
@@ -168,6 +331,10 @@ function parseArgs(argv) {
     }
     if (k === '--no-fake-gate-warn') {
       a.noFakeGateWarn = true;
+      continue;
+    }
+    if (k === '--no-mask-sentinel') {
+      a.noMaskSentinel = true;
       continue;
     }
     const key = takes[k];
@@ -270,6 +437,7 @@ function liveNote(meta) {
 function run(args) {
   const startedAt = new Date().toISOString();
   const t0 = Date.now();
+  RUN_SENTINEL_FAILED = false;
   const adapterFile = resolve(args.adapter);
   if (!existsSync(adapterFile)) throw new Error(`读不到 adapter：${adapterFile}`);
   const adapter = readJson(adapterFile, 'adapter');
@@ -307,10 +475,42 @@ function run(args) {
   ledger = createLedger(outDir);
   RUN_LEDGER = ledger;
 
+  // ---------------------------------------------------------------- 掩膜哨兵（0.13.0）
+  // 默认开：只在"观测里带掩膜指纹"时真正比对（parse=image + opts.mask）；没有掩膜的 run 记 0 个候选，
+  // 报告里照写一行 —— "没装"和"装了但没发现"必须是两种读法。
+  const maskSentinel = createMaskSentinel({
+    enabled: !args.noMaskSentinel,
+    threshold: MASK_FROZEN_THRESHOLD,
+    metricIds: plan.observe.metricIds,
+    onFrozen: (err) => {
+      RUN_SENTINEL_FAILED = true;
+      ledger.add({
+        node: 'search',
+        status: 'failed',
+        producer: 'engine',
+        ms: null,
+        inputs: ['adapter.observe.metrics[].opts.mask', '评估序列里的掩膜指纹（maskHash / 掩膜内指标向量 / 观测 sha）', `触发阶段：${RUN_PHASE || '（未知）'}`],
+        decision: {
+          why: '掩膜哨兵：多个候选的 maskHash 与掩膜内指标向量同时冻在同一块像素（参数与输出 sha 都不同）',
+          basis: err.message.split('\n').slice(0, 10).map((s) => s.trim()),
+        },
+        artifacts: [],
+        cost: { evals: usage.used },
+        reason: err.message,
+      });
+    },
+  });
+  if (args.noMaskSentinel) {
+    log('[掩膜哨兵][warn] 本次不检测掩膜冻住（--no-mask-sentinel）：掩膜可能退化到同一小块像素而没人拦 —— 这个 run 的指标可比性不能保证');
+  }
+
   // ---------------------------------------------------------------- 需求转译闸（0.5.0）
   // 位置：**所有评估之前**（比目标帧/目标指标、比活性预检、比稳定性闸都早），因为它会改判据。
   // 硬不变量（0.7.0）也挂在 intent 上：intent 块结束时要把它带出来（块作用域）。
   let intentInvariants = [];
+  // 掩膜哨兵（0.13.0）：intent 可以**要求**哨兵在场（maskSentinel:true）。
+  // 要求了却用 --no-mask-sentinel 关掉 = 自相矛盾，硬错（与"写了不变量却走不支持链路的截图链路"同一处理）。
+  let intentMaskRequired = false;
   {
     const gt0 = Date.now();
     RUN_PHASE = 'intent';
@@ -322,6 +522,7 @@ function run(args) {
       chain: 'cmd',
     });
     intentInvariants = Array.isArray(intent.invariants) ? intent.invariants : [];
+    intentMaskRequired = intent.maskSentinel === true;
     const { weights: intentWeights, targets: intentTargets } = criteriaOverrides(intent.criteria);
     if (Object.keys(intentWeights).length) {
       applyMetricOverrides(plan, { weights: intentWeights });
@@ -354,6 +555,17 @@ function run(args) {
     }
     intentTargetsOverride = intentTargets;
     intentInvariants = Array.isArray(intent.invariants) ? intent.invariants : [];
+  }
+
+  // intent 要求哨兵、命令行却把它关了 = 两份契约打架：宁可拒跑，也不跑一个"看起来有哨兵"的 run。
+  if (intentMaskRequired && args.noMaskSentinel) {
+    throw new Error(
+      '[掩膜哨兵] intent.maskSentinel=true（要求"掩膜冻住"必须被拦），但命令行给了 --no-mask-sentinel\n' +
+        '  改法：去掉 --no-mask-sentinel，或把 intent 里的 maskSentinel 改成 false —— 两份契约不能一个开一个关',
+    );
+  }
+  if (intentMaskRequired && maskSentinel.enabled) {
+    log(`[掩膜哨兵] intent 要求：掩膜冻住必须被拦（阈值 ${maskSentinel.threshold} 个候选；够不到就只 warn）`);
   }
 
   // ---------------------------------------------------------------- 硬不变量门禁（0.7.0）
@@ -411,6 +623,9 @@ function run(args) {
       pens: rec.pens,
       // 硬不变量（0.7.0）：这份原始输出过没过门禁（rejected 的候选保留原文，方便事后看"为什么废"）
       invariants: { ok: rec.inv.ok, failed: rec.inv.failures.map((f) => f.id) },
+      // 图片观测（0.13.0）：观测图与它的掩膜指纹（只有 hash/口径，不放向量 —— outputs 单份限 4KB）
+      pngSha: rec.pngSha || '',
+      mask: rec.mask || null,
       stdout: rec.stdout,
       stderr: rec.stderr,
     };
@@ -440,6 +655,11 @@ function run(args) {
       stderr: res.stderr,
       ms: res.ms,
       stdoutSha: res.stdoutSha,
+      // 图片观测（0.13.0）：pngSha = 观测图字节的 sha256；'输出同' 该比它，而不是比 stdout 里那行路径。
+      pngSha: res.pngSha || '',
+      mask: res.maskFp
+        ? { maskHash: res.maskFp.maskHash, mode: res.maskFp.mode, areaPct: res.maskFp.areaPct, fallback: res.maskFp.fallback === true }
+        : null,
       paramsFile: res.paramsFile,
       argv: res.argv,
       dist: res.dist ? res.dist.d : null,
@@ -458,6 +678,15 @@ function run(args) {
     evals.push(rec);
     appendLive(rec, meta);
     writeOutputDoc(rec);
+    // 掩膜哨兵（0.13.0）：每个真实评估都喂一次（目标/起点/稳定性/预检/搜索同一个口子，不会漏）。
+    // 只对带掩膜指纹的观测生效；触发时它会先写台帐 search failed，再把中文硬错抛上去。
+    maskSentinel.observe({
+      seq,
+      paramsKey: keyOf(params, plan.wl),
+      obsSha: res.pngSha || res.stdoutSha,
+      maskFp: res.maskFp,
+      phase: meta.phase || '',
+    });
     return { seq, rec, cached: false };
   };
 
@@ -825,7 +1054,10 @@ function run(args) {
     // 把它当 dead 会冤枉一根好轴，当 alive 会让搜索从废点出发 —— 所以单列第三类。
     const gated = Boolean(rec.inv && !rec.inv.ok);
     const dDelta = gated ? null : Math.abs(rec.dist - startDist);
-    const outputSame = rec.stdoutSha === startRec.stdoutSha;
+    // 图片观测里 stdout 只是"图片路径"（每次都是同一行），比它等于没比 —— 有 pngSha 就比图本身。
+    const obsSha = rec.pngSha || rec.stdoutSha;
+    const startObsSha = startRec.pngSha || startRec.stdoutSha;
+    const outputSame = obsSha === startObsSha;
     const verdict = gated ? 'rejected' : dDelta <= 1e-9 ? 'dead' : 'alive';
     if (verdict === 'alive') alive.push(k);
     else if (verdict === 'dead') dead.push(k);
@@ -1043,6 +1275,18 @@ function run(args) {
   }
   for (const p of targetProximity) log(`[invariants][warn] ${p.message}`);
 
+  // 掩膜哨兵收尾（0.13.0）：没触发硬错时把"看了几个候选 / 有没有到 warn 边界"落下来。
+  // 报告、best.json、终端三处说的必须是同一件事（关掉时也照写"已关闭"，不能看起来像"查过没问题"）。
+  const maskSummary = maskSentinel.finish();
+  for (const w of maskSummary.warnings) log(`[掩膜哨兵][warn] ${w}`);
+  if (maskSummary.enabled) {
+    log(
+      `[掩膜哨兵] 候选 ${maskSummary.candidates} 个${maskSummary.fallback ? `（其中 ${maskSummary.fallback} 个掩膜回退全图，不参与比对）` : ''}` +
+        ` / ${maskSummary.frozen >= 2 ? `发现 ${maskSummary.frozen} 个候选冻在同一块像素（低于硬错阈值 ${maskSummary.threshold}，仅 warn）` : '未发现冻住'}` +
+        (maskSummary.candidates === 0 ? '（本次没有带掩膜指纹的观测：哨兵只认 parse=image + opts.mask）' : ''),
+    );
+  }
+
   // 台帐 · search（整个搜索循环）：轮数 / 评估次数 / 胜出轨迹摘要。
   // "一次都没跑"必须是 skipped 并且说清为什么（all-dead 是预检的功劳，不是搜索的失败）。
   {
@@ -1094,6 +1338,10 @@ function run(args) {
     // 硬不变量（0.7.0）：门禁**文法**进指纹（换不变量本来就该换 hash）；
     // 拒绝的**次数/样本**不进指纹 —— 那是观测结果，不是决策配置（换 out 目录重跑必须还是同一个 hash）。
     invariants: { mutant: INVARIANTS_MUTANT, items: invGate.items.map((it) => [it.id, it.text]) },
+    // 掩膜哨兵（0.13.0）：只把**配置**放进指纹（开关 + 阈值）；发现几个候选是观测结果，不进 hash。
+    maskSentinel: { enabled: maskSummary.enabled, threshold: maskSummary.threshold },
+    // 掩膜口径（parse=image 时的 extract + opts.mask）进指纹：换掩膜本来就该换 hash
+    maskCfg: plan.metrics.map((m) => [m.id, m.extract ?? '', m.opts ?? null]),
     // 调研（research）：**文件内容本身**进指纹 —— 两次不同的调研 run 必须换 hash，
     // 否则"这两次结论为什么不一样"会被同一个 hash 糊成同一个判据。
     // 只放声明（queries / findings / extracted / note），不放算出来的 changed（那是结果，不是配置）。
@@ -1178,6 +1426,8 @@ function run(args) {
     // 观测稳定性闸（0.4.1）：repeat 次的指标原值 / 每条指标的 spread / 判定结论。
     // 这个字段缺席 = 这一步根本没跑（正常跑不会缺席，只有变异体 noStability 会）。
     ...(stability ? { stability } : {}),
+    // 掩膜哨兵（0.13.0）：几个候选 / 有没有冻住 / 到 warn 边界的几组。enabled=false = 本次明确关掉了。
+    maskSentinel: maskSummary,
     // 硬不变量门禁（0.7.0）：每条 id 的通过/拒绝次数 + 最近一次拒绝的原始观测片段。
     // declared=false = 没写（没装门禁），此时 rejected 恒 0。
     invariants: {
@@ -1234,6 +1484,9 @@ function run(args) {
         pens: e.pens,
         output: outputs.get(e.seq) ?? '',
         ms: e.ms,
+        // 图片观测（0.13.0）：观测图 sha 与掩膜指纹 —— 事后能直接看"这几个点是不是同一块掩膜"
+        pngSha: e.pngSha || '',
+        maskHash: e.mask ? e.mask.maskHash : null,
         // 硬不变量（0.7.0）：这一条过了没有/被哪几个 id 拦住（拒绝的候选仍然留原文，方便事后复盘）
         inv: e.inv ? e.inv.ok : true,
         invFail: e.inv && !e.inv.ok ? e.inv.failures.map((f) => f.id) : [],
@@ -1261,7 +1514,7 @@ function run(args) {
   writeFileSync(join(outDir, 'best.json'), JSON.stringify(bestJson, null, 2), 'utf8');
 
   // ---------------------------------------------------------------- report.md
-  writeFileSync(join(outDir, 'report.md'), buildReport({ plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams, dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outputs, outDir, startedAt, endedAt, stability, stabCfg, nodes: ledger.nodes, intentSummary, researchSummary, invSummary: invGate.summary(), invDeclared: invGate.declared, rejectedPrecheck, fakeGate, targetProximity, degraded, gateBlock: { rounds: gateBlockRounds, streak: gatedStreak } }), 'utf8');
+  writeFileSync(join(outDir, 'report.md'), buildReport({ plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams, dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outputs, outDir, startedAt, endedAt, stability, stabCfg, nodes: ledger.nodes, intentSummary, researchSummary, invSummary: invGate.summary(), invDeclared: invGate.declared, rejectedPrecheck, fakeGate, targetProximity, degraded, gateBlock: { rounds: gateBlockRounds, streak: gatedStreak }, maskSummary }), 'utf8');
 
   const summary = `HASH ${hash}\nstart=${r6(startDist)} best=${r6(bestDist)} drop=${dropPct === null ? 'n/a' : dropPct + '%'} stability=${stability ? (stability.checked ? 'ok' : 'off') : 'skipped'} invariants=${invGate.declared ? invGate.items.length + '条/拒' + invGate.summary().rejected : 'off'} stop=${stopReason} used=${usage.used}/${args.budget} elapsed=${elapsedSec}s nodes=${ledger.nodes.length}`;
   log(summary);
@@ -1289,6 +1542,8 @@ function reproduceCommand(args) {
   // 门禁的 warn 开关也要带上：重跑时终端输出必须和这次一致（少一条 warn 就等于换了一套默认）
   if (args.noInvariantsWarn) parts.push('--no-invariants-warn');
   if (args.noFakeGateWarn) parts.push('--no-fake-gate-warn');
+  // 哨兵开关同样是"判据来源"的一部分：不带它重跑，等于换了一套默认（默认是开）
+  if (args.noMaskSentinel) parts.push('--no-mask-sentinel');
   return parts.join(' ');
 }
 
@@ -1298,7 +1553,7 @@ function buildReport(ctx) {
     plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams,
     dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outDir, startedAt, endedAt,
     stability, nodes, intentSummary, researchSummary, invSummary, invDeclared, rejectedPrecheck,
-    fakeGate, targetProximity, gateBlock, degraded,
+    fakeGate, targetProximity, gateBlock, degraded, maskSummary,
   } = ctx;
   const WL = plan.wl;
   const MID = plan.observe.metricIds;
@@ -1457,7 +1712,24 @@ function buildReport(ctx) {
   md.push('| 总耗时 | ' + elapsedSec + 's（单次评估 ' + msPerEval + 'ms 中位数） |');
   // 硬不变量（0.7.0）：这一行必须是上表的一员（放在表格关闭的空行之前），别单独 push 成一段
   md.push('| 硬不变量 | ' + (invDeclared ? '**' + invSummary.items.length + ' 条**（门禁拒绝 ' + invSummary.rejected + ' 次观测）' : '**没写**（门禁未装：搜索会拿底线换分数）') + ' |');
+  // 掩膜哨兵（0.13.0）：紧挨着硬不变量放 —— 两者都是"不合格就拦"，但哨兵拦的是**量错了**（掩膜冻住），不是值不合格。
+  const maskLine = (() => {
+    const s = maskSummary;
+    if (!s || !s.enabled) return '**已关闭**（`--no-mask-sentinel`）：本次不检测掩膜冻住';
+    const base = s.candidates + ' 个候选 / ';
+    if (s.frozen >= 2) return base + '**发现 ' + s.frozen + ' 个候选掩膜冻在同一块像素**（低于硬错阈值 ' + s.threshold + '，仅 warn）';
+    const comparable = s.candidates - (s.fallback || 0);
+    if (comparable === 0) {
+      return base + '未发现冻住（' + (s.fallback ? '掩膜全部回退全图，不参与比对' : '本次没有带掩膜指纹的观测') + '：哨兵只认 `parse:"image"` + `opts.mask`）';
+    }
+    return base + '未发现冻住';
+  })();
+  md.push('| 掩膜哨兵 | ' + maskLine + ' |');
   md.push('');
+  if (maskSummary && maskSummary.warnings && maskSummary.warnings.length) {
+    for (const w of maskSummary.warnings) md.push('- ' + w);
+    md.push('');
+  }
   md.push(...stabBlock);
   // 硬不变量门禁的明细节：每条 id 的通过/拒绝次数 + 最近一次拒绝的原始观测片段。
   // 0.8.0 起这一节还带上"假门告警"（本次未拦任何候选）与"目标贴阈值"—— 报告里永远照写。
@@ -1565,7 +1837,8 @@ function buildReport(ctx) {
   md.push('');
   md.push('- **单步单轴**：坐标下降每轮每参数只试 −一步 / +一步，局部极小之后走不出来。要越过去得换策略（`--strategy random` 已实现）。');
   md.push('- **random 策略不跨执行器可比**：`cmdloop.mjs` 用自己的伪随机（`iter.ps1` 是 .NET `[Random]`），同 seed 只在同一个执行器里可复现；`coordinate` 两边口径一致。');
-  md.push('- **只认标量指标**：命令输出里取到的必须是数（数组型指标要 metrics2.js 的提取器，那是浏览器链路）。');
+  md.push('- **只认标量指标**：命令输出里取到的必须是数（`parse=image` 时也是 `metrics2.js` 的标量提取器；`hueHist` 这类数组型指标仍进不了这一层）。');
+  md.push('- **掩膜哨兵只在命令链路**（0.13.0）：`iter.ps1`（截图链路）不实现它 —— 与硬不变量同一处理，在截图链路的 intent 里要求哨兵会**硬错**（宁可拒跑，也不假装有哨兵）。本 run 的哨兵结论只在"这段观测确实带掩膜指纹"时成立（`parse=image` + `opts.mask`）。');
   md.push('- **判据只做粗筛**：它能把候选排序、把坏掉的报警；"这个数好不好"不能问它。');
   md.push('- **硬不变量只在命令链路**（0.7.0）：`iter.ps1`（截图链路）暂不支持门禁 —— 它的观测是页面指标、判定在 PowerShell 里，没有测试守着 PS 侧实现；在截图链路的 intent 里写 invariants 会**硬错**（宁可拒跑，也不假装装了门禁）。');
   md.push('- **门禁语义会漂**（0.8.0）：不变量是"今天的"判据，改了阈值之后这份证据包里的"最优"就未必还算数 —— 拿今天的标准复算一遍：`node harness/audit.mjs "' + outDir + '" --intent <今天的 intent.json>`（exit 0 = best 仍合格，1 = 今天不合格，2 = 跑不起来或证据包坏了，3 = best 判不了）。发版前扫一整批：`node harness/audit.mjs --dir <runs根> --intent <今天的 intent.json>`。');
@@ -1600,7 +1873,7 @@ function main() {
     // 硬错也要留痕：台帐里补一条 failed 节点，写清是哪一步炸的。
     // 没有它的话，"这次跑到哪一步断的"只存在于终端最后几行，run 目录里看不出来。
     const msg = String(e?.message ?? e);
-    if (RUN_LEDGER && RUN_PHASE) {
+    if (RUN_LEDGER && RUN_PHASE && !RUN_SENTINEL_FAILED) {
       try {
         RUN_LEDGER.add({
           node: RUN_PHASE,
