@@ -103,7 +103,7 @@ node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --
 要调的不是画面而是"一串数"（构建耗时 / 接口延迟 / 日志里的错误数 / 求解残差）时走这条：adapter 里加一节 `observe`（`type: command` + `cmd` + `parse` + `metrics`），执行器跑命令、从 stdout 取数、用**同一份 `score.js`** 算距离、出同构证据包（`curve.csv` / `best.json` / `report.md` + `outputs/` + `nodes/` 台帐）。怎么给非图形目标写 adapter、常见坑，见 `skills/selfloop/references/command-observe.md`；字段表见 `harness/适配层-说明.md` 第六节。
 缺 `observe` 节的 adapter 行为完全不变（还是截图链路）。
 
-### 需求转译闸与节点台帐（0.5.0）
+### 需求转译闸与节点台帐（0.5.0；intent v2 在 0.5.1）
 
 **跑之前必须有一份经过确认的需求转译**，否则拒跑；每一步都落一条台帐。两个入口同一套规则：
 
@@ -115,17 +115,23 @@ node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --
 ```bash
 # 1) 先跑一次，让引擎把模板写出来（它会拒跑并给出中文说明 + <out>/intent.template.json）
 node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --budget 40
-# 2) 填 <out>/intent.json：understood / criteria（按 id 覆盖权重与目标值）/ uncertain / confirm / confirmed
-# 3) 再跑同一条命令 → 过闸，report.md 顶部多一行「本次运行：5 done / 1 skipped / 0 degraded」
+# 2) 填 <out>/intent.json：restate / anchors（v2 要锚，image 的 ref 必须真实存在）/ criteria（按 id 覆盖权重与目标值，
+#    每条带 anchor，最多 5 条）/ notWanted / freeVsFixed / howWeVerify / uncertain / confirm / confirmed
+# 3) 再跑同一条命令 → 过闸，report.md 顶部多一行「本次运行：5 done / 1 skipped / 0 degraded」+ 一段 intent 摘要
 ```
 
 - 没有 intent 文件 → 中文硬错 + 写出 `intent.template.json`（错误里说清：填什么 / 填完怎么确认 / 显式跳过的开关）；
 - `confirmed !== true` → 中文硬错，把 `confirm[]` 里待确认的问题**原样列出**；
 - `criteria` 里写了 adapter 不存在的指标 id → **中文硬错（绝不静默忽略）**；
 - 过了闸就把 `criteria` 按 id 覆盖到判据上（权重 / 目标值），覆盖了哪几条写进台帐。
+- **intent v2 要锚**：`anchors` 至少 1 条具体参照物（参考图 / 具体游戏名 / 前作），`kind:"image"` 的 `ref` 必须真实存在；
+  另加 `restate`（≤200 字复述）、`notWanted`（不要什么）、`freeVsFixed`（哪些定死、哪些自由）、`howWeVerify`（人眼还是指标算过）。
+  只有"指标+权重+目标"的 v1 写法**仍然能跑**，但会 warn 且台帐记 `degraded` —— 等于把审美全交给指标。
 
 **台帐**：`<out>/nodes/NN-<node>.json`，字段固定 —— `node / seq / status(done|skipped|degraded|failed) / producer / ms / inputs[] / decision{why,basis[]} / artifacts[] / cost`，`skipped` 必须带 reason。
 初版覆盖 `intent` / `target` / `stability` / `precheck` / `search` / `finalize`（截图链路没有 stability 节点 → 记 `skipped` 并写明原因）。
+`report.md` 顶部 = 汇总行 + **intent 摘要段**（restate 一行 / 锚几条 / 反例与自由度 / 谁验收 / 是否 v1 degraded），摘要另存 `<out>/intent.summary.json`；
+这四样**不参与距离计算**，只做记录与呈现。
 怎么填 intent、硬闸语义、`--no-intent` 的代价、台帐字段表与已知缺口：**`skills/selfloop/references/intent-and-ledger.md`**。
 
 ## 安装

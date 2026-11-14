@@ -440,6 +440,16 @@ const summaryBlock = summaryLines(ledger.nodes);
 const conclIdx = md.findIndex((line) => line.startsWith('> '));
 md.splice(conclIdx < 0 ? md.length : conclIdx, 0, ...summaryBlock, '');
 
+// 需求转译摘要（0.5.1 v2）：restate 一行 + 锚几条 + 谁验收 + 是否 v1 degraded。
+// 数据来自闸落盘的 <out>/intent.summary.json（-NoIntent 时也会有一份 status=skipped 的），
+// **不参与距离计算**，只做记录与呈现。老证据包里没有这个文件 → 这段不出现（不编）。
+const { readIntentSummary, intentSummaryLines } = require('./intent-summary.js');
+const intentBlock = intentSummaryLines(readIntentSummary(outDir));
+if (intentBlock.length) {
+    const at = md.findIndex((line) => line.startsWith('> '));
+    md.splice(at < 0 ? md.length : at, 0, ...intentBlock);
+}
+
 fs.writeFileSync(path.join(outDir, 'report.md'), md.join('\n'), 'utf8');
 
 console.log('HASH ' + hash);

@@ -37,7 +37,7 @@ import {
   sha256Text,
   stepOf,
 } from './cmdlib.mjs';
-import { INTENT_MUTANT, NO_INTENT_REASON, criteriaOverrides, intentNodeRecord, resolveIntent } from './intent.mjs';
+import { INTENT_MUTANT, NO_INTENT_REASON, criteriaOverrides, intentNodeRecord, intentSummaryLines, intentSummaryOf, resolveIntent, writeIntentSummary } from './intent.mjs';
 
 // ledger.js 是 CommonJS（截图链路的 finalize.js 也 require 它），这里用 createRequire 拉。
 const requireCjs = createRequire(import.meta.url);
@@ -62,9 +62,12 @@ const USAGE = `用法：
   --no-intent         显式跳过需求转译（放行的唯一姿势；台帐 nodes/01-intent.json 记 skipped 并写明原因）
   --help              这份说明
 
-需求转译闸（0.5.0，比活性预检更早，因为它会改判据）：
-  跑之前必须有一份**经过确认**的需求转译（understood / criteria / uncertain / confirm / confirmed:true）。
+需求转译闸（0.5.0；intent v2 在 0.5.1，比活性预检更早，因为它会改判据）：
+  跑之前必须有一份**经过确认**的需求转译（v2：restate / anchors / criteria / notWanted / freeVsFixed / howWeVerify / confirm / confirmed:true）。
   criteria 里按 id 覆盖指标的权重与目标值；id 在 adapter 里不存在 = 硬错（绝不静默忽略）。
+  v2 的锚（anchors）至少 1 条，kind="image" 的 ref 必须真实存在；criteria ≤5 条、confirm ≤3 条（轻合规）。
+  锚/反例/自由度/验收方式只进台帐与 report.md 顶部摘要，**不参与距离计算**（锚进距离就又变成指标替代审美）。
+  v1 老写法（无 version、criteria 无 anchor）仍能跑，但 warn + 台帐记 degraded —— 等于把审美全交给指标。
   confirmed 不是 true = 硬错，并把 confirm[] 里待确认的问题原样列出来。
   确实不想走这一步就显式 --no-intent：放行，但台帐会记一条 skipped —— 跳过要有名字。
 
@@ -200,6 +203,7 @@ function run(args) {
   const outputs = new Map(); // seq -> 写进 outputs/ 的相对路径
   let ledger = null; // 节点台帐（0.5.0）：每节点一条 <out>/nodes/NN-<node>.json
   let intentTargetsOverride = {}; // intent.criteria[].target：拿到目标行之后覆盖
+  let intentSummary = null; // intent 摘要（v2 的锚/反例/自由度/验收方式）：只进 report.md，**不参与距离**
 
   const log = (s) => console.log(s);
 
@@ -234,17 +238,22 @@ function run(args) {
       applyMetricOverrides(plan, { weights: intentWeights });
       log(`[intent] 判据被覆盖：${plan.scoreText}`);
     }
+    // v2 的四样（restate / 锚 / 反例 / 自由度 / 验收方式）落盘 + 进台帐：**不参与距离**，只做记录与呈现。
+    const summaryFile = writeIntentSummary(outDir, intent);
+    intentSummary = summaryFile ? intentSummaryOf(intent) : null;
     // --no-intent 的台帐记录**不许省**（跳过要有名字）；变异体 dropSkipRecord 只为证明这条断言有牙。
     if (!(INTENT_MUTANT === 'dropSkipRecord' && intent.status === 'skipped')) {
-      ledger.add(intentNodeRecord(intent, { ms: Date.now() - gt0 }));
+      ledger.add(intentNodeRecord(intent, { ms: Date.now() - gt0, summaryFile: summaryFile ? 'intent.summary.json' : '' }));
     }
     RUN_PHASE = '';
-    if (intent.status === 'done') {
-      log(`[intent] 过闸：${intent.path}（criteria ${intent.criteria.length} 条：${intent.criteria.map((c) => c.id).join(', ') || '无'}）`);
-      if (intent.understood) log(`[intent] understood：${intent.understood}`);
+    if (intent.status === 'done' || intent.status === 'degraded') {
+      log(`[intent] 过闸（v${intent.version ?? 1}${intent.status === 'degraded' ? '，degraded' : ''}）：${intent.path}（criteria ${intent.criteria.length} 条：${intent.criteria.map((c) => c.id).join(', ') || '无'}；锚 ${(intent.anchors || []).length} 条）`);
+      if (intent.restate) log(`[intent] restate：${intent.restate}`);
+      if (intent.understood && intent.understood !== intent.restate) log(`[intent] understood：${intent.understood}`);
       for (const c of intent.criteria) {
         log(
           `[intent] ${c.id} weight=${c.weight === null ? '(未改)' : c.weight} target=${c.target === null ? '(未改)' : c.target}` +
+            (c.anchor ? `  anchor=${c.anchor}` : '') +
             (c.why ? `  // ${c.why}` : ''),
         );
       }
@@ -841,7 +850,7 @@ function run(args) {
   writeFileSync(join(outDir, 'best.json'), JSON.stringify(bestJson, null, 2), 'utf8');
 
   // ---------------------------------------------------------------- report.md
-  writeFileSync(join(outDir, 'report.md'), buildReport({ plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams, dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outputs, outDir, startedAt, endedAt, stability, stabCfg, nodes: ledger.nodes }), 'utf8');
+  writeFileSync(join(outDir, 'report.md'), buildReport({ plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams, dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outputs, outDir, startedAt, endedAt, stability, stabCfg, nodes: ledger.nodes, intentSummary }), 'utf8');
 
   const summary = `HASH ${hash}\nstart=${r6(startDist)} best=${r6(bestDist)} drop=${dropPct === null ? 'n/a' : dropPct + '%'} stability=${stability ? (stability.checked ? 'ok' : 'off') : 'skipped'} stop=${stopReason} used=${usage.used}/${args.budget} elapsed=${elapsedSec}s nodes=${ledger.nodes.length}`;
   log(summary);
@@ -872,7 +881,7 @@ function buildReport(ctx) {
   const {
     plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams,
     dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outDir, startedAt, endedAt,
-    stability, nodes,
+    stability, nodes, intentSummary,
   } = ctx;
   const WL = plan.wl;
   const MID = plan.observe.metricIds;
@@ -965,6 +974,14 @@ function buildReport(ctx) {
   // 这是"哪些节点被绕过"的唯一答案 —— 以前它散在日志里，等于没有。
   md.push(...summaryLines(nodes || []));
   md.push('');
+  // 需求转译摘要（0.5.1 v2）：restate 一行 + 锚几条 + 谁验收 + 是否 v1 degraded。
+  // **不参与距离计算**，只做记录与呈现 —— 让人一眼看出"这次到底要的是什么"。
+  const intentBlock = intentSummaryLines(intentSummary);
+  if (intentBlock.length) {
+    md.push(...intentBlock);
+  } else {
+    md.push('');
+  }
   md.push('> ' + conclusion);
   md.push('');
   md.push('| 项 | 值 |');

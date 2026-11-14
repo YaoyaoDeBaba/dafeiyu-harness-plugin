@@ -21,6 +21,18 @@
 // 确定性边界（里程碑 9 §6）：引擎不认识"需求"，只认识"可以覆盖的东西"（criteria）；
 // 把模糊的话变成 criteria 的那层不确定，关在 agent 里（agent 填文件、用户点确认），引擎保持纯确定性。
 //
+// ════════════════ v2（0.5.1）：给 intent 补"锚 / 反例 / 自由度 / 验收方式" ════════════════
+// 为什么升：三份真实实验复盘的结论是「提示词写法是第一杠杆，模型只抬上限不抬下限」，
+// 而最大坑是「指标替代审美」—— 每轮都在追可数指标，单步有"改进证据"，累积把观感磨平。
+// 只有"指标 + 权重 + 目标"的 v1 intent 等于把这个坑**制度化**。v2 补的四样全来自那轮实验的实证：
+//   · anchors（锚）      —— 具体参照物（参考图 / 具体游戏名 / 前作 / 一句话观感）。"3A 次世代"不是锚；
+//                            kind:"image" 的 ref **必须真实存在**（锚不住东西的锚等于空话）；
+//   · notWanted（反例）  —— 明确不要什么。原实验里写"拒绝写实/PBR"比只写"要二次元"有效得多；
+//   · freeVsFixed（自由度 vs 定死项）—— 原实验的教训：需求书把形态全锁成"严格直线"，锁出了僵直激光；
+//   · howWeVerify（验收方式）—— 怎么算过（人眼 / 指标阈值 / 两者都要），把"谁来点头"写进契约。
+// v1 的 intent **仍然能跑**，但会打中文 warn、台帐 01-intent 记 degraded（不是 done）——
+// 缺了这四样，等于把审美全交给指标。
+//
 // 用法（给人看）：
 //   node harness/intent.mjs gate --out <run目录> --adapter <a.json> [--intent <file>] [--no-intent]
 //        [--chain cmd|screenshot] [--metric-ids cov,lapVar]
@@ -30,21 +42,34 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // ledger.js 是 CommonJS（截图链路的 finalize.js 也要 require 它），这里用 createRequire 拉进来 ——
 // 与 cmdlib.mjs 拉 score.js 同口径。
 const requireCjs = createRequire(import.meta.url);
 const { createLedger } = requireCjs('./ledger.js');
+// intent 摘要的唯一实现（CommonJS：截图链路的 finalize.js 也要 require 它）
+const intentSummaryCjs = requireCjs('./intent-summary.js');
 
 export const INTENT_FILE = 'intent.json';
 export const TEMPLATE_FILE = 'intent.template.json';
 export const NO_INTENT_REASON = '显式 --no-intent 跳过需求转译';
+// v2 的硬上限（全部来自"轻合规"：写越厚，花在做到上的预算越少）
+export const INTENT_VERSION = 2;
+export const RESTATE_MAX_CHARS = 200;
+export const MAX_CRITERIA = 5;
+export const MAX_CONFIRM = 3;
+// intent 摘要在 run 目录里的落点（不参与距离计算，只做记录与呈现；finalize.js 也从这里读）
+// 常量与实现都在 harness/intent-summary.js（唯一实现），这里只转出去给调用方用。
+export const INTENT_SUMMARY_FILE = intentSummaryCjs.INTENT_SUMMARY_FILE;
+export const V1_WARNING = '这是 v1 intent（没有锚/反例/自由度），等于把审美全交给指标——建议升级到 v2';
 
 // 变异开关：**只给测试用**（证明"改动门禁后测试真的会红"），不设时行为完全正常。
-//   alwaysPass    —— 闸恒放行（没有文件也不报错）→ "无 intent 必须硬错"那条断言必红；
-//   dropSkipRecord—— --no-intent 时不写台帐 → "skipped 必须有记录且 reason 含 --no-intent"那条断言必红。
+//   alwaysPass      —— 闸恒放行（没有文件也不报错）→ "无 intent 必须硬错"那条断言必红；
+//   dropSkipRecord  —— --no-intent 时不写台帐 → "skipped 必须有记录且 reason 含 --no-intent"那条断言必红；
+//   anchorAlwaysTrue—— 锚的存在性检查恒真（v2 的"锚不住东西的锚等于空话"失效）→ 第 2 条必红；
+//   v1AsDone        —— v1 intent 记 done 而不是 degraded → 第 5 条必红。
 export const INTENT_MUTANT = String(process.env.SELFLOOP_INTENT_MUTANT || '');
 
 const HARD = '[需求转译闸] ';
@@ -52,6 +77,12 @@ const CHAINS = ['cmd', 'screenshot'];
 
 function die(msg) {
   throw new Error(HARD + msg);
+}
+
+// 台帐 artifacts 里一律写相对 run 目录的路径（与其它节点同口径：'shots/target.png' 这种）
+function relativeTo(outDir, file) {
+  const r = relative(outDir, file);
+  return r ? r.split('\\').join('/') : file;
 }
 
 // ---------------------------------------------------------------- 模板
@@ -63,15 +94,26 @@ export function intentTemplate(metricIds = [], chain = 'cmd') {
       : 'criteria[].target 会覆盖该指标的目标值（adapter.target.metrics[id] 或目标帧跑出来的那个数）';
   return {
     _说明: [
-      '这是需求转译（intent）模板：引擎在开跑之前要求一份**经过确认**的需求转译，否则拒跑。',
-      '① 填什么：understood（一句话复述"我理解你要的是什么"）/ criteria（要对哪些指标下手、权重多少、目标值多少）/ uncertain（还没说清的地方）/ confirm（要用户拍板的问题）。',
-      '② criteria[].id 必须是这份 adapter 里真实存在的指标 id：' + ids + '。写错 id 是硬错，不会静默忽略。',
-      '③ ' + targetNote + '。',
-      '④ 填完怎么确认：把 confirmed 改成 true，写上 confirmedBy（谁确认的）与 confirmedAt（ISO 8601，如 2026-11-14T10:46:00+08:00），然后重跑同一条命令。',
-      '⑤ 不想走这一步：命令行加 --no-intent（截图链路 -NoIntent）显式跳过 —— 台帐会记一条 skipped 并写明原因；跳过有名字，但这次就没有"需求被消化"的证据。',
+      '这是需求转译（intent v2）模板：引擎在开跑之前要求一份**经过确认**的需求转译，否则拒跑。',
+      '① 复述：restate（一句话说清"你要什么"，≤200 字，得让人三秒判对错）。v1 的 understood 仍认，但空着会进台帐当提醒。',
+      '② 锚：anchors 至少 1 条具体参照物 {kind:"image"|"text", ref, why}。image 的 ref 必须是**真实存在的文件**（相对本 intent 文件或绝对路径）；' +
+        'text 的 ref 是具体游戏名 / 前作 / 一句话观感 —— "3A 次世代"这种抽象口号不是锚。',
+      '③ 判据：criteria 最多 5 条（轻合规：写越厚，花在做到上的预算越少），每条都要 anchor（指向某个 anchors[i] 或一句具体参照）。' +
+        'id 必须是这份 adapter 里真实存在的指标 id：' + ids + '。写错 id 是硬错，不会静默忽略。',
+      '④ ' + targetNote + '。',
+      '⑤ 反例 / 自由度 / 验收：notWanted（明确不要什么）、freeVsFixed{fixed,free}（哪些必须对、哪些可以自由）、' +
+        'howWeVerify{human,metrics,note}（怎么算过）。**字段缺失 = 降级**（台帐 degraded）：没写反例/自由度，等于全权交给搜索。',
+      '⑥ confirm 最多 3 条（要用户拍板的问题）；confirmed:true 时若有未答的 confirm，会 warn 一句"还有 N 条待确认问题没答，已按当前判据开跑"。',
+      '⑦ 填完怎么确认：把 confirmed 改成 true，写上 confirmedBy（谁确认的）与 confirmedAt（ISO 8601，如 2026-11-14T10:46:00+08:00），然后重跑同一条命令。',
+      '⑧ 不想走这一步：命令行加 --no-intent（截图链路 -NoIntent）显式跳过 —— 台帐会记一条 skipped 并写明原因；跳过有名字，但这次就没有"需求被消化"的证据。',
     ],
-    understood: '',
+    version: INTENT_VERSION,
+    restate: '',
+    anchors: [{ kind: 'image', ref: 'refs/（改成真实存在的参考图路径）', why: '同类高评分…' }],
     criteria: [],
+    notWanted: [],
+    freeVsFixed: { fixed: [], free: [] },
+    howWeVerify: { human: true, metrics: true, note: '' },
     uncertain: [],
     confirm: [],
     confirmed: false,
@@ -106,17 +148,66 @@ function readIntentFile(file) {
   return j;
 }
 
-// criteria 校验：id 必须存在、权重/目标值必须是数、不许重复。
-// 返回 [{id, weight|null, target|null, why}]（null = 这一项没提，不该覆盖）。
-export function validateCriteria(raw, metricIds) {
+// ---------------------------------------------------------------- 校验：v2 的四样（锚 / 反例 / 自由度 / 验收方式）
+// 锚：至少 1 条；kind=image 的 ref 必须**真实存在**（相对 intent 文件所在目录或绝对路径都可）。
+// 为什么非存在不可：锚不住东西的锚等于空话 —— 一句"参考某张图"但图不在，等于没有参照物，
+// 搜索结果只能退化成"指标更好看"，也就是这一版要治的那个病。
+export function validateAnchors(raw, baseDir) {
+  if (raw === undefined || raw === null) {
+    die(
+      'intent（v2）必须有 anchors：至少 1 条具体参照物 {kind:"image"|"text", ref, why}\n' +
+        '  锚 = 参考图 / 具体游戏名 / 前作 / 一句话观感；"3A 次世代"这种抽象口号不是锚。\n' +
+        '  为什么拦：只有指标 + 权重 + 目标时，每轮都只追可数指标，累积会把观感磨平 —— 锚是唯一能把"像不像"钉住的参照物',
+    );
+  }
+  if (!Array.isArray(raw)) die(`intent.anchors 要是数组（每项 {kind:"image"|"text", ref, why}），收到 ${typeof raw}`);
+  if (!raw.length) die('intent.anchors 是空数组：锚不住东西的锚等于空话 —— 至少给 1 条具体参照物（参考图 / 具体游戏名 / 前作）');
+  const out = [];
+  raw.forEach((a, i) => {
+    if (!a || typeof a !== 'object' || Array.isArray(a)) die(`intent.anchors[${i}] 不是对象（要 {kind:"image"|"text", ref, why}）：${JSON.stringify(a)}`);
+    const kind = String(a.kind ?? '').trim();
+    if (kind !== 'image' && kind !== 'text') {
+      die(`intent.anchors[${i}].kind 只认 "image" 或 "text"（收到 ${JSON.stringify(a.kind)}）：image=参考图/帧，text=具体游戏名/前作/一句话观感`);
+    }
+    const ref = String(a.ref ?? '').trim();
+    if (!ref) die(`intent.anchors[${i}].ref 是空的（kind=${kind}）—— 锚不住东西的锚等于空话`);
+    const why = String(a.why ?? '').trim();
+    let abs = ref;
+    if (kind === 'image') {
+      abs = isAbsolute(ref) ? ref : resolve(baseDir, ref);
+      if (INTENT_MUTANT !== 'anchorAlwaysTrue' && !existsSync(abs)) {
+        die(
+          `intent.anchors[${i}] 指向的参考图不存在：${ref}\n` +
+            `  解析成：${abs}（相对的是 intent 文件所在目录 ${baseDir}；也可以用绝对路径）\n` +
+            `  为什么拦：锚不住东西的锚等于空话 —— 图不在，"照着它调"这件事就没有参照物，剩下的只有指标`,
+        );
+      }
+    }
+    out.push({ kind, ref, abs, why });
+  });
+  return out;
+}
+
+// criteria 校验：条数上限（轻合规）、id 必须存在、权重/目标值必须是数、不许重复；
+// v2 每条还必须带 anchor（指向某个 anchors[i] 或一句具体参照）。
+// 返回 [{id, weight|null, target|null, anchor, why}]（null = 这一项没提，不该覆盖）。
+export function validateCriteria(raw, metricIds, opts = {}) {
   const known = metricIds.map(String);
+  const anchors = Array.isArray(opts.anchors) ? opts.anchors : [];
+  const requireAnchor = Boolean(opts.requireAnchor);
   if (raw === undefined || raw === null) return [];
-  if (!Array.isArray(raw)) die(`intent.criteria 要是数组（每项 {id, weight, target, why}），收到 ${typeof raw}`);
+  if (!Array.isArray(raw)) die(`intent.criteria 要是数组（每项 {id, weight, target, anchor, why}），收到 ${typeof raw}`);
+  if (raw.length > MAX_CRITERIA) {
+    die(
+      `intent.criteria 有 ${raw.length} 条 > 上限 ${MAX_CRITERIA} 条（轻合规：写越厚，花在做到上的预算越少）\n` +
+        `  改法：把判据收敛到最关键的 ${MAX_CRITERIA} 条以内；次要的写进 anchors / notWanted / freeVsFixed，别都塞进距离里`,
+    );
+  }
   const out = [];
   const seen = new Set();
   const unknown = [];
   raw.forEach((c, i) => {
-    if (!c || typeof c !== 'object' || Array.isArray(c)) die(`intent.criteria[${i}] 不是对象（要 {id, weight, target, why}）：${JSON.stringify(c)}`);
+    if (!c || typeof c !== 'object' || Array.isArray(c)) die(`intent.criteria[${i}] 不是对象（要 {id, weight, target, anchor, why}）：${JSON.stringify(c)}`);
     const id = String(c.id ?? '').trim();
     if (!id) die(`intent.criteria[${i}] 缺 id（这份 adapter 的指标是：${known.join(' / ') || '（一个都没有）'}）`);
     if (!known.includes(id)) {
@@ -135,7 +226,25 @@ export function validateCriteria(raw, metricIds) {
       target = Number(c.target);
       if (!Number.isFinite(target)) die(`intent.criteria.${id}.target 要是数（收到 ${JSON.stringify(c.target)}）`);
     }
-    out.push({ id, weight, target, why: String(c.why ?? '') });
+    const anchor = String(c.anchor ?? '').trim();
+    if (!anchor) {
+      if (requireAnchor) {
+        die(
+          `intent.criteria.${id} 缺 anchor：每条判据都要指向"这条指标在参照物里的哪个部位/哪个数"` +
+            `（写 anchors[0]、anchors[1] 这种，或一句具体参照如"参考图里的亮核占比"）\n` +
+            `  为什么拦：不带锚的判据（更粗/更亮）没有参照物，搜索只会把它推到指标极值，观感就磨平了`,
+        );
+      }
+    } else {
+      const m = /^anchors\s*\[\s*(\d+)\s*\]/.exec(anchor);
+      if (m) {
+        const idx = Number(m[1]);
+        if (!(idx >= 0 && idx < anchors.length)) {
+          die(`intent.criteria.${id}.anchor 指向 ${anchor}，但 intent.anchors 只有 ${anchors.length} 条（下标 ${idx} 越界）—— 悬空的锚等于没锚`);
+        }
+      }
+    }
+    out.push({ id, weight, target, anchor, why: String(c.why ?? '') });
   });
   if (unknown.length) {
     die(
@@ -147,11 +256,46 @@ export function validateCriteria(raw, metricIds) {
   return out;
 }
 
+// 反例：明确不要什么。**可以是空数组**，但字段缺失和显式空数组是两件事（缺失 = 降级）。
+export function validateNotWanted(raw) {
+  if (raw === undefined || raw === null) return { present: false, items: [] };
+  if (!Array.isArray(raw)) die(`intent.notWanted 要是字符串数组（明确不要什么），收到 ${typeof raw}`);
+  return { present: true, items: raw.map((s) => String(s).trim()).filter(Boolean) };
+}
+
+// 自由度 vs 定死项：哪些必须对（fixed）、哪些可以自由（free）。
+// 原实验的教训：需求书把形态全锁成"严格直线"，锁出了僵直激光 —— 该自由的地方定死，等于把搜索的手绑住。
+export function validateFreeVsFixed(raw) {
+  if (raw === undefined || raw === null) return { present: false, fixed: [], free: [] };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    die('intent.freeVsFixed 要是对象 {fixed:[...], free:[...]}（缺了就等于全权交给搜索：没写清哪些必须对、哪些可以自由）');
+  }
+  const arr = (v, name) => {
+    if (v === undefined || v === null) return [];
+    if (!Array.isArray(v)) die(`intent.freeVsFixed.${name} 要是字符串数组（收到 ${typeof v}）`);
+    return v.map((s) => String(s).trim()).filter(Boolean);
+  };
+  return { present: true, fixed: arr(raw.fixed, 'fixed'), free: arr(raw.free, 'free') };
+}
+
+// 验收方式：怎么算过（人眼看 / 指标阈值 / 两者都要）。把"谁来点头"写进契约。
+export function validateHowWeVerify(raw) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) die('intent.howWeVerify 要是对象 {human:bool, metrics:bool, note:"…"}');
+  const human = raw.human === true;
+  const metrics = raw.metrics === true;
+  if (!human && !metrics) {
+    die('intent.howWeVerify 里 human 和 metrics 都是 false/没写：那这次"算什么过"就没有验收人 —— 至少选一个（人眼看 / 指标阈值 / 两者都要）');
+  }
+  return { human, metrics, note: String(raw.note ?? '').trim() };
+}
+
 // ---------------------------------------------------------------- 闸
 // 返回：
-//   status 'done'      —— 有一份 confirmed:true 的转译（criteria 已校验，交给调用方覆盖判据）
+//   status 'done'      —— 有一份 confirmed:true 的 v2 转译（锚/反例/自由度/验收方式齐全；criteria 已校验）
+//   status 'degraded'  —— 过了闸但缺东西（v1 老写法 / 没写 notWanted / 没写 freeVsFixed），reason 写清缺什么
 //   status 'skipped'   —— 显式 --no-intent（调用方必须写一条 skipped 台帐）
-// 抛错 = 硬错（没有文件 / 没确认 / criteria 里的 id 不存在）。
+// 抛错 = 硬错（没有文件 / 没确认 / criteria 里的 id 不存在 / 锚指向不存在的图 / 条数超限 / restate 空）。
 export function resolveIntent(opts = {}) {
   const outDir = opts.outDir;
   const chain = CHAINS.includes(opts.chain) ? opts.chain : 'cmd';
@@ -159,17 +303,11 @@ export function resolveIntent(opts = {}) {
   const noIntent = Boolean(opts.noIntent);
   const tplPath = join(outDir, TEMPLATE_FILE);
   if (noIntent) {
-    return {
-      status: 'skipped',
+    return skippedShape({
       chain,
-      path: '',
-      templatePath: '',
-      intent: null,
-      criteria: [],
-      understood: '',
       reason: NO_INTENT_REASON,
       warnings: ['这次没有"需求被消化"的证据：判据全部按 adapter 原样，没人确认过它是不是你要的'],
-    };
+    });
   }
   const file = opts.intentPath ? resolve(opts.intentPath) : join(outDir, INTENT_FILE);
   if (!existsSync(file)) {
@@ -178,14 +316,16 @@ export function resolveIntent(opts = {}) {
       const skipSwitch = chain === 'screenshot' ? '-NoIntent' : '--no-intent';
       die(
         `没有需求转译文件：${file}\n` +
-          `  ① 要填什么：understood（一句话复述需求）/ criteria（对哪些指标下手、权重与目标值）/ uncertain（没说清的地方）/ confirm（要用户拍板的问题）；` +
+          `  ① 要填什么：restate（一句话复述需求）/ anchors（至少 1 条具体参照物，image 的 ref 必须真实存在）/ ` +
+          `criteria（最多 5 条：对哪些指标下手、权重、目标值、anchor）/ notWanted（不要什么）/ freeVsFixed（哪些定死、哪些自由）/ ` +
+          `howWeVerify（人眼还是指标算过）/ uncertain / confirm（要用户拍板的问题，最多 3 条）；` +
           `这份 adapter 的指标是 ${metricIds.join(' / ') || '（一个都没有）'}；模板已写到 ${tplPath}\n` +
           `  ② 填完怎么确认：把 confirmed 改成 true，写上 confirmedBy / confirmedAt（ISO 8601），再重跑同一条命令\n` +
           `  ③ 确实不填：命令行加 ${skipSwitch} 显式跳过 —— 台帐会记一条 skipped 并写明原因（跳过有名字，但这次没有"需求被消化"的证据）\n` +
           `  为什么拦：需求输入之后必须先被消化；没确认过的判据，跑完一整轮也不知道"变好"是相对谁说的`,
       );
     }
-    return { status: 'degraded', chain, path: '', templatePath: tplPath, intent: null, criteria: [], understood: '', reason: '（变异体 alwaysPass：闸被改成恒放行）', warnings: [] };
+    return skippedShape({ status: 'degraded', chain, templatePath: tplPath, reason: '（变异体 alwaysPass：闸被改成恒放行）' });
   }
 
   const j = readIntentFile(file);
@@ -204,21 +344,117 @@ export function resolveIntent(opts = {}) {
     );
   }
 
-  const criteria = validateCriteria(j.criteria, metricIds);
-  const understood = String(j.understood ?? '').trim();
+  // ------------------------------------------------------------ v1 / v2 分流
+  // v1 = 没有 version 且 criteria 没有 anchor 的老写法：**仍然能跑**，但必须留一条中文 warn、
+  // 台帐记 degraded（不是 done）。因为它只有"指标 + 权重 + 目标"，等于把审美全交给指标。
+  const version = Number.isFinite(Number(j.version)) ? Number(j.version) : 1;
+  const isV1 = !(version >= 2);
+  const baseDir = dirname(file);
   const warnings = [];
+  const degradedWhy = [];
+
+  const restate = String(j.restate ?? '').trim();
+  if (!isV1) {
+    if (!restate) {
+      die(
+        `intent.restate 是空的：v2 必须有一句话复述"你要什么"（≤${RESTATE_MAX_CHARS} 字）\n` +
+          `  为什么拦：复述是"三秒判对错"的那一行 —— 连这句都没有，后面所有的锚/判据都在替一个没被说清的需求干活`,
+      );
+    }
+    const chars = [...restate].length;
+    if (chars > RESTATE_MAX_CHARS) {
+      die(`intent.restate 太长：${chars} 字 > 上限 ${RESTATE_MAX_CHARS} 字（复述不是需求书，是一句话）—— 删到一句能三秒判对错的长度`);
+    }
+  }
+
+  // 锚：v2 必填；v1 写了也校验（图不在同样硬错，别让"锚"在 v1 里变成可以随口写的装饰）
+  let anchors = [];
+  if (j.anchors !== undefined && j.anchors !== null) anchors = validateAnchors(j.anchors, baseDir);
+  else if (!isV1) anchors = validateAnchors(undefined, baseDir);
+  const criteria = validateCriteria(j.criteria, metricIds, { anchors, requireAnchor: !isV1 });
+
+  let confirmArr = [];
+  if (j.confirm !== undefined && j.confirm !== null) {
+    if (!Array.isArray(j.confirm)) die(`intent.confirm 要是字符串数组（要用户拍板的问题），收到 ${typeof j.confirm}`);
+    confirmArr = j.confirm.map((s) => String(s).trim()).filter(Boolean);
+  }
+  if (confirmArr.length > MAX_CONFIRM) {
+    die(
+      `intent.confirm 有 ${confirmArr.length} 条 > 上限 ${MAX_CONFIRM} 条（轻合规：写越厚，花在做到上的预算越少）\n` +
+        `  改法：只留最需要用户拍板的 ${MAX_CONFIRM} 条以内；其余写进 uncertain（记录用），别都当"必须回答才能开跑"`,
+    );
+  }
+
+  const nw = validateNotWanted(j.notWanted);
+  const fvf = validateFreeVsFixed(j.freeVsFixed);
+  const hwv = validateHowWeVerify(j.howWeVerify);
+
+  const understood = String(j.understood ?? restate ?? '').trim();
+  if (isV1) {
+    warnings.push(V1_WARNING);
+    degradedWhy.push('v1 intent（无 version / criteria 无 anchor）：缺锚、反例、自由度、验收方式 —— 审美全交给指标');
+  } else {
+    if (!nw.present) {
+      warnings.push('没写反例（notWanted）：等于把"不要什么"也交给搜索自己猜 —— 原实验里"拒绝写实/PBR"比只写"要二次元"有效得多');
+      degradedWhy.push('缺 notWanted（反例）');
+    }
+    if (!fvf.present) {
+      warnings.push('没写自由度（freeVsFixed.fixed / .free）：等于全权交给搜索 —— 需求书把形态全锁成"严格直线"，锁出了僵直激光');
+      degradedWhy.push('缺 freeVsFixed（自由度）');
+    }
+  }
+  if (!hwv) warnings.push('没写验收方式（howWeVerify）：这次"谁点头算过"没写进契约（人眼看 / 指标阈值 / 两者都要）');
   if (!understood) warnings.push('intent.understood 是空的：确认了 confirmed，但没留下"我理解你要的是什么"那句话');
   if (!criteria.length) warnings.push('intent.criteria 是空的：这次没有覆盖任何判据（只留了复述记录）');
+  // 允许通过，但要 warn 一句（"还有待确认的问题没答"不是硬错：用户可能就是要先跑一版看看）
+  if (confirmArr.length) {
+    warnings.push(`还有 ${confirmArr.length} 条待确认问题没答，已按当前判据开跑：` + confirmArr.join('；'));
+  }
+
+  // 变异体 v1AsDone 只回滚"v1 → degraded"这一条判定（证明第 5 条测试有牙），其它降级照旧。
+  let status = degradedWhy.length ? 'degraded' : 'done';
+  if (isV1 && INTENT_MUTANT === 'v1AsDone') status = 'done';
   return {
-    status: 'done',
+    status,
     chain,
     path: file,
     templatePath: '',
     intent: j,
+    version,
+    isV1,
+    restate,
+    anchors,
     criteria,
+    notWanted: nw,
+    freeVsFixed: fvf,
+    howWeVerify: hwv,
+    confirm: confirmArr,
     understood,
-    reason: '',
+    reason: degradedWhy.join('；'),
     warnings,
+  };
+}
+
+// 统一的返回形状（各处带全字段，下游不用判断字段在不在）
+function skippedShape(o = {}) {
+  return {
+    status: o.status || 'skipped',
+    chain: o.chain || 'cmd',
+    path: o.path || '',
+    templatePath: o.templatePath || '',
+    intent: null,
+    version: null,
+    isV1: false,
+    restate: '',
+    anchors: [],
+    criteria: [],
+    notWanted: { present: false, items: [] },
+    freeVsFixed: { present: false, fixed: [], free: [] },
+    howWeVerify: null,
+    confirm: [],
+    understood: '',
+    reason: o.reason || '',
+    warnings: o.warnings || [],
   };
 }
 
@@ -264,25 +500,56 @@ export function effectiveAdapterFile(adapterFile, outDir, criteria) {
   return { file, notes };
 }
 
+// ---------------------------------------------------------------- intent 摘要（记录与呈现用，**不参与距离**）
+// v2 的四样（restate / anchors / notWanted / freeVsFixed / howWeVerify）不进任何判据 ——
+// 它们只是"这次转译到底说了什么"的记录：写进台帐（artifacts 指向本文件 + decision.basis）
+// 和 report.md 顶部的摘要段。**不参与距离计算**是一条纪律：锚一旦进了距离，就又变成"指标替代审美"。
+// 实现只有一份：harness/intent-summary.js（CommonJS，finalize.js 也要 require 它），顶部已 createRequire 拉进来。
+export const intentSummaryOf = intentSummaryCjs.intentSummaryOf;
+export const writeIntentSummary = intentSummaryCjs.writeIntentSummary;
+export const readIntentSummary = intentSummaryCjs.readIntentSummary;
+export const intentSummaryLines = intentSummaryCjs.intentSummaryLines;
+
 // ---------------------------------------------------------------- 台帐记录（两个入口共用同一个形状）
 // 字段固定：node / seq / status / producer / ms / inputs / decision / artifacts / cost / reason
 export function intentNodeRecord(res, extra = {}) {
   const chain = res.chain === 'screenshot' ? 'screenshot' : 'command';
   const artifacts = [];
+  if (extra.summaryFile) artifacts.push(extra.summaryFile);
   if (extra.effectiveAdapter) artifacts.push(extra.effectiveAdapter);
   const basis = [];
   if (res.status === 'skipped') {
     basis.push('--no-intent：显式跳过需求转译（本次判据 = adapter 原样，没人确认过它是不是你要的）');
   } else {
     const it = res.intent || {};
+    basis.push(`intent 版本：v${res.version ?? 1}${res.isV1 ? '（v1 老写法：没有锚/反例/自由度，等于把审美全交给指标）' : ''}`);
     basis.push('confirmed=true' + (it.confirmedBy ? `（${it.confirmedBy}）` : '') + (it.confirmedAt ? ' @ ' + it.confirmedAt : ''));
-    if (res.understood) basis.push('understood: ' + res.understood);
+    if (res.restate) basis.push('restate: ' + res.restate);
+    if (res.understood && res.understood !== res.restate) basis.push('understood: ' + res.understood);
+    // 锚 / 反例 / 自由度 / 验收方式：写进台帐只为记录与呈现（**不参与距离**）
+    const anchors = Array.isArray(res.anchors) ? res.anchors : [];
+    if (anchors.length) {
+      basis.push(
+        '锚 ' + anchors.length + ' 条：' + anchors.map((a, i) => `anchors[${i}](${a.kind}) ${a.ref}${a.why ? ' —— ' + a.why : ''}`).join(' / '),
+      );
+    } else {
+      basis.push('锚 0 条（v1：没有参照物，只剩指标）');
+    }
+    const nw = res.notWanted || { present: false, items: [] };
+    if (nw.present) basis.push('反例 ' + nw.items.length + ' 条：' + (nw.items.join(' / ') || '（显式空数组）'));
+    const fvf = res.freeVsFixed || { present: false, fixed: [], free: [] };
+    if (fvf.present) basis.push('自由度：定死 ' + fvf.fixed.length + ' 条（' + (fvf.fixed.join(' / ') || '无') + '） / 自由 ' + fvf.free.length + ' 条（' + (fvf.free.join(' / ') || '无') + '）');
+    if (res.howWeVerify) {
+      const h = res.howWeVerify;
+      basis.push('验收方式：' + (h.human && h.metrics ? '人眼 + 指标' : h.human ? '人眼' : '指标阈值') + (h.note ? '（' + h.note + '）' : ''));
+    }
+    basis.push('以上（restate / 锚 / 反例 / 自由度 / 验收方式）**不参与距离计算**，只做记录与呈现');
     if (res.criteria.length) {
       for (const c of res.criteria) {
         const bits = [];
         if (c.weight !== null) bits.push('weight=' + c.weight);
         if (c.target !== null) bits.push('target=' + c.target);
-        basis.push(`覆盖判据 ${c.id}：${bits.join(' ')}${c.why ? '（原因：' + c.why + '）' : ''}`);
+        basis.push(`覆盖判据 ${c.id}：${bits.join(' ')}${c.anchor ? '（锚：' + c.anchor + '）' : ''}${c.why ? '（原因：' + c.why + '）' : ''}`);
       }
     } else {
       basis.push('criteria 为空：没有覆盖任何判据');
@@ -295,8 +562,8 @@ export function intentNodeRecord(res, extra = {}) {
     res.status === 'skipped'
       ? '显式跳过需求转译：放行，但这一步没有产物，判据全部按 adapter 原样'
       : res.status === 'degraded'
-        ? `需求转译过了闸，但有一部分没生效（${res.reason}）`
-        : `需求转译已过闸（${chain === 'screenshot' ? '截图链路' : '命令链路'}）：criteria 覆盖 ${res.criteria.length} 条判据`;
+        ? `需求转译过了闸，但缺东西（${res.reason}）—— 记 degraded，不假装 done`
+        : `需求转译已过闸（${chain === 'screenshot' ? '截图链路' : '命令链路'}，v${res.version ?? 1}）：criteria 覆盖 ${res.criteria.length} 条判据，锚 ${(res.anchors || []).length} 条`;
   const reason =
     res.status === 'done' ? '' : res.status === 'skipped' ? NO_INTENT_REASON + '（台帐：跳过有名字）' : String(res.reason || '（变异体）');
   return {
@@ -347,7 +614,7 @@ function gateCli(argv) {
   const res = resolveIntent({ outDir, intentPath: a.intent, noIntent: a.noIntent, metricIds, chain });
   const notes = [];
   let effectiveAdapter = '';
-  if (res.status === 'done') {
+  if (res.status === 'done' || res.status === 'degraded') {
     const hasWeight = res.criteria.some((c) => c.weight !== null);
     const hasTarget = res.criteria.some((c) => c.target !== null);
     if (hasWeight) {
@@ -359,15 +626,25 @@ function gateCli(argv) {
       // 记账诚实：目标值在截图链路没有落点（锚点来自目标帧实测），所以这条闸降级而不是假装生效
       res.criteria = res.criteria.map((c) => (c.target === null ? c : { ...c, target: null }));
       res.status = 'degraded';
-      res.reason = 'criteria[].target 在截图链路不生效（目标锚点来自目标帧实测，不在 adapter 里）：已记账，未参与距离';
+      res.reason = [res.reason, 'criteria[].target 在截图链路不生效（目标锚点来自目标帧实测，不在 adapter 里）：已记账，未参与距离']
+        .filter(Boolean)
+        .join('；');
     }
   }
+  // 摘要落盘（v2 的四样：记录与呈现用，**不参与距离**）—— finalize.js 从 <out>/intent.summary.json 读它
+  const summaryAbs = writeIntentSummary(outDir, res);
+  const summaryRel = summaryAbs ? relativeTo(outDir, summaryAbs) : '';
   const ledger = createLedger(outDir);
-  ledger.add(intentNodeRecord(res, { ms: Date.now() - t0, effectiveAdapter, notes }));
+  ledger.add(intentNodeRecord(res, { ms: Date.now() - t0, effectiveAdapter, notes, summaryFile: summaryRel }));
   console.log(
     JSON.stringify({
       status: res.status,
       nodeFile: join('nodes', '01-intent.json'),
+      version: res.version ?? null,
+      isV1: Boolean(res.isV1),
+      restate: res.restate || '',
+      anchorCount: (res.anchors || []).length,
+      summaryFile: summaryRel,
       effectiveAdapter,
       criteria: res.criteria,
       warnings: res.warnings || [],

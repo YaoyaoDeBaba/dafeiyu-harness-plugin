@@ -3,6 +3,47 @@
 > 规矩：**改了 `harness/` 里的执行器就要在这里记一笔**，并注明"要不要回灌上游原件（案例 A，见 README「案例与来源」）"。
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
+## 0.5.1（未发布）· 需求转译升到 v2：锚 / 反例 / 自由度 / 验收方式
+
+> 为什么升：三份真实实验复盘（多模型视效产线）的结论是「**提示词写法是第一杠杆，模型只抬上限不抬下限**」，
+> 而最大的坑是「**指标替代审美**」—— 每轮都在追可数指标，单步都有"改进证据"，累积却把观感磨平。
+> 0.5.0 的 intent 只有"指标 + 权重 + 目标"，等于把这个坑**制度化**。v2 补的四样全部来自那轮实验的实证：
+> 锚（具体参照物）、反例（明确不要什么）、自由度 vs 定死项（别把形态全锁死）、验收方式（谁点头算过）。
+> 一句话：**锚不住东西的锚等于空话；没写反例/自由度，等于把审美全权交给搜索。**
+
+- **intent v2 契约**：结构 `{version:2, restate, anchors[], criteria[]{id,weight,target,anchor,why}, notWanted[], freeVsFixed{fixed,free}, howWeVerify{human,metrics,note}, uncertain[], confirm[], confirmed, confirmedBy, confirmedAt}`。
+  硬错（全部中文 + 非零退出）：① `restate` 必填非空且 ≤200 字；② `anchors` 至少 1 条，`kind:"image"` 的 `ref` **必须真实存在**
+  （相对 intent 文件所在目录或绝对路径，错误里点名 ref + 解析出的绝对路径）；③ `criteria` **≤5 条**（错误信息写明
+  "轻合规：写越厚，花在做到上的预算越少"），每条必须有 `anchor`（指向 `anchors[i]` 或一句具体参照，下标越界也是硬错）；
+  ④ `confirm` **≤3 条**；⑤ `criteria[].id` 在 adapter 里不存在仍然硬错（v1 已有，未退化）。
+- **缺失 ≠ 空数组**：`notWanted` / `freeVsFixed` 可以显式给空数组；**字段缺失**则 warn 并把台帐 `01-intent.json` 记 `degraded`
+  （reason 写清缺 notWanted / 缺 freeVsFixed）。`howWeVerify` 缺失只 warn（"谁点头算过"没写进契约）。
+  `confirm[]` 非空但 `confirmed:true` → 允许通过，warn 一句"还有 N 条待确认问题没答，已按当前判据开跑"。
+- **v1 向后兼容**：没有 `version`、`criteria` 没有 `anchor` 的老 intent **仍然能跑**，但必须打一条中文 warn
+  （`这是 v1 intent（没有锚/反例/自由度），等于把审美全交给指标——建议升级到 v2`），台帐 `01-intent.json` 的 `status` 记
+  **`degraded`**（不是 `done`），`reason` 写清缺什么；`report.md` 顶部标 `intent v1 · degraded`。
+- **台帐与报告**：`restate` / `anchors` / `notWanted` / `freeVsFixed` / `howWeVerify` 全部写进 `01-intent.json`
+  （`artifacts` 指向新增的 `<out>/intent.summary.json`，`decision.basis` 里留人读的逐条摘要 + 一句
+  "**以上不参与距离计算，只做记录与呈现**"）；`report.md` 在「本次运行」汇总行下面新增一段 **intent 摘要**
+  （restate 一行 + 锚几条 + 反例/自由度 + 谁验收 + 是否 v1 degraded）。**这些不参与距离计算** —— 锚一旦进距离就又变成指标。
+- **两个入口口径一致**：新增 `harness/intent-summary.js`（CommonJS）作为摘要的**唯一实现**，`cmdloop.mjs` 通过
+  `intent.mjs` 复用、`finalize.js` 直接 `require`（截图链路读同一个 `intent.summary.json`），防止两份实现漂。
+- **改动的执行器**：`harness/intent.mjs`（v2 校验 + v1 降级 + 摘要落盘 + 回执加 `version/restate/anchorCount/summaryFile`；
+  `gate` 子命令的派生 adapter 现在对 `degraded` 也生效）、`harness/cmdloop.mjs`（写摘要 + 报告摘要段；v1 degraded 也会照常开跑并打 warn）、
+  `harness/finalize.js`（截图链路报告补 intent 摘要段）。**`iter.ps1` 的转发逻辑一个字节没动**（它只调 `intent.mjs gate`，闸内部升级）。
+  新增文件 `harness/intent-summary.js`。
+- **新增 8 条测试（`test/intent.test.mjs`，现在 55 + 12 + 21 + 19 = 107）**：
+  ⑪ 完整 v2 → 通过 + `status=done` + 报告含 restate 片段与锚条数（并断言 `participatesInDistance:false`）；
+  ⑫ `anchors[0].kind=image` 指向不存在的文件 → 硬错；⑬ `criteria` 6 条 → 硬错且信息含"轻合规"；⑭ `confirm` 4 条 → 硬错；
+  ⑮ v1 → 能跑但 `01-intent.json` 是 `degraded` 且 reason 含 `v1`；⑯ `restate` 空 → 硬错；
+  ⑰ 弄坏能红 ×2：新增变异开关 `anchorAlwaysTrue`（锚存在性检查恒真）让 ⑫ 塌、`v1AsDone`（v1 记 done）让 ⑮ 塌。
+  原有 ①~⑩ 全绿（fixture 升级成 v2，③/⑥ 的 `status=done` 断言不变）。
+- **文档**：`skills/selfloop/references/intent-and-ledger.md` 重写 §1（v2 字段表 + 一个填好的小例子）、§1.5
+  「为什么要锚/反例/自由度」（四样各自的实验依据与不写的后果）、§2 增加 v2 六条硬错表、§5 补 `01-intent.json` 的 artifacts/basis、
+  §6 补 intent 摘要段怎么读、§7 把「**锚还没进搜索**」列为最大缺口（三条候选路）；`README.md` 的 intent 用法段补"v2 要锚"；
+  `CHANGELOG.md` 本条。
+- **硬约束**：不 commit、不 push、**不改版本号**（`package.json` 仍是 `0.5.0`，bump 留给发布）；`npm test` 全绿（107）。
+
 ## 0.5.0（未发布）· 看得见的过程：需求转译硬闸 + 节点台帐
 
 > 前六版一直在补"中段"（观测 → 判据 → 搜索）。这一版补的是**头**：需求输入之后必须先被消化、且必须被人确认，才允许开跑；

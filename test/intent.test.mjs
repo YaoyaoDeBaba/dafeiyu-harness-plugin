@@ -1,6 +1,6 @@
-// 需求转译闸（intent 硬闸）+ 节点台帐（0.5.0）自测：不碰浏览器、不开端口。
+// 需求转译闸（intent 硬闸）+ 节点台帐（0.5.0 / v2 在 0.5.1）自测：不碰浏览器、不开端口。
 //
-// 覆盖（任务书 D 节的七条 + 两条附带）：
+// 覆盖（任务书 D 节的七条 + 两条附带 + v2 的七条）：
 //   ① 无 intent          → 硬错 + 写出 <out>/intent.template.json（有 confirm 字段）
 //   ② confirmed:false    → 硬错，错误文本里含 confirm[] 的每一条（原样列出）
 //   ③ confirmed:true 且 id 合法 → 跑通；report.md 有"本次运行："汇总行；nodes/01-intent.json 是 done；
@@ -13,9 +13,17 @@
 //   ⑧ 截图链路的闸       → intent.mjs gate --chain screenshot：权重覆盖进派生 adapter、target 只记账（degraded）
 //   ⑨ 截图链路台帐补全   → 合成 _run.json 跑 finalize.js：intent(01) 之后补 target/stability/precheck/search/finalize，
 //                          汇总行计数与文件条数相等、stability 是 skipped
+//   ── v2（0.5.1）：
+//   ⑪ 完整 v2            → 通过，01-intent 是 done，report.md 有 intent 摘要段（restate 片段 + 锚条数）
+//   ⑫ anchors[0].kind=image 指向不存在的文件 → 硬错（锚不住东西的锚等于空话）
+//   ⑬ criteria 给 6 条    → 硬错，错误信息含"轻合规"
+//   ⑭ confirm 给 4 条     → 硬错
+//   ⑮ v1 intent           → 能跑，但 01-intent 是 degraded 且 reason 含 v1
+//   ⑯ restate 为空        → 硬错
+//   ⑰ 弄坏能红 ×2         → anchorAlwaysTrue 让 ⑫ 塌；v1AsDone 让 ⑮ 塌
 //
 // 变异开关（只给测试用，见 harness/intent.mjs 的 INTENT_MUTANT）：
-//   SELFLOOP_INTENT_MUTANT=alwaysPass|dropSkipRecord node test/intent.test.mjs
+//   SELFLOOP_INTENT_MUTANT=alwaysPass|dropSkipRecord|anchorAlwaysTrue|v1AsDone node test/intent.test.mjs
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
@@ -40,8 +48,48 @@ function runCli(args, env = {}) {
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', out: (r.stdout ?? '') + (r.stderr ?? '') }
 }
 
-// 一份"填好了的" intent。criteria 用 echo 示例的两条指标（loss / size）。
+// 一份 1×1 的真 PNG：锚（kind=image）要求 ref **真实存在**，测试就用它当参考图
+const PNG_1X1 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8AAAwAB/wAp0AAfAAAAAElFTkSuQmCC',
+  'base64',
+);
+
+// 一份"填好了的" **v2** intent（锚 / 反例 / 自由度 / 验收方式齐全）。criteria 用 echo 示例的两条指标（loss / size）。
 function writeIntent(out, over = {}) {
+  mkdirSync(out, { recursive: true });
+  mkdirSync(join(out, 'refs'), { recursive: true });
+  writeFileSync(join(out, 'refs', 'ref-a.png'), PNG_1X1);
+  const doc = {
+    version: 2,
+    restate: '把包体积从 12 压回 10，同时别把 loss 推到 0',
+    anchors: [
+      { kind: 'image', ref: 'refs/ref-a.png', why: '同类高评分的压缩曲线图' },
+      { kind: 'text', ref: '崩坏：星穹铁道（具体游戏名，不是抽象风格）', why: '配色与勾线参照' },
+    ],
+    criteria: [
+      { id: 'size', weight: 2, target: 10, anchor: 'anchors[0]：参考图里的体积刻度', why: '体积是你说的重点' },
+      { id: 'loss', weight: 1, anchor: 'anchors[1]：参考游戏里的画质下限', why: '次要点，别归零' },
+    ],
+    notWanted: ['不要写实/PBR 连续渐变', '不要像素噪点式的硬过渡'],
+    freeVsFixed: {
+      fixed: ['命中点的位置', '整体配色链（白芯→黄→橙→暗红）'],
+      free: ['光束长度', '弯曲与摆动幅度', '火星密度'],
+    },
+    howWeVerify: { human: true, metrics: true, note: '指标过闸 + 人眼确认一次' },
+    uncertain: ["'更硬'是指边缘锐利还是对比度更高？"],
+    confirm: ['粗细优先还是亮度优先？'],
+    confirmed: true,
+    confirmedBy: 'user',
+    confirmedAt: '2026-11-14T10:46:00+08:00',
+    ...over,
+  };
+  const file = join(out, 'intent.json');
+  writeFileSync(file, JSON.stringify(doc, null, 2), 'utf8');
+  return { file, doc };
+}
+
+// v1 老写法（没有 version、criteria 没有 anchor）：**仍然能跑**，但台帐必须记 degraded。
+function writeV1Intent(out, over = {}) {
   const doc = {
     understood: '把 size 从 12 压回 10，loss 别反弹',
     criteria: [
@@ -54,11 +102,11 @@ function writeIntent(out, over = {}) {
     confirmedBy: 'user',
     confirmedAt: '2026-11-14T10:46:00+08:00',
     ...over,
-  }
-  mkdirSync(out, { recursive: true })
-  const file = join(out, 'intent.json')
-  writeFileSync(file, JSON.stringify(doc, null, 2), 'utf8')
-  return { file, doc }
+  };
+  mkdirSync(out, { recursive: true });
+  const file = join(out, 'intent.json');
+  writeFileSync(file, JSON.stringify(doc, null, 2), 'utf8');
+  return { file, doc };
 }
 
 // 一次跑通的 run：③ 与 ⑥ 共用（省一次 1 秒的跑）
@@ -138,7 +186,7 @@ test('③ confirmed:true 且 id 合法 → 跑通；report 有汇总行；01-int
 // ---------------------------------------------------------------- ④ 未知 id
 test('④ criteria 里给了 adapter 不存在的 id → 硬错（绝不静默忽略）', () => {
   const out = tmp('badid')
-  writeIntent(out, { criteria: [{ id: 'covv', weight: 1, why: 'typo' }] })
+  writeIntent(out, { criteria: [{ id: 'covv', weight: 1, anchor: 'anchors[0]：参考图里的亮核占比', why: 'typo' }] })
   const r = runCli(['--adapter', ECHO_ADAPTER, '--out', out, '--budget', '6'])
   assert.equal(r.status, 1, `写错 id 必须拒跑（静默忽略 = 对着没人用的判据跑完一轮），实际 exit=${r.status}\n${r.out}`)
   assert.match(r.out, /不认识的指标 id/)
@@ -224,10 +272,10 @@ test('⑦-2 弄坏能红：不记跳过（SELFLOOP_INTENT_MUTANT=dropSkipRecord�
 test('⑧ 截图链路（intent.mjs gate --chain screenshot）：权重进派生 adapter；target 只记账（degraded）', () => {
   const out = tmp('shot')
   writeIntent(out, {
-    understood: '火柱要更粗更硬',
+    restate: '火柱要更粗更硬，但别变成一根直线光',
     criteria: [
-      { id: 'cov', weight: 0.6, target: 0.02, why: '你说的更粗' },
-      { id: 'lapVar', weight: 0.2, why: '细节次要' },
+      { id: 'cov', weight: 0.6, target: 0.02, anchor: 'anchors[0]：参考图里的亮核占比', why: '你说的更粗' },
+      { id: 'lapVar', weight: 0.2, anchor: 'anchors[1]：参考游戏里的边缘锐利度', why: '细节次要' },
     ],
   })
   const r = spawnSync(process.execPath, [INTENT_CLI, 'gate', '--out', out, '--adapter', FIRE_RAY, '--chain', 'screenshot'], {
@@ -355,4 +403,148 @@ test('⑩ 两个入口都接了闸：iter.ps1 有 -Intent/-NoIntent，且在活�
   const ps = spawnSync('pwsh', ['-NoProfile', '-Command', `$e=$null;$t=$null;[void][System.Management.Automation.Language.Parser]::ParseFile('${join(ROOT, 'harness', 'iter.ps1').replace(/'/g, "''")}',[ref]$t,[ref]$e); if($e -and $e.Count){$e|%{$_.Message};exit 1}else{exit 0}`], { encoding: 'utf8' })
   if (ps.error) return // 没有 pwsh 的机器上跳过（不影响闸本身的判据）
   assert.equal(ps.status, 0, `iter.ps1 语法必须能过 PowerShell 解析器：${ps.stdout}${ps.stderr}`)
+})
+
+// ════════════════════════════════════════════════════ v2（0.5.1）：锚 / 反例 / 自由度 / 验收方式
+
+// ---------------------------------------------------------------- ⑪ 完整 v2 通过
+test('⑪ 完整 v2 → 通过；01-intent 是 done；report.md 有 intent 摘要段（restate 片段 + 锚条数）', () => {
+  const out = tmp('v2ok')
+  writeIntent(out)
+  const r = runCli(['--adapter', ECHO_ADAPTER, '--out', out, '--budget', '12'])
+  assert.equal(r.status, 0, `完整 v2 必须能跑通，实际 exit=${r.status}\n${r.out.slice(-2000)}`)
+  assert.match(r.out, /过闸（v2）/, '日志里要看得出这是 v2')
+
+  const node = readJson(join(nodeDir(out), '01-intent.json'))
+  assert.equal(node.node, 'intent')
+  assert.equal(node.status, 'done', `完整 v2 是 done（不是 degraded），实际 ${node.status}：${node.reason}`)
+  assert.equal(node.reason, '', 'done 时不该有降级原因')
+  assert.ok(node.artifacts.includes('intent.summary.json'), `摘要是产物（artifact），不是只活在报告里：${JSON.stringify(node.artifacts)}`)
+  // 台帐里要能查到 v2 的四样（artifacts 指文件 + basis 里留人读的一行）
+  const basis = node.decision.basis.join('\n')
+  assert.match(basis, /锚 2 条/, '台帐 basis 里要写清锚几条')
+  assert.match(basis, /反例 2 条/)
+  assert.match(basis, /自由度：定死 2 条/)
+  assert.match(basis, /验收方式：人眼 \+ 指标/)
+  assert.match(basis, /不参与距离计算/, '要明写"这些不参与距离"（防止下次有人把锚塞进判据）')
+
+  // report.md：汇总行下面那一段 intent 摘要
+  const md = readFileSync(join(out, 'report.md'), 'utf8')
+  assert.ok(md.includes('把包体积从 12 压回 10'), `report.md 的 intent 摘要要含 restate 文本片段：\n${md.slice(0, 900)}`)
+  assert.match(md, /需求转译（intent v2 · done）/, '要有 intent 摘要段的标题行')
+  assert.match(md, /锚\*\*：2 条（image 1 \/ text 1）/, '要写出锚的条数（人一眼看到"锚在哪、几条"）')
+  assert.ok(md.indexOf('本次运行：') < md.indexOf('需求转译（intent v2'), '摘要段要在"本次运行"汇总行下面')
+  assert.ok(md.indexOf('需求转译（intent v2') < md.indexOf('| 项 | 值 |'), '摘要段要在明细表之前（顶部区域）')
+
+  // 落盘的摘要：机器可读，并且明写"不参与距离"
+  const sum = readJson(join(out, 'intent.summary.json'))
+  assert.equal(sum.participatesInDistance, false, '锚/反例/自由度/验收方式**不参与距离**（只做记录与呈现）')
+  assert.equal(sum.anchorCount, 2)
+  assert.deepEqual(sum.anchorsByKind, { image: 1, text: 1 })
+  assert.equal(sum.notWanted.items.length, 2)
+  assert.equal(sum.freeVsFixed.present, true)
+  assert.equal(sum.howWeVerify.human, true)
+  assert.equal(sum.confirm.total, 1, 'confirm 非空 → 报告里要 warn（但不拦）')
+  assert.match(md, /还有 1 条待确认问题没答，已按当前判据开跑/, 'confirm 非空且已确认 → 允许通过但要 warn 一句')
+})
+
+// ---------------------------------------------------------------- ⑫ 锚指向不存在的文件
+// 只把 anchors[0] 换成一张不存在的图，第二条锚保留 —— 这样失败的**只可能**是"图不存在"这一个检查
+const MISSING_ANCHOR_FIXTURE = {
+  anchors: [
+    { kind: 'image', ref: 'refs/not-there.png', why: '这张图不存在' },
+    { kind: 'text', ref: '崩坏：星穹铁道（具体游戏名，不是抽象风格）', why: '配色与勾线参照' },
+  ],
+}
+
+test('⑫ anchors[0].kind=image 指向不存在的文件 → 硬错（锚不住东西的锚等于空话）', () => {
+  const out = tmp('v2badanchor')
+  writeIntent(out, MISSING_ANCHOR_FIXTURE)
+  const r = runCli(['--adapter', ECHO_ADAPTER, '--out', out, '--budget', '6'])
+  assert.equal(r.status, 1, `锚指向不存在的图必须拒跑，实际 exit=${r.status}\n${r.out}`)
+  assert.match(r.out, /需求转译闸/, '要自报家门')
+  assert.match(r.out, /参考图不存在/, '要说清是"锚的图不存在"')
+  assert.match(r.out, /not-there\.png/, '要点名那个 ref（照着实改）')
+  assert.match(r.out, /锚不住东西的锚等于空话/, '要说清为什么拦')
+  assert.ok(!existsSync(join(out, 'best.json')), '不许产出证据包')
+  const node = readJson(join(nodeDir(out), '01-intent.json'))
+  assert.equal(node.status, 'failed', '硬错中断在 intent 这一步，台帐要留痕')
+})
+
+// ---------------------------------------------------------------- ⑬ criteria 超 5 条
+test('⑬ criteria 给 6 条 → 硬错，错误信息含"轻合规"', () => {
+  const out = tmp('v2toomany')
+  const six = ['size', 'loss', 'cov', 'lapVar', 'tone', 'extra'].map((id) => ({ id, weight: 1, anchor: 'anchors[0]：参考图' }))
+  writeIntent(out, { criteria: six })
+  const r = runCli(['--adapter', ECHO_ADAPTER, '--out', out, '--budget', '6'])
+  assert.equal(r.status, 1, `criteria 超 5 条必须拒跑，实际 exit=${r.status}\n${r.out}`)
+  assert.match(r.out, /轻合规/, '错误信息里要写"轻合规：写越厚，花在做到上的预算越少"')
+  assert.match(r.out, /6 条/, '要点名超了几条')
+  assert.ok(!existsSync(join(out, 'best.json')))
+})
+
+// ---------------------------------------------------------------- ⑭ confirm 超 3 条
+test('⑭ confirm 给 4 条 → 硬错（确认问题最多 3 条）', () => {
+  const out = tmp('v2toomanyq')
+  writeIntent(out, { confirm: ['q1？', 'q2？', 'q3？', 'q4？'] })
+  const r = runCli(['--adapter', ECHO_ADAPTER, '--out', out, '--budget', '6'])
+  assert.equal(r.status, 1, `confirm 超 3 条必须拒跑，实际 exit=${r.status}\n${r.out}`)
+  assert.match(r.out, /intent\.confirm 有 4 条/)
+  assert.match(r.out, /上限 3 条/)
+  assert.ok(!existsSync(join(out, 'best.json')))
+})
+
+// ---------------------------------------------------------------- ⑮ v1 仍能跑但 degraded
+test('⑮ v1 intent（无 version、criteria 无 anchor）→ 能跑，但 01-intent 是 degraded 且 reason 含 v1', () => {
+  const out = tmp('v1degraded')
+  writeV1Intent(out)
+  const r = runCli(['--adapter', ECHO_ADAPTER, '--out', out, '--budget', '12'])
+  assert.equal(r.status, 0, `v1 intent 仍然能跑（向后兼容），实际 exit=${r.status}\n${r.out.slice(-1500)}`)
+  assert.ok(existsSync(join(out, 'best.json')), 'v1 不许被拦死：它只是一份欠账的转译')
+  assert.match(r.out, /这是 v1 intent（没有锚\/反例\/自由度），等于把审美全交给指标——建议升级到 v2/, '要打那条中文 warn')
+  const node = readJson(join(nodeDir(out), '01-intent.json'))
+  assert.equal(node.status, 'degraded', `v1 在台帐里是 degraded（不是 done），实际 ${node.status}`)
+  assert.match(node.reason, /v1/, 'reason 要含 v1（写明这是 v1 的欠账）')
+  assert.match(node.reason, /缺锚/, 'reason 要写清缺什么')
+  const md = readFileSync(join(out, 'report.md'), 'utf8')
+  assert.match(md, /需求转译（intent v1 · degraded）/, 'report.md 顶部要标出 v1 degraded')
+  assert.match(md, /`degraded` `intent`/, '汇总块里也要有这条 degraded 的原因')
+})
+
+// ---------------------------------------------------------------- ⑯ restate 为空
+test('⑯ restate 为空 → 硬错（v2 必须有一句话复述）', () => {
+  const out = tmp('v2norestate')
+  writeIntent(out, { restate: '   ' })
+  const r = runCli(['--adapter', ECHO_ADAPTER, '--out', out, '--budget', '6'])
+  assert.equal(r.status, 1, `restate 为空必须拒跑，实际 exit=${r.status}\n${r.out}`)
+  assert.match(r.out, /intent\.restate 是空的/)
+  assert.match(r.out, /三秒判对错/)
+  assert.ok(!existsSync(join(out, 'best.json')))
+})
+
+// ---------------------------------------------------------------- ⑰ 弄坏能红 ×2（v2 的两条新增断言）
+// 同 ⑦ 的口径：不是"再测一遍功能"，而是证明 ⑫/⑮ 的断言真的接在实现上 —— 把那个检查弄坏，它们必须塌。
+test('⑰-1 弄坏能红：锚的存在性检查恒真（anchorAlwaysTrue）→ ⑫ 的硬错断言必塌', () => {
+  const out = tmp('mut-anchor')
+  writeIntent(out, MISSING_ANCHOR_FIXTURE)
+  const r = runCli(['--adapter', ECHO_ADAPTER, '--out', out, '--budget', '8'], { SELFLOOP_INTENT_MUTANT: 'anchorAlwaysTrue' })
+  // ⑫ 断言 exit 1 + 错误里有"参考图不存在"；检查恒真之后它必然 exit 0、错误一个字都没有
+  assert.equal(r.status, 0, `变异体该跑完（这正是"锚可以随口写"的危险），实际 exit=${r.status}\n${r.out.slice(-800)}`)
+  assert.ok(!/参考图不存在/.test(r.out), '⑫ 的 assert.match(r.out, /参考图不存在/) 在这份实现上不可能成立')
+  assert.ok(existsSync(join(out, 'best.json')), '图不在也照样产出证据包 —— 谁也看不出"锚"是空的')
+  const node = readJson(join(nodeDir(out), '01-intent.json'))
+  assert.equal(node.status, 'done', '⑫ 的 assert.equal(node.status,"failed") 塌了')
+})
+
+test('⑰-2 弄坏能红：v1 的 degraded 改回 done（v1AsDone）→ ⑮ 的台帐断言必塌', () => {
+  const out = tmp('mut-v1')
+  writeV1Intent(out)
+  const r = runCli(['--adapter', ECHO_ADAPTER, '--out', out, '--budget', '10'], { SELFLOOP_INTENT_MUTANT: 'v1AsDone' })
+  assert.equal(r.status, 0, r.out.slice(-800))
+  const node = readJson(join(nodeDir(out), '01-intent.json'))
+  // ⑮ 断言 status==='degraded' 且 reason 含 v1；改回 done 之后这两条必然红
+  assert.equal(node.status, 'done', '⑮ 的 assert.equal(node.status,"degraded") 塌了')
+  assert.equal(node.reason, '', 'done 时 reason 是空串 → ⑮ 的 reason 断言也塌了')
+  const md = readFileSync(join(out, 'report.md'), 'utf8')
+  assert.ok(!/intent v1 · degraded/.test(md), '⑮ 的"report 要标 v1 degraded"断言塌了')
 })
