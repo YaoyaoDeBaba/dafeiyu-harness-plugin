@@ -3,6 +3,41 @@
 > 规矩：**改了 `harness/` 里的执行器就要在这里记一笔**，并注明"要不要回灌上游原件（案例 A，见 README「案例与来源」）"。
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
+## 0.6.0（未发布）· 吸收外部领域资产：需求翻译 + GLSL 配方
+
+> 这一版只动 `domains/vfx-render/`、文档与测试，**不动 `core/`、`lib/`、`harness/` 的执行逻辑**，也不改版本号（bump 留给发布）。
+> 吸收原则照 `21-吸收协议`：只吸收「需求 → 可测指标」的转译能力与它的训练材料；领域知识全部留在 domains，骨架不长领域字段。
+
+**吸收了什么（全部落在 `domains/vfx-render/`）**
+
+| 类别 | 落位 | 来源 | 许可 |
+|---|---|---|---|
+| 需求翻译方法论（九节骨架、三条信条、风格锚点、自由度 + 正确性锚点、F2 案例） | `references/demand-translator.md`（由技能文档 + 模板 + 案例三份合并） | 案例 A 的 vfx-req-translator 技能，2026-11-14 移交 | 自研（未单独声明） |
+| 坑表 | `references/pitfalls.md` | 同上 `references/pitfalls.md` | 自研（未单独声明） |
+| GLSL 护栏与可观测性 | `references/glsl-guardrails.md` | 同上 `references/glsl-guardrails.md` | 自研（未单独声明） |
+| 无后处理发光 | `references/no-bloom.md` | 同上 `references/no-bloom.md` | 自研（未单独声明） |
+| 工具索引 | `references/tooling.md` | 同上 `references/tooling.md` | 自研（未单独声明） |
+| 施工前置约束（舞台事实 + 11 条硬契约） | `references/construction-contracts.md` | 案例 A 的 skill-lab `PREAMBLE.md` | 自研（未单独声明） |
+| 粒子/带子方法论（用法、失效模式、验收方式） | `references/runtime-libs.md` | 案例 A 的 vfx-kit 用法速查 | **未确认**（代码本体未吸收） |
+| 8 份 GLSL 配方（哈希 / FBM / 抖动 / 消散 / 假辉光 / 描边 / 卡渲） | `recipes/glsl/` | 逐文件头标注（godot-shaders、pixijs-filters、WebGL-Fluid-Simulation、URP_Toon、shader-school、Ronja 教程、来源方自研） | MIT / Zlib / CC-BY 4.0 / 自研（逐文件头标注，CC-BY 需署名） |
+
+**脱敏与元信息**
+
+- 全部资产补齐统一元信息：`来源 / 许可 / 适用宿主 / 吸收说明`；GLSL 另保留 `配方名 / 用途 / 来源 / 许可 / 适用管线 / 依赖` 六行头，并在开头加 `// 适用宿主：`。
+- 去掉项目名、宿主私有 API 代号、本机路径与内部手册指路；「管线 A/B」改写为「宿主 A/B」（原生 300 页面 / 只做文本替换的 WebGL1 兼容层）。包内 `domains/` 零盘符；新增资产零项目名（`test/domain-assets.test.mjs` 钉住）。
+- 没有搬任何来源不明的实现代码：`particles.js` / `ribbon.js` 只吸收方法论表述，文件里明写「代码未吸收：来源/许可未确认」。
+
+**未吸收什么、为什么**
+
+- 四份研究分报告、`代码配方手册`（1396 行）、`参考-vfx开源/README.md`：**不复制、不改编**，只在工作区留索引。原因：要么是未定稿的过程记录，要么是第三方开源仓的索引/摘录（许可与可再分发状态未逐条确认），按协议「来源不清 → 只吸收方法论表述」，不进包。
+- `particles.js` / `ribbon.js` 代码本体：来源与许可未确认，只写成 `runtime-libs.md` 的方法论。
+- `harness/` 的任何执行器：本版一行未动（硬约束）。
+
+**测试**
+
+- 新增 `test/domain-assets.test.mjs`（6 条）：领域资产非空且带来源/许可；GLSL 六行头齐全；`core/`、`lib/` 源码不出现领域词表；`domains/` 零盘符；`runtime-libs.md` 明写「代码未吸收」；资产清单防丢（references 7 份、recipes 8 份）。
+- `npm test` 现在把这份挂进来，最终 55 + 12 + 21 + 19 + 6 + 6 = 119。
+
 ## 0.5.2（未发布）· 边跑边看：`live.jsonl` + `watch.mjs`
 
 > 0.5.0/0.5.1 解决的是"**事后可读**"：`report.md` 顶部有 `N done / N skipped / N degraded`，`nodes/NN-*.json` 每个节点一条。
@@ -191,7 +226,7 @@
 - **回灌提醒**：`harness/metrics2.js` / `score.js` / `finalize.js` 已与上游原件（案例 A）分叉，回灌时按改动点手动改。
 
 ## 0.3.6 · 去项目化 + 打包自查：`fanren-lab-fire-ray` → `example-fire-ray`、`fanren-lab-chain-lightning` → `example-chain-lightning`、`trial-demo-url-time` → `example-flat-params`。示例代表的是「案例 A 的现场」，不是本包的产品叙事。
-- **文档口径统一**：「闭环产线」→「闭环引擎」（4 处标题）；`fanren 侧原件`→「上游原件（案例 A）」；README 顶部加定位段、文末加「案例与来源」；删掉 `_资产`/`_临时`/`T4\hosts` 这类项目内路径示例，改成中性占位。
+- **文档口径统一**：「闭环产线」→「闭环引擎」（4 处标题）；`fanren 侧原件`→「上游原件（案例 A）」；README 顶部加定位段、文末加「案例与来源」；删掉项目内路径示例，改成中性占位。
 - **产物文案去项目化**：`report.md` 里那句"本机没有场景/角色/RTS"改成中性描述；两条面向用户的报错去掉项目语汇。
 - **CHANGELOG.md 进 `files`**：0.3.4 把它写成规矩却没随包分发，装机后看不到，等于白写。
 - **新增 T21**：跑 `npm pack --dry-run` 与 `files` 正名单对账，白名单写了但产物里没有 → 红（把"发不出去"变成可测判据）。

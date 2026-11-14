@@ -76,8 +76,28 @@ pwsh -NoProfile -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\
 
 三份示例描述的都是同一套示例现场（**案例 A**：一个 2D 游戏项目的渲染管线，见包根 README「案例与来源」）。它们的作用是演示"换项目只换 adapter"——本包不依赖任何具体项目。
 
+## 领域资产：需求翻译与施工配方
+
+写需求书 / 派单 / 评审施工前，先看 `domains/vfx-render/references/`：
+
+| 文件 | 什么时候读 |
+|---|---|
+| `demand-translator.md` | 要把「想要的感觉」写成可施工需求书时（九节骨架、三条信条、风格锚点、形态自由度 + 正确性锚点、F2 案例） |
+| `pitfalls.md` | 需求书或成品出现症状，要查「症状 → 写法修正」时 |
+| `glsl-guardrails.md` | 派单前附护栏、写 GLSL 自查、排查编译/NaN 问题时 |
+| `no-bloom.md` | 规划发光层次、色阶档数、banding 处理时 |
+| `construction-contracts.md` | 交付前逐条自查的舞台事实与 11 条硬契约 |
+| `tooling.md` | 要用评测页契约、带状网格、粒子框架与验收量具时 |
+| `runtime-libs.md` | 用粒子/带子前看用法要点与验收方式（只吸收方法论） |
+
+可直接借用的着色片段在 `domains/vfx-render/recipes/glsl/`（哈希、FBM、抖动、消散、假辉光、描边、卡渲）。每份都带来源/许可/适用宿主，**引用前先读文件头**；`hash-pcg.glsl` 只能在原生 300 页面用，贴进 WebGL1 兼容层会编译失败。
+
+这些全部是**领域资产**：只在 vfx-render 里用，`core/` 与 `lib/` 不认识其中任何术语。要迁移到别的领域，先按 `21-吸收协议` 的三问自检，别把领域词带进骨架。
+
 ## 进一步阅读（都在本包内）
 
 - `references/workflow.md` / `metrics.md` / `pitfalls.md` —— 通用方法（五步、五分法、底噪、对抗门槛）
+- `domains/vfx-render/references/` —— 本领域的写法、坑与配方（见上表）
+- `domains/vfx-render/recipes/glsl/` —— 可借用的着色片段
 - `harness/适配层-说明.md` —— adapter 每个字段的语义（v3 全部字段 + 优先级）
 - `examples/minimal.json` —— 不绑任何项目的最小 adapter（自己写就从它改）

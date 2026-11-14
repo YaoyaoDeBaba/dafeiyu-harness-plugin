@@ -73,6 +73,8 @@
 
 `domains/vfx-render/` 里放的是「技能特效渲染」这个领域的适配包：三份 adapter + 领域说明。领域差异（冻帧页、`vfx.json` 参数块、warmFrac/coldFrac、进程卫生）全在那里和 `skills/selfloop/references/domains-vfx.md`，引擎侧不出现这些词。
 
+目录里另有 `references/`（写需求书的九节骨架、坑表、GLSL 护栏、施工契约、工具与运行时方法论）和 `recipes/glsl/`（8 份带来源/许可的着色片段；`hash-pcg.glsl` 仅原生 300 可用）。它们是**可选的领域资产**：不参与闭环执行，删掉不影响跑一轮，但写/评审需求与改 shader 时该先读。`core/` 与 `lib/` 不认识其中任何术语。
+
 ## 便携性：包内没有本机绝对路径
 
 包要能搬走，所以 adapter 里的路径全是**模板**，运行时展开（`iter.ps1` 与 `core/adapter.js` 同一口径）：
@@ -239,7 +241,9 @@ core/index.js                    引擎层出口（只 re-export，不搬执行�
 core/adapter.js                  adapter 契约解析与口径（硬错对齐 iter.ps1）
 core/README.md                   三层怎么分、三个概念、引用方向
 domains/vfx-render/adapters/     首个领域的 3 份示例适配器
-domains/vfx-render/README.md     首个领域说明（观测/判定/搜索怎么落地）
+domains/vfx-render/README.md     首个领域说明（观测/判定/搜索怎么落地 + 领域资产索引）
+domains/vfx-render/references/   领域资产：需求翻译、坑表、GLSL 护栏、施工契约、工具/运行时方法论
+domains/vfx-render/recipes/glsl/ 8 份可借用的 GLSL 配方（哈希 / FBM / 抖动 / 消散 / 假辉光 / 描边 / 卡渲）
 harness/                         执行器：跑一轮的必需件（见下；改动要进 CHANGELOG 并同步上游原件）
 examples/minimal.json            不绑任何项目的最小 adapter（自己写就从它改）
 examples/third-party-3d.json     第三方台改造后的形态（要跑得先改造宿主，见 references/host-adaptation.md）
