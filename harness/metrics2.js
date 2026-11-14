@@ -127,7 +127,8 @@ function makePx(img) {
     // 前景掩膜（见 buildContentMask）：同 px 上同参数的掩膜只算一次。
     function contentMask(o) {
         const key = JSON.stringify(o || {});
-        if (!contentCache.has(key)) contentCache.set(key, buildContentMask({ w, h, n, lum }, o || {}));
+        // data/ch 也传进去：chroma 要按色度谓词取通道，diff 要读背景图（走模块级的 ref 缓存）。
+        if (!contentCache.has(key)) contentCache.set(key, buildContentMask({ w, h, n, lum, data, ch }, o || {}));
         return contentCache.get(key);
     }
     return {
@@ -149,28 +150,40 @@ function makePx(img) {
 //   "metrics": [ { "id":"cov", "extract":"cov", "opts": {
 //       "mask": { "mode":"content", "luma":40, "dilate":1, "minAreaPct":0.2 } } } ]
 //
-// mode:"content" = 按 luma>=luma 圈前景 → 取最大连通域 → 可选膨胀 dilate 像素。
+// 0.12.0 起四种圈法（上一版只有 content，被第二轮实验证伪为"看起来很专业地量错了"）：
+//   content —— 按 luma>=luma 圈前景 → 取最大连通域 → 可选膨胀。
+//              **只适合"亮主体 + 暗背景"**；白天/雪地/亮舞台会圈到背景上，见 maskSuspicious。
+//   roi     —— rect:[x,y,w,h] 固定矩形，**完全不看像素内容**（跨帧/跨变体完全一致，跨帧比较唯一稳的口径）。
+//   diff    —— ref:"<背景/空舞台 png>"，|luma 差| > delta 的像素为前景 → 最大连通域。
+//              分不清"亮主体"与"亮背景"时的正解。
+//   chroma  —— predicate:{channel,op,value} 按色度圈（暖主体 vs 冷背景）。
 // minAreaPct 是**百分数**（0.2 = 0.2%）：掩膜面积低于它就退回全图，
 // 但**必须**由调用方在返回值里标 maskFallback:true —— "以为在量主体、其实在量整帧"
 // 正是这两条实验的原始病灶，不许静默。
+// 同理 maskSuspicious：面积 <1% 或包围盒 <5%（content/diff/chroma）就不是"没圈到"，是"圈到了小亮点"，
+// 那比没有掩膜更危险，所以也要标出来（0.12.0）。
 // 不写 opts.mask → 走全图，行为与升级前完全一致（历史 162 条测试钉的就是这个契约）。
 const MASK_DEFAULTS = { mode: 'content', luma: 40, dilate: 1, minAreaPct: 0.2 };
+const MASK_MODES = ['content', 'roi', 'diff', 'chroma', 'none'];
+// 「圈错」的自动拦截门槛（0.12.0）。数字来自实验：luma:200 在真实场景只剩枪口白芯，
+// 占屏 < 1%，对主体 recall 只有 0.09~0.38——它不报错、不崩，只是**稳定地量错一块像素**。
+const MASK_SUSPECT_MIN_AREA_PCT = 1;    // 掩膜面积 < 1% 就怀疑圈到了小块高光
+const MASK_SUSPECT_MIN_BBOX_PCT = 5;    // 包围盒面积 < 5% 同理（面积大而 box 小的情形抓不到，两条都留）
 
-// g = {w,h,n,lum}。返回值里的 m=null 表示"统计走全图"（没掩膜 / 已回退）。
-function buildContentMask(g, o) {
-    const { w, h, n, lum } = g;
-    const mode = String(o.mode == null ? MASK_DEFAULTS.mode : o.mode);
-    if (mode === 'none') {
-        return { m: null, count: n, areaPct: 100, largestPct: 100, maskFallback: false, mode, luma: null, dilate: 0, minAreaPct: null };
+// diff 模式的背景图按绝对路径缓存 luma：同一张 ref 只解码一次。
+const DIFF_REF_CACHE = new Map();
+function loadDiffRef(p) {
+    if (p == null || p === '') throw new Error('opts.mask.mode="diff" 需要 ref:"<背景/空舞台 png 路径>"');
+    const abs = path.resolve(String(p));
+    if (!DIFF_REF_CACHE.has(abs)) {
+        const px = makePx(decodePng(fs.readFileSync(abs)));
+        DIFF_REF_CACHE.set(abs, { abs, w: px.w, h: px.h, lum: px.lum });
     }
-    if (mode !== 'content') throw new Error('opts.mask.mode 只认 content / none（收到 ' + mode + '）');
-    const luma = Number.isFinite(Number(o.luma)) ? Number(o.luma) : MASK_DEFAULTS.luma;
-    const dilate = Math.max(0, Math.floor(Number.isFinite(Number(o.dilate)) ? Number(o.dilate) : MASK_DEFAULTS.dilate));
-    const minAreaPct = Number.isFinite(Number(o.minAreaPct)) ? Number(o.minAreaPct) : MASK_DEFAULTS.minAreaPct;
-    // ① 前景种子。注意这里是 **>=**：圈区域要含边界那一圈，否则火焰最暗的边缘会被吃掉。
-    const seed = new Uint8Array(n);
-    for (let i = 0; i < n; i++) seed[i] = lum[i] >= luma ? 1 : 0;
-    // ② 最大连通域。8 邻域：火焰/闪电这种细弱结构用 4 邻域会碎成几块，最大块就只剩芯。
+    return DIFF_REF_CACHE.get(abs);
+}
+
+// 8 邻域最大连通域（迭代洪水填充，不递归——整幅白屏会爆栈）。返回 {m, size}。
+function largestComponent(seed, w, h, n) {
     const lbl = new Int32Array(n).fill(-1);
     const stack = new Int32Array(n);
     const neigh = new Int32Array(8);
@@ -204,53 +217,206 @@ function buildContentMask(g, o) {
         if (size > bestSize) { bestSize = size; bestId = id; }
         id++;
     }
-    const largestPct = 100 * bestSize / n;
     const m = new Uint8Array(n);
     for (let i = 0; i < n; i++) if (bestId >= 0 && lbl[i] === bestId) m[i] = 1;
-    // ③ 可选膨胀：可分离的方形（切比雪夫）膨胀，半径 = dilate 像素。
-    //    目的是把主体外沿那一圈"半亮/半透"的像素也纳进来（否则 lapVar 只量到主体内核）。
-    if (dilate > 0 && bestId >= 0) {
-        const tmp = new Uint8Array(n);
-        for (let y = 0; y < h; y++) {
-            const row = y * w;
-            const pre = new Int32Array(w + 1);
-            for (let x = 0; x < w; x++) pre[x + 1] = pre[x] + m[row + x];
-            for (let x = 0; x < w; x++) {
-                const lo = x - dilate < 0 ? 0 : x - dilate;
-                const hi = x + dilate > w - 1 ? w - 1 : x + dilate;
-                tmp[row + x] = (pre[hi + 1] - pre[lo]) > 0 ? 1 : 0;
-            }
-        }
+    return { m, size: bestSize };
+}
+
+// 可分离的方形（切比雪夫）膨胀，半径 = d 像素，原地改 m。
+// 目的是把主体外沿那一圈"半亮/半透"的像素也纳进来（否则 lapVar 只量到主体内核）。
+function dilateMask(m, w, h, d) {
+    const n = w * h;
+    const tmp = new Uint8Array(n);
+    for (let y = 0; y < h; y++) {
+        const row = y * w;
+        const pre = new Int32Array(w + 1);
+        for (let x = 0; x < w; x++) pre[x + 1] = pre[x] + m[row + x];
         for (let x = 0; x < w; x++) {
-            const pre = new Int32Array(h + 1);
-            for (let y = 0; y < h; y++) pre[y + 1] = pre[y] + tmp[y * w + x];
-            for (let y = 0; y < h; y++) {
-                const lo = y - dilate < 0 ? 0 : y - dilate;
-                const hi = y + dilate > h - 1 ? h - 1 : y + dilate;
-                m[y * w + x] = (pre[hi + 1] - pre[lo]) > 0 ? 1 : 0;
-            }
+            const lo = x - d < 0 ? 0 : x - d;
+            const hi = x + d > w - 1 ? w - 1 : x + d;
+            tmp[row + x] = (pre[hi + 1] - pre[lo]) > 0 ? 1 : 0;
         }
     }
-    let count = 0;
-    for (let i = 0; i < n; i++) count += m[i];
+    for (let x = 0; x < w; x++) {
+        const pre = new Int32Array(h + 1);
+        for (let y = 0; y < h; y++) pre[y + 1] = pre[y] + tmp[y * w + x];
+        for (let y = 0; y < h; y++) {
+            const lo = y - d < 0 ? 0 : y - d;
+            const hi = y + d > h - 1 ? h - 1 : y + d;
+            m[y * w + x] = (pre[hi + 1] - pre[lo]) > 0 ? 1 : 0;
+        }
+    }
+}
+
+// roi 矩形：越界**夹紧并 warn**（不静默改用全图，也不静默裁掉一块）。
+function normalizeRoiRect(rect, w, h, warn) {
+    if (!Array.isArray(rect) || rect.length !== 4 || !rect.every((v) => Number.isFinite(Number(v)))) {
+        throw new Error('opts.mask.mode="roi" 需要 rect:[x,y,w,h]（4 个数字），收到 ' + JSON.stringify(rect));
+    }
+    const req = rect.map(Number);
+    const x = Math.round(req[0]), y = Math.round(req[1]), rw = Math.round(req[2]), rh = Math.round(req[3]);
+    if (rw <= 0 || rh <= 0) throw new Error('opts.mask.mode="roi" 的 rect 宽高必须 > 0（收到 ' + JSON.stringify(req) + '）');
+    const x0 = Math.max(0, Math.min(w - 1, x));
+    const y0 = Math.max(0, Math.min(h - 1, y));
+    const x1 = Math.max(x0 + 1, Math.min(w, x + rw));
+    const y1 = Math.max(y0 + 1, Math.min(h, y + rh));
+    const out = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    if (out.x !== x || out.y !== y || out.w !== rw || out.h !== rh) {
+        out.clamped = true;
+        out.requested = req;
+        warn.push('rect 越界已夹紧：请求 [' + req.join(',') + '] → 实际 [' + [out.x, out.y, out.w, out.h].join(',') + ']（画面 ' + w + 'x' + h + '）');
+    }
+    return out;
+}
+
+// chroma 的色度谓词：只认这 7 个通道，别的一律硬错（静默当 0 会把掩膜悄悄挪到别处）。
+const PRED_CHANNELS = ['r', 'g', 'b', 'luma', 'blue-minus-red', 'red-minus-blue', 'saturation'];
+const PRED_OPS = { '<': (a, b) => a < b, '<=': (a, b) => a <= b, '>': (a, b) => a > b, '>=': (a, b) => a >= b };
+
+function channelOf(name, g) {
+    const { data, ch, lum } = g;
+    const r = (i) => data[i * ch];
+    const gg = (i) => (ch >= 3 ? data[i * ch + 1] : data[i * ch]);
+    const b = (i) => (ch >= 3 ? data[i * ch + 2] : data[i * ch]);
+    switch (name) {
+        case 'r': return r;
+        case 'g': return gg;
+        case 'b': return b;
+        case 'luma': return (i) => lum[i];
+        case 'blue-minus-red': return (i) => b(i) - r(i);
+        case 'red-minus-blue': return (i) => r(i) - b(i);
+        case 'saturation': return (i) => Math.max(r(i), gg(i), b(i)) - Math.min(r(i), gg(i), b(i));
+        default:
+            throw new Error('opts.mask.predicate.channel 只认 ' + PRED_CHANNELS.join(' / ') + '（收到 ' + name + '）');
+    }
+}
+
+function normalizePredicate(p) {
+    if (!p || typeof p !== 'object') throw new Error('opts.mask.mode="chroma" 需要 predicate:{channel,op,value}，收到 ' + JSON.stringify(p));
+    const channel = String(p.channel == null ? '' : p.channel);
+    const op = String(p.op == null ? '' : p.op);
+    const value = Number(p.value);
+    if (!PRED_CHANNELS.includes(channel)) throw new Error('opts.mask.predicate.channel 只认 ' + PRED_CHANNELS.join(' / ') + '（收到 ' + (channel || '(空)') + '）');
+    if (!PRED_OPS[op]) throw new Error('opts.mask.predicate.op 只认 < <= > >=（收到 ' + (op || '(空)') + '）');
+    if (!Number.isFinite(value)) throw new Error('opts.mask.predicate.value 必须是数字（收到 ' + JSON.stringify(p.value) + '）');
+    return { channel, op, value };
+}
+
+// g = {w,h,n,lum,data,ch}。返回值里的 m=null 表示"统计走全图"（没掩膜 / 已回退）。
+function buildContentMask(g, o) {
+    const { w, h, n, lum } = g;
+    const mode = String(o.mode == null ? MASK_DEFAULTS.mode : o.mode);
+    if (mode === 'none') {
+        return { m: null, count: n, areaPct: 100, largestPct: 100, bboxPct: 100, maskFallback: false, mode, luma: null, dilate: 0, minAreaPct: null, maskSuspicious: false, maskSuspectReasons: [], maskWarn: [] };
+    }
+    if (!MASK_MODES.includes(mode)) throw new Error('opts.mask.mode 只认 content / roi / diff / chroma / none（收到 ' + mode + '）');
+    const dilate = Math.max(0, Math.floor(Number.isFinite(Number(o.dilate)) ? Number(o.dilate) : MASK_DEFAULTS.dilate));
+    const minAreaPct = Number.isFinite(Number(o.minAreaPct)) ? Number(o.minAreaPct) : MASK_DEFAULTS.minAreaPct;
+    const maskWarn = [];
+    const suspect = [];
+    const extra = {};                                   // 模式专属回执（进 maskInfo，人能看见用的是哪套口径）
+    let m, largestSize = 0;
+    if (mode === 'roi') {
+        // 固定 ROI：**完全不看像素内容**，所以跨候选帧 / 跨变体完全一致——实验里证明这是唯一稳的口径。
+        const rect = normalizeRoiRect(o.rect, w, h, maskWarn);
+        m = new Uint8Array(n);
+        for (let y = rect.y; y < rect.y + rect.h; y++) {
+            const row = y * w;
+            for (let x = rect.x; x < rect.x + rect.w; x++) m[row + x] = 1;
+        }
+        largestSize = rect.w * rect.h;
+        extra.roi = rect;
+    } else {
+        // 三种模式共用的第一步：造前景种子
+        const seed = new Uint8Array(n);
+        if (mode === 'content') {
+            const luma = Number.isFinite(Number(o.luma)) ? Number(o.luma) : MASK_DEFAULTS.luma;
+            extra.luma = luma;
+            // **>=**：圈区域要含边界那一圈，否则火焰最暗的边缘会被吃掉。
+            for (let i = 0; i < n; i++) seed[i] = lum[i] >= luma ? 1 : 0;
+        } else if (mode === 'diff') {
+            // 与"空舞台/背景"图差分：分不清亮主体与亮背景时的正解（|luma 差| > delta 即为前景）
+            const delta = Number.isFinite(Number(o.delta)) ? Number(o.delta) : 12;
+            const ref = loadDiffRef(o.ref);
+            if (ref.w !== w || ref.h !== h) {
+                throw new Error('opts.mask.ref 与候选帧尺寸不一致（' + ref.w + 'x' + ref.h + ' vs ' + w + 'x' + h + '）：' + ref.abs);
+            }
+            extra.refPath = ref.abs;
+            extra.delta = delta;
+            for (let i = 0; i < n; i++) seed[i] = Math.abs(lum[i] - ref.lum[i]) > delta ? 1 : 0;
+        } else {
+            // 色度谓词：暖主体 vs 冷背景这类"亮度分不开、颜色分得开"的场合
+            const pred = normalizePredicate(o.predicate);
+            extra.predicate = pred;
+            const pick = channelOf(pred.channel, g);
+            const test = PRED_OPS[pred.op];
+            for (let i = 0; i < n; i++) seed[i] = test(pick(i), pred.value) ? 1 : 0;
+        }
+        // 最大连通域。8 邻域：火焰/闪电这种细弱结构用 4 邻域会碎成几块，最大块就只剩芯。
+        const cc = largestComponent(seed, w, h, n);
+        m = cc.m;
+        largestSize = cc.size;
+    }
+    if (dilate > 0 && largestSize > 0) dilateMask(m, w, h, dilate);
+    let count = 0, bx0 = w, by0 = h, bx1 = -1, by1 = -1;
+    for (let y = 0; y < h; y++) {
+        const row = y * w;
+        for (let x = 0; x < w; x++) {
+            if (!m[row + x]) continue;
+            count++;
+            if (x < bx0) bx0 = x;
+            if (x > bx1) bx1 = x;
+            if (y < by0) by0 = y;
+            if (y > by1) by1 = y;
+        }
+    }
     const areaPct = 100 * count / n;
+    const bboxPct = bx1 >= 0 ? 100 * (bx1 - bx0 + 1) * (by1 - by0 + 1) / n : 0;
+    // 「圈错」的自动拦截（0.12.0）：面积太小 = 大概率圈到小块高光/白芯，不是主体。
+    // 这一条就是实验里那个病：luma:200 只剩枪口白芯，三个不同变体在三个时刻的掩膜内指标逐位相同
+    // （7305.98|0.21296|0.11216）——最大连通域在"枪口团"和"射线"之间跳，等于把不同变体量成同一块像素。
+    // 圈错的掩膜比没有掩膜更危险：它看起来很专业。
+    if (mode !== 'roi') {
+        if (areaPct < MASK_SUSPECT_MIN_AREA_PCT) {
+            suspect.push('掩膜面积仅 ' + areaPct.toFixed(3) + '%（< ' + MASK_SUSPECT_MIN_AREA_PCT + '%）：大概率圈到的是小块高光/噪点，不是主体');
+        }
+        if (bboxPct < MASK_SUSPECT_MIN_BBOX_PCT) {
+            suspect.push('掩膜包围盒只占画面 ' + bboxPct.toFixed(2) + '%（< ' + MASK_SUSPECT_MIN_BBOX_PCT + '%）：圈到的区域过于集中，像高光点/白芯而不是主体');
+        }
+    }
+    const base = Object.assign({}, extra, {
+        mode, dilate, minAreaPct, areaPct, largestPct: 100 * largestSize / n, bboxPct,
+        maskSuspicious: suspect.length > 0, maskSuspectReasons: suspect, maskWarn,
+        luma: extra.luma === undefined ? null : extra.luma
+    });
     if (areaPct < minAreaPct) {
         // 掩膜太小 = 圈不到主体。退回全图，但**把这件事带出去**（maskFallback），不静默。
-        return { m: null, count: n, areaPct, largestPct, maskFallback: true, mode, luma, dilate, minAreaPct };
+        return Object.assign(base, { m: null, count: n, maskFallback: true });
     }
-    return { m, count, areaPct, largestPct, maskFallback: false, mode, luma, dilate, minAreaPct };
+    return Object.assign(base, { m, count, maskFallback: false });
 }
 
 // 提取器拿统计范围的统一入口：返回 {m, count, maskFallback}，m=null 就是全图。
-// ctx 是可选的回执收集器（extractOne 用它把 maskFallback 标到该图的返回对象上）。
+// ctx 是可选的回执收集器（extractOne 用它把 maskFallback / maskSuspicious 标到该图的返回对象上）。
 function scopeOf(px, o, ctx) {
     const mk = o && o.mask;
     if (!mk || typeof mk !== 'object') return { m: null, count: px.n, maskFallback: false };
     const r = px.contentMask(mk);
     if (ctx) {
         ctx.maskSeen = true;
-        ctx.maskInfo = { mode: r.mode, luma: r.luma, dilate: r.dilate, minAreaPct: r.minAreaPct, areaPct: +r.areaPct.toFixed(4), largestPct: +r.largestPct.toFixed(4), maskFallback: r.maskFallback };
+        ctx.maskInfo = {
+            mode: r.mode, luma: r.luma, dilate: r.dilate, minAreaPct: r.minAreaPct,
+            areaPct: +r.areaPct.toFixed(4), largestPct: +r.largestPct.toFixed(4),
+            bboxPct: +(r.bboxPct == null ? 0 : r.bboxPct).toFixed(4),
+            maskFallback: r.maskFallback
+        };
+        // 模式专属口径原样回执：报告里必须能看出"这次用的是 roi 还是 content(luma:200)"
+        if (r.roi) ctx.maskInfo.roi = r.roi;
+        if (r.refPath) { ctx.maskInfo.ref = r.refPath; ctx.maskInfo.delta = r.delta; }
+        if (r.predicate) ctx.maskInfo.predicate = r.predicate;
         if (r.maskFallback) ctx.maskFallback = true;
+        if (r.maskSuspicious) { ctx.maskSuspicious = true; ctx.maskSuspectReasons = r.maskSuspectReasons; }
+        if (r.maskWarn && r.maskWarn.length) ctx.maskWarn = (ctx.maskWarn || []).concat(r.maskWarn);
     }
     return { m: r.m, count: r.count, maskFallback: r.maskFallback };
 }
@@ -527,8 +693,14 @@ const EXTRACTORS = {
     // 门限把噪点／台阶边自己的像素排除掉了（结构性盲区）。下面两条各自换个打法：
     //   stepRatio   → 看**亮度直方图的断崖**（台阶是直方图上的空档，跟像素位置无关）；
     //   speckleFrac → 看**像素与自己 8 邻域中位数的差**（没有 3×3 门限，孤立点自己就是证据）。
+    //
+    // ⚠ 0.12.0 口径降级（有实验证据，别让下一个人再把它当细节指标）：
+    //   第二轮正对照失败——高斯模糊 lapVar −99.7% / 锐化 +169%（剂量单调、方向正确），
+    //   而 stepRatio 在**模糊和锐化两个相反方向上同向下降**（−49~−80% 与 −51~−81%）。
+    //   一个在"变平"和"变细"时都下降的量，量的不是"细节量"，而是"直方图断崖"（量化/剁档）。
+    //   所以：**只许当量化代理，不得用于"更平/更细"的判断**。细节用 lapVar（须过双向正对照）。
     stepRatio: {
-        desc: '阶跃边占比：256 桶 luma 直方图里「断崖」数 / 非空 bin 数（越高越像硬切档；0=连续渐变）',
+        desc: '量化/剁档代理（**不测细节**）：256 桶 luma 直方图里「断崖」数 / 非空 bin 数（越高越像硬切档；0=连续渐变）',
         // minBinPct 是**占比**（0.0005 = 0.05% 的像素数），dropRatio 是「下一桶掉到上一桶的这个比例以下」。
         // 断崖判据 bin[i] > 0.05% 且 bin[i+1] < bin[i]×0.1 是实验里 P/R 正对照标定出来的量级。
         defaults: { minBinPct: 0.0005, dropRatio: 0.1 },
@@ -551,6 +723,24 @@ const EXTRACTORS = {
                 if (bins[i] > minCnt && bins[i + 1] < bins[i] * drop) cliffs++;
             }
             return nonEmpty ? +(cliffs / nonEmpty).toFixed(5) : 0;
+        }
+    },
+    levelCount: {
+        desc: '量化代理（**不测细节**）：掩膜内**唯一 luma 取值数**（取整后去重；量化越重越少）。注意它是"取值个数"，dither 会把它填向满值（与 stepRatio 填断崖同向）',
+        defaults: {},
+        fn(px, o, ref, ctx) {
+            const s = scopeOf(px, o, ctx);
+            const seen = new Uint8Array(256);
+            const L = px.lum;
+            let cnt = 0, distinct = 0;
+            for (let i = 0; i < px.n; i++) {
+                if (s.m && !s.m[i]) continue;
+                let v = Math.round(L[i]);
+                if (v < 0) v = 0; else if (v > 255) v = 255;
+                cnt++;
+                if (!seen[v]) { seen[v] = 1; distinct++; }
+            }
+            return cnt ? distinct : 0;
         }
     },
     speckleFrac: {
@@ -642,11 +832,17 @@ function extractOne(file, plan, refPx, withDiag) {
         out[p.id] = EXTRACTORS[p.extract].fn(px, p.opts, refPx, ctx);
         used[p.id] = p.extract;
     }
-    // 掩膜相关回执（0.11.0）：一旦某个带 mask 的提取器退回全图，就在**这张图的返回对象**上标出来。
+    // 掩膜相关回执（0.11.0 / 0.12.0）：一旦某个带 mask 的提取器退回全图，就在**这张图的返回对象**上标出来。
     // 不许静默——"以为在量主体、其实在量整帧"就是这两条实验最初的病灶。
+    // 0.12.0 追加 maskSuspicious：圈到了小块高光（面积 <1% 或 bbox <5%）也是一等公民的回执，不许只看数字。
     if (ctx.maskSeen) {
         out.maskInfo = ctx.maskInfo;
         if (ctx.maskFallback) out.maskFallback = true;
+        if (ctx.maskSuspicious) {
+            out.maskSuspicious = true;
+            out.maskSuspectReasons = ctx.maskSuspectReasons;
+        }
+        if (ctx.maskWarn && ctx.maskWarn.length) out.maskWarn = ctx.maskWarn;
     }
     if (withDiag) {
         const d = diagnostics(px, refPx);
