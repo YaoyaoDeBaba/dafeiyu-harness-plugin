@@ -1,0 +1,374 @@
+// harness/invariants.mjs —— 硬不变量（invariants）：把"合格/不合格"从"距离"里拆出来
+//
+// 为什么有这一层（一句话）：现在只有"距离"一层，penalty 也是加进同一个 d 里 ——
+// **等于允许搜索拿底线换分数**。
+//   · 压缩到 37% 是**指标**；解压后逐字节相等、不越界是**不变量**。
+//   · 接口 p95 延迟是**指标**；HTTP 200 + schema 合法是**不变量**。
+// 指标负责"像不像"，不变量负责"是不是"。不追求"更接近"，只判"合格/不合格"。
+//
+// 契约（写在 intent.invariants 里；core 只认结构，内容由领域/用户给）：
+//   "invariants": [
+//     { "id": "roundtrip", "check": { "field": "roundtrip", "op": "==", "value": 1 },
+//       "why": "解压回不去就是废方案，分数再高也不要" },
+//     { "id": "no_overexpose", "check": { "all": [ { "field": "cov", "op": "<=", "value": 0.05 } ] },
+//       "why": "超过这个亮核面积就是过曝" }
+//   ]
+// 文法只认这些（**别发明 DSL**）：
+//   比较：{ field, op: ==|!=|<|<=|>|>=, value:<number> }
+//   组合：{ all:[check…] } / { any:[check…] } / { not:check }
+//   field：observe.metrics 里的指标 id，或命令输出 JSON 里的扁平字段（允许 a.b 点路径）
+// 校验是**运行时硬错**：文法不认识 / 字段取不到 / 取到非数字 —— 绝不静默判过。
+//
+// 本文件只做三件事，互相独立、各自可测：
+//   ① resolveInvariants —— 文法校验（结构不对就中文硬错，错误里列出支持的 op）
+//   ② createInvariantGate —— 过门禁 + 记账（每个 id 的通过/拒绝次数、最近一次拒绝的原始观测片段）
+//   ③ invariantSectionLines —— report.md 那一节的渲染（诊断信息全来自 gate.summary()）
+'use strict';
+
+export const COMPARE_OPS = ['==', '!=', '<', '<=', '>', '>='];
+
+// 变异开关：**只给测试用**（证明"把门禁改坏，断言真的会红"），不设时行为完全正常。
+//   alwaysPass     —— 门禁恒通过（rejected 变 0、违例候选可能成 best）
+//   noTargetGate   —— 目标/起点那道硬错不查（自相矛盾的判据也能开跑）
+export const INVARIANTS_MUTANT = String(process.env.SELFLOOP_INVARIANTS_MUTANT || '');
+
+const HARD = '[硬不变量] ';
+
+function die(msg) {
+  throw new Error(HARD + msg);
+}
+
+function isPlainObject(v) {
+  return Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+}
+
+function fmtValue(v) {
+  return Number.isFinite(v) ? String(Number(Number(v).toFixed(6))) : JSON.stringify(v);
+}
+
+// ---------------------------------------------------------------- ① 文法校验
+// 任何"看不懂"都硬错：不变量写错却静默放行，比没写更坏（它会让人以为装了一道门）。
+export function resolveInvariants(raw) {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    die(
+      `intent.invariants 要是数组，收到 ${isPlainObject(raw) ? '对象' : typeof raw}\n` +
+        `  形如 [{"id":"roundtrip","check":{"field":"roundtrip","op":"==","value":1},"why":"解压不回去就是废方案"}]；不想要门禁就写 []`,
+    );
+  }
+  const out = [];
+  const seen = new Set();
+  raw.forEach((item, i) => {
+    const at = `intent.invariants[${i}]`;
+    if (!isPlainObject(item)) die(`${at} 要是对象 {id, check, why}，收到 ${Array.isArray(item) ? '数组' : typeof item}`);
+    const extra = Object.keys(item).filter((k) => !['id', 'check', 'why'].includes(k));
+    if (extra.length) die(`${at} 有不认识的键 ${extra.join(' / ')}（只认 id / check / why —— 多写的字段没人读，等于没写）`);
+    const id = typeof item.id === 'string' ? item.id.trim() : '';
+    if (!id) die(`${at}.id 必须是非空字符串（拒绝时要靠它点名；报告与错误信息都按 id 找）`);
+    if (seen.has(id)) die(`${at}.id="${id}" 和前面重复：id 必须唯一`);
+    seen.add(id);
+    const why = typeof item.why === 'string' ? item.why.trim() : '';
+    if (!why) {
+      die(
+        `${at}.why 不能是空的：不写为什么，将来没人敢删（也不会有人敢信）—— 一句话说清"违反它为什么算废"`,
+      );
+    }
+    if (item.check === undefined || item.check === null) die(`${at}.check 必填（比较 {field,op,value} 或 all/any/not）`);
+    validateCheck(item.check, `${at}.check`);
+    out.push({ id, why, check: item.check });
+  });
+  return out;
+}
+
+function validateCheck(node, at) {
+  if (!isPlainObject(node)) die(`${at} 要是对象（比较 {field,op,value} 或 {all:[…]} / {any:[…]} / {not:…}），收到 ${Array.isArray(node) ? '数组' : typeof node}`);
+  const keys = Object.keys(node);
+  const combo = ['all', 'any', 'not'].filter((k) => keys.includes(k));
+  const cmpKeys = ['field', 'op', 'value'].filter((k) => keys.includes(k));
+  if (combo.length && cmpKeys.length) die(`${at} 同时写了组合（${combo[0]}）与比较（${cmpKeys.join('/')}）：一个 check 只能是一种`);
+  if (combo.length > 1) die(`${at} 同时写了 ${combo.join(' 与 ')}：一个 check 只能是一种组合`);
+  if (combo.length === 1) {
+    const k = combo[0];
+    const extra = keys.filter((x) => x !== k);
+    if (extra.length) die(`${at} 有不认识的键 ${extra.join(' / ')}（${k} 节点只认 ${k} 一个键）`);
+    const child = node[k];
+    if (k === 'not') {
+      validateCheck(child, `${at}.not`);
+      return;
+    }
+    if (!Array.isArray(child)) die(`${at}.${k} 要是数组（收到 ${typeof child}）`);
+    if (!child.length) die(`${at}.${k} 是空数组：空组合恒真/恒假，等于装了一道假门 —— 至少写 1 条`);
+    child.forEach((c, i) => validateCheck(c, `${at}.${k}[${i}]`));
+    return;
+  }
+  if (!cmpKeys.length) {
+    die(
+      `${at} 不是能识别的 check：${JSON.stringify(node).slice(0, 120)}\n` +
+        `  只认：比较 {field,op,value} / 组合 {all:[…]} / {any:[…]} / {not:…}`,
+    );
+  }
+  const extra = keys.filter((x) => !['field', 'op', 'value'].includes(x));
+  if (extra.length) die(`${at} 有不认识的键 ${extra.join(' / ')}（比较节点只认 field / op / value）`);
+  if (typeof node.field !== 'string' || !node.field.trim()) die(`${at}.field 必须是非空字符串（指标 id 或输出字段名，可写 a.b）`);
+  if (typeof node.op !== 'string' || !COMPARE_OPS.includes(node.op)) {
+    die(
+      `${at}.op=${JSON.stringify(node.op)} 不支持：只认 ${COMPARE_OPS.join(' ')}\n` +
+        `  （核心只实现这一组比较；没有模糊匹配、没有区间语法 —— 要区间就写两条或用 all 组合）`,
+    );
+  }
+  if (!Number.isFinite(node.value)) die(`${at}.value 必须是数字（收到 ${JSON.stringify(node.value)}）；比较只认数字`);
+}
+
+// ---------------------------------------------------------------- 取值
+// field 先按指标 id 取（observe.metrics 是判据层的正式字段），再按命令输出 JSON 的字段取。
+function pickPath(obj, path) {
+  if (!isPlainObject(obj)) return undefined;
+  const key = String(path);
+  if (Object.prototype.hasOwnProperty.call(obj, key)) return obj[key];
+  let cur = obj;
+  for (const seg of key.split('.')) {
+    if (cur === null || typeof cur !== 'object') return undefined;
+    cur = cur[seg];
+  }
+  return cur;
+}
+
+function availableNames(obs) {
+  const out = [];
+  if (isPlainObject(obs && obs.metrics)) out.push(...Object.keys(obs.metrics));
+  if (isPlainObject(obs && obs.fields)) for (const k of Object.keys(obs.fields)) if (!out.includes(k)) out.push(k);
+  return out;
+}
+
+// 取不到 / 取到非数字 → 硬错。不变量取不到数就是"这道门没验"，静默判过等于没装。
+export function lookupField(obs, field) {
+  const metrics = isPlainObject(obs && obs.metrics) ? obs.metrics : {};
+  const fields = isPlainObject(obs && obs.fields) ? obs.fields : {};
+  let found = false;
+  let value;
+  let from = '';
+  if (Object.prototype.hasOwnProperty.call(metrics, field)) {
+    found = true;
+    from = 'metrics';
+    value = metrics[field];
+  } else {
+    value = pickPath(fields, field);
+    found = value !== undefined;
+    from = 'output';
+  }
+  if (!found) {
+    const names = availableNames(obs);
+    die(
+      `字段 \`${field}\` 在观测里取不到（硬错，不许静默判过）\n` +
+        `  观测里有的名字：${names.length ? names.join(' / ') : '（一个都没有）'}\n` +
+        `  field 可以是指标 id（observe.metrics），也可以是命令输出 JSON 里的字段（可写 a.b 点路径）`,
+    );
+  }
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) value = Number(value);
+  if (!Number.isFinite(Number(value))) {
+    die(
+      `字段 \`${field}\`（来自 ${from}）取到的不是数字：${JSON.stringify(value)}\n` +
+        `  不变量只做数字比较 —— 要判"合法/非法"就把命令输出成 1/0 再比`,
+    );
+  }
+  return { value: Number(value), from };
+}
+
+function evalNode(node, obs) {
+  if (Array.isArray(node.all)) return node.all.every((c) => evalNode(c, obs));
+  if (Array.isArray(node.any)) return node.any.some((c) => evalNode(c, obs));
+  if (isPlainObject(node.not)) return !evalNode(node.not, obs);
+  const v = lookupField(obs, node.field).value;
+  switch (node.op) {
+    case '==':
+      return v === node.value;
+    case '!=':
+      return v !== node.value;
+    case '<':
+      return v < node.value;
+    case '<=':
+      return v <= node.value;
+    case '>':
+      return v > node.value;
+    case '>=':
+      return v >= node.value;
+    default:
+      die(`不支持 op=${JSON.stringify(node.op)}：只认 ${COMPARE_OPS.join(' ')}`);
+  }
+}
+
+// 一条 check 里引用到的所有字段（拒绝片段只摘这些字段，不把整份输出糊上去）
+function fieldsOf(node, acc = []) {
+  if (Array.isArray(node.all)) for (const c of node.all) fieldsOf(c, acc);
+  else if (Array.isArray(node.any)) for (const c of node.any) fieldsOf(c, acc);
+  else if (isPlainObject(node.not)) fieldsOf(node.not, acc);
+  else if (!acc.includes(node.field)) acc.push(node.field);
+  return acc;
+}
+
+export function formatCheck(node) {
+  if (Array.isArray(node.all)) return `all(${node.all.map(formatCheck).join(' & ')})`;
+  if (Array.isArray(node.any)) return `any(${node.any.map(formatCheck).join(' | ')})`;
+  if (isPlainObject(node.not)) return `not(${formatCheck(node.not)})`;
+  return `${node.field} ${node.op} ${fmtValue(node.value)}`;
+}
+
+function valuesOf(fields, obs) {
+  const out = {};
+  for (const f of fields) {
+    try {
+      out[f] = lookupField(obs, f).value;
+    } catch {
+      out[f] = '<取不到>';
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- ② 门禁 + 记账
+// 用法：
+//   const gate = createInvariantGate(intent.invariants)
+//   const r = gate.check({ metrics: row, fields, stdout }, { seq, phase })   // 每次评估都过一遍
+//   if (!r.ok) → 该候选判废（不进距离比较、不能当 best）
+//   gate.summary() → report.md / best.json 的记账数据
+export function createInvariantGate(items = []) {
+  const list = (items || []).map((it) => ({
+    id: it.id,
+    why: it.why,
+    check: it.check,
+    text: formatCheck(it.check),
+    passed: 0,
+    rejected: 0,
+    lastReject: null,
+  }));
+  const declared = list.length > 0;
+
+  const check = (obs, meta = {}) => {
+    if (!declared) return { ok: true, failures: [] };
+    // 变异体：恒通过 —— 只为证明"门禁拒绝次数"那条断言有牙（正常跑不会到这条分支）
+    if (INVARIANTS_MUTANT === 'alwaysPass') {
+      for (const it of list) it.passed += 1;
+      return { ok: true, failures: [] };
+    }
+    const failures = [];
+    for (const it of list) {
+      let ok;
+      try {
+        ok = evalNode(it.check, obs);
+      } catch (e) {
+        // 取值/比较阶段的硬错要能点回是哪条不变量写的（不然一堆 check 里不知道谁写错了）
+        throw new Error(String(e && e.message ? e.message : e) + `\n  来自硬不变量 id="${it.id}"`);
+      }
+      if (ok) {
+        it.passed += 1;
+        continue;
+      }
+      it.rejected += 1;
+      const values = valuesOf(fieldsOf(it.check), obs);
+      it.lastReject = {
+        seq: meta.seq ?? null,
+        phase: String(meta.phase || ''),
+        values,
+        stdout: String((obs && obs.stdout) || '').slice(0, 400),
+      };
+      failures.push({ id: it.id, why: it.why, check: it.check, text: it.text, values });
+    }
+    return { ok: failures.length === 0, failures };
+  };
+
+  const summary = () => ({
+    declared,
+    mutant: INVARIANTS_MUTANT,
+    rejected: list.reduce((a, it) => a + it.rejected, 0),
+    passed: list.reduce((a, it) => a + it.passed, 0),
+    items: list.map((it) => ({
+      id: it.id,
+      why: it.why,
+      check: it.check,
+      text: it.text,
+      passed: it.passed,
+      rejected: it.rejected,
+      lastReject: it.lastReject,
+    })),
+  });
+
+  return { declared, items: list, check, summary };
+}
+
+// 目标/起点违规 = 判据或目标自相矛盾 → 中文硬错，点名 id + why + 观测。
+export function assertInvariantPass(result, what) {
+  if (result && result.ok) return;
+  if (INVARIANTS_MUTANT === 'noTargetGate') return; // 变异体：目标/起点那道硬错不查
+  const f = result && result.failures && result.failures[0];
+  if (!f) die(`${what}没有拿到门禁结论（执行器被动过？）`);
+  const more = result.failures.slice(1).map((x) => `id="${x.id}"`).join('、');
+  die(
+    `${what}违反硬不变量 id="${f.id}"：\`${f.text}\`\n` +
+      `  为什么（why）：${f.why}\n` +
+      `  观测：${JSON.stringify(f.values)}\n` +
+      `  硬不变量不是"扣一点分"，是"合格/不合格"——${what}都过不了，说明判据/目标自相矛盾（比如要求"必须无损"，但目标参数本身就坏），拒绝开跑。` +
+      (more ? `\n  同时违反：${more}` : ''),
+  );
+}
+
+// invariant 段的名字：截图链路暂不支持（见 report.md 已知限制与文档）。
+export const SCREENSHOT_LIMIT = '截图链路（`iter.ps1`）暂不支持门禁：它的观测是页面指标、判定在 PowerShell 里，且没有测试守着 PS 侧实现。「暂不支持」= 在截图链路的 intent 里写 invariants 会**硬错**（宁可拒跑，也不假装装了门禁）。';
+
+// ---------------------------------------------------------------- ③ report.md 渲染
+export function invariantSectionLines(summary, opts = {}) {
+  const s = summary || { declared: false, items: [], rejected: 0, passed: 0 };
+  const md = [];
+  md.push('## 硬不变量（不合格直接判废，不进距离）');
+  md.push('');
+  if (!s.declared) {
+    md.push(
+      '**没写硬不变量：搜索会拿底线换分数**' +
+        (opts.warnSuppressed ? '（`--no-invariants-warn` 已关掉终端提醒，但门禁确实没装）' : '') +
+        ' —— 这次的"最优"只在指标意义上更近，不保证任何底线：解压回不去、接口 500、越界写坏这类**废方案依然可能被选中**。',
+    );
+    md.push('');
+    md.push('改法：`intent.invariants` 里加一条 `{ id, check, why }`（见 `skills/selfloop/references/intent-and-ledger.md` 的「硬不变量」一节）。');
+    md.push('');
+    md.push('> ' + SCREENSHOT_LIMIT);
+    md.push('');
+    return md;
+  }
+  md.push(
+    '硬不变量不是"扣一点分"，是"合格/不合格"：任一候选违反就当废案 —— **不进距离比较、不能成为 best、也不会被缓存成「更优」**。指标负责"像不像"，不变量负责"是不是"。',
+  );
+  md.push('');
+  md.push('| id | 判据 | 为什么 | 通过 | 拒绝 | 最近一次拒绝 |');
+  md.push('|---|---|---|---|---|---|');
+  for (const it of s.items) {
+    const last = it.lastReject
+      ? `seq=${it.lastReject.seq === null ? '—' : it.lastReject.seq}${it.lastReject.phase ? '（' + it.lastReject.phase + '）' : ''} \`${JSON.stringify(it.lastReject.values)}\``
+      : '—';
+    // 表格单元格里的 `|` 会把列切坏（any(...) 的判据文本带竖线）—— 渲染时转义，原始文本不动
+    const text = String(it.text).replace(/\|/g, '\\|');
+    md.push(`| \`${it.id}\` | \`${text}\` | ${it.why} | ${it.passed} | ${it.rejected} | ${last} |`);
+  }
+  md.push('');
+  md.push(`**门禁拒绝 ${s.rejected} 个候选**（共过门禁 ${s.passed + s.rejected} 次判定：每次评估都过；\`target.mode=metrics\` 的目标取值也过一次，不占评估预算）。`);
+  md.push('');
+  const lastRejects = s.items.filter((it) => it.lastReject);
+  if (lastRejects.length) {
+    md.push('最近一次拒绝的原始观测片段（每个 id 一条，只摘判据引用到的字段）：');
+    md.push('');
+    for (const it of lastRejects) {
+      md.push(`- \`${it.id}\`：`);
+      md.push('');
+      md.push('```json');
+      md.push(JSON.stringify({ seq: it.lastReject.seq, phase: it.lastReject.phase || null, values: it.lastReject.values, stdout: it.lastReject.stdout }, null, 2));
+      md.push('```');
+      md.push('');
+    }
+  } else {
+    md.push('本次没有任何候选被拒（门禁一趟没拦住东西 —— 它到底有没有牙，得靠测试里"弄坏能红"那两条证明）。');
+    md.push('');
+  }
+  md.push('> 目标与起点也过同一道门：它们违规 = 判据/目标自相矛盾，直接硬错（不会开跑）。');
+  md.push('');
+  md.push('> ' + SCREENSHOT_LIMIT);
+  md.push('');
+  return md;
+}

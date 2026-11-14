@@ -3,6 +3,71 @@
 > 规矩：**改了 `harness/` 里的执行器就要在这里记一笔**，并注明"要不要回灌上游原件（案例 A，见 README「案例与来源」）"。
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
+## 0.7.0（未发布）· 硬不变量：给闭环加一层「合格/不合格」
+
+> 这一版动 `harness/`（`cmdloop.mjs` / `cmdlib.mjs` / `intent.mjs` + 新文件 `invariants.mjs`）、文档与测试。
+> **不动 `iter.ps1`、`finalize.js`、`core/`、`lib/` 的执行逻辑**；不改版本号（bump 留给发布）。
+> 回灌上游：**不需要**。这是本包自己的判据结构演进（案例 A 的现场没有这条链路）。
+
+**为什么**
+
+原来只有"距离"一层，penalty 也是加进同一个 `d` 里 —— **等于允许搜索拿底线换分数**：
+
+- 压缩到 37% 是**指标**；解压后逐字节相等、不越界是**不变量**。
+- 接口 p95 延迟是**指标**；HTTP 200 + schema 合法是**不变量**。
+
+指标负责"像不像"，不变量负责"是不是"。门禁不追求"更接近"，只判"合格/不合格"。
+
+**契约（`intent.invariants`）**
+
+```json
+"invariants": [
+  { "id": "roundtrip", "check": { "field": "roundtrip", "op": "==", "value": 1 },
+    "why": "解压回不去就是废方案，分数再高也不要" }
+]
+```
+
+- 每条 `{id, check, why}`：`id` 非空唯一、`why` 非空（不写为什么，将来没人敢删）；
+- `check` 只实现最小文法：比较 `{field, op: ==|!=|<|<=|>|>=, value:<数字>}`、组合 `{all:[…]}` / `{any:[…]}` / `{not:…}`；
+- `field` 可以是指标 id（`observe.metrics`），也可以是命令输出 JSON 的扁平字段（允许 `a.b` 点路径）；
+- 文法不认识 / 字段取不到 / 取到非数字 = **运行时硬错**（不静默判过）；`invariants` 可为空数组。
+
+**行为**
+
+1. **候选级门禁**：每次评估拿到观测先过所有 invariants；任一 fail → 该候选**判废**：不进距离比较、
+   不能成为 best、不会被缓存成"更优"。预检点被拒单列 `rejected`（不算活轴，也不算 `dead`）。
+2. **目标与起点也要过**：违规 → 硬错（判据/目标自相矛盾），错误信息点名 `id` + `why` + 观测值。
+3. **记账**：`report.md` 多一节「硬不变量」（每条 id 的通过/拒绝次数 + 最近一次拒绝的原始观测片段）；
+   `best.json` 多 `invariants: { declared, rejected, items[] }`；`curve.csv` 多 `inv` 列（1/0）；
+   台帐 `nodes/05-search.json` 的 `decision.basis` 写"门禁拒绝 N 个候选"。
+4. **默认行为**：没写 `invariants` → 不拦，但默认 warn「没写硬不变量：搜索会拿底线换分数」；
+   `--no-invariants-warn` 关掉终端 warn（报告仍如实记"门禁没装"）。
+5. **指纹**：门禁文法（id + 判据文本 + 变异体名）进 `hash`；拒绝次数/样本不进（那是观测，不是决策配置）。
+
+**已知限制（重要，别当 bug）**
+
+- **截图链路（`iter.ps1`）暂不支持门禁**：它的观测是页面指标、判定在 PowerShell 里，没有测试守着 PS 侧实现。
+  为此选择**只做命令链路**，并且是 **fail-closed**：在截图链路的 intent 里写 `invariants` 会**硬错**，
+  绝不静默忽略（静默忽略比拒跑更坏 —— 用户以为装了门，其实没有）。`iter.ps1` 一行未改。
+- 门禁只在**当下**判：没有"不变量写宽了/写死了/事后改了判据"的审计与重放（见
+  `skills/selfloop/references/intent-and-ledger.md` §7 的「不变量写错、事后来才发现」）。
+
+**测试**
+
+- 新增 `test/invariants.test.mjs`（10 条）：目标/起点违规硬错；候选判废且 `best` 停在门禁外、
+  被拒候选的距离确实比 `best` 更小；`report.md` / `best.json` / `curve.csv` / 台帐的记账；
+  默认 warn 与 `--no-invariants-warn`；文法错列出支持的 op；字段取不到硬错；
+  两条**弄坏能红**（`SELFLOOP_INVARIANTS_MUTANT=alwaysPass` → 拒绝数变 0、违例候选当上 best；
+  `=noTargetGate` → 目标硬错那条断言塌）；文法边界（重复 id / 空组合 / 缺 why）；
+  空数组等价于没写；截图链路写 invariants 必须硬错。
+- `npm test`：55 + 12 + 21 + 19 + 6 + 6 + 10 = **129**（原有 119 全绿 + 新增 10）。
+
+**文档**
+
+- `skills/selfloop/references/intent-and-ledger.md`：新增 §1.7「硬不变量」（语义/文法/记账/与 metrics 的区别）、
+  §2 的硬错表、§3.2 的截图链路 fail-closed、§6.3 报告那一节怎么读、§7 缺口、§8 自查命令；
+- `README.md`：用法段一句「硬不变量：不合格直接判废，不进距离」+ 已知限制第 12 条。
+
 ## 0.6.0（未发布）· 吸收外部领域资产：需求翻译 + GLSL 配方
 
 > 这一版只动 `domains/vfx-render/`、文档与测试，**不动 `core/`、`lib/`、`harness/` 的执行逻辑**，也不改版本号（bump 留给发布）。

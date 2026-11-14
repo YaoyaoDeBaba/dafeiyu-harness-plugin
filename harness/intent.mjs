@@ -44,6 +44,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SCREENSHOT_LIMIT, formatCheck, resolveInvariants } from './invariants.mjs';
 
 // ledger.js 是 CommonJS（截图链路的 finalize.js 也要 require 它），这里用 createRequire 拉进来 ——
 // 与 cmdlib.mjs 拉 score.js 同口径。
@@ -106,6 +107,9 @@ export function intentTemplate(metricIds = [], chain = 'cmd') {
       '⑥ confirm 最多 3 条（要用户拍板的问题）；confirmed:true 时若有未答的 confirm，会 warn 一句"还有 N 条待确认问题没答，已按当前判据开跑"。',
       '⑦ 填完怎么确认：把 confirmed 改成 true，写上 confirmedBy（谁确认的）与 confirmedAt（ISO 8601，如 2026-11-14T10:46:00+08:00），然后重跑同一条命令。',
       '⑧ 不想走这一步：命令行加 --no-intent（截图链路 -NoIntent）显式跳过 —— 台帐会记一条 skipped 并写明原因；跳过有名字，但这次就没有"需求被消化"的证据。',
+      '⑨ 硬不变量（0.7.0，可选但强烈建议）：invariants 数组，每条 {id, check, why} —— 不合格直接判废，不进距离（指标负责"像不像"，不变量负责"是不是"）。' +
+        'check 只认：比较 {field, op:==|!=|<|<=|>|>=, value:<数字>} / 组合 {all:[…]}、{any:[…]}、{not:…}；field 是指标 id 或命令输出里的字段（可写 a.b）。' +
+        '写错文法 / 字段取不到 = 硬错；不写 = 不拦，但会 warn「没写硬不变量：搜索会拿底线换分数」。截图链路暂不支持（写了会硬错）。',
     ],
     version: INTENT_VERSION,
     restate: '',
@@ -114,6 +118,7 @@ export function intentTemplate(metricIds = [], chain = 'cmd') {
     notWanted: [],
     freeVsFixed: { fixed: [], free: [] },
     howWeVerify: { human: true, metrics: true, note: '' },
+    invariants: [],
     uncertain: [],
     confirm: [],
     confirmed: false,
@@ -389,6 +394,20 @@ export function resolveIntent(opts = {}) {
   const fvf = validateFreeVsFixed(j.freeVsFixed);
   const hwv = validateHowWeVerify(j.howWeVerify);
 
+  // ------------------------------------------------------------ 硬不变量（0.7.0）
+  // 文法在闸这里就校验（而不是留到搜索里第一次评估才炸）：写错的不变量等于没装门，
+  // 必须在开跑之前用中文硬错说清"哪个 id / 哪个 op / 支持哪些"。
+  const invariants = resolveInvariants(j.invariants);
+  // 截图链路（iter.ps1 / finalize.js）不实现门禁 → **fail-closed**：
+  // 写了 invariants 就硬错，绝不静默忽略（静默忽略比拒跑更坏：用户以为装了门，其实没有）。
+  if (chain === 'screenshot' && invariants.length) {
+    die(
+      `截图链路不支持硬不变量（intent.invariants 里写了 ${invariants.length} 条：${invariants.map((x) => x.id).join(' / ')}）\n` +
+        `  ${SCREENSHOT_LIMIT}\n` +
+        `  改法：把 invariants 去掉（截图链路仍按原来的指标判据跑），或改走命令观测链路（cmdloop.mjs）—— 那里门禁真的生效`,
+    );
+  }
+
   const understood = String(j.understood ?? restate ?? '').trim();
   if (isV1) {
     warnings.push(V1_WARNING);
@@ -428,6 +447,8 @@ export function resolveIntent(opts = {}) {
     notWanted: nw,
     freeVsFixed: fvf,
     howWeVerify: hwv,
+    // 硬不变量（0.7.0）：已经过文法校验的 [{id, why, check}]；空数组 = 不拦（cmdloop 会 warn）
+    invariants,
     confirm: confirmArr,
     understood,
     reason: degradedWhy.join('；'),
@@ -451,6 +472,8 @@ function skippedShape(o = {}) {
     notWanted: { present: false, items: [] },
     freeVsFixed: { present: false, fixed: [], free: [] },
     howWeVerify: null,
+    // 跳过需求转译 = 没有 invariants（不拦；cmdloop 会 warn 一句"搜索会拿底线换分数"）
+    invariants: [],
     confirm: [],
     understood: '',
     reason: o.reason || '',
@@ -520,6 +543,7 @@ export function intentNodeRecord(res, extra = {}) {
   const basis = [];
   if (res.status === 'skipped') {
     basis.push('--no-intent：显式跳过需求转译（本次判据 = adapter 原样，没人确认过它是不是你要的）');
+    basis.push('硬不变量 0 条（--no-intent：门禁没装，搜索会拿底线换分数）');
   } else {
     const it = res.intent || {};
     basis.push(`intent 版本：v${res.version ?? 1}${res.isV1 ? '（v1 老写法：没有锚/反例/自由度，等于把审美全交给指标）' : ''}`);
@@ -544,6 +568,15 @@ export function intentNodeRecord(res, extra = {}) {
       basis.push('验收方式：' + (h.human && h.metrics ? '人眼 + 指标' : h.human ? '人眼' : '指标阈值') + (h.note ? '（' + h.note + '）' : ''));
     }
     basis.push('以上（restate / 锚 / 反例 / 自由度 / 验收方式）**不参与距离计算**，只做记录与呈现');
+    // 硬不变量（0.7.0）：**改的是判据结构**（合格/不合格），不是距离权重 —— 所以它单独一条，别混进上面那行。
+    const invs = Array.isArray(res.invariants) ? res.invariants : [];
+    if (invs.length) {
+      basis.push(
+        '硬不变量 ' + invs.length + ' 条（不合格直接判废，不进距离）：' + invs.map((x) => '`' + x.id + '` ' + formatCheck(x.check) + ' —— ' + x.why).join(' / '),
+      );
+    } else {
+      basis.push('硬不变量 0 条（没写：搜索会拿底线换分数）');
+    }
     if (res.criteria.length) {
       for (const c of res.criteria) {
         const bits = [];
@@ -644,6 +677,8 @@ function gateCli(argv) {
       isV1: Boolean(res.isV1),
       restate: res.restate || '',
       anchorCount: (res.anchors || []).length,
+      // 硬不变量只在命令链路生效（0.7.0）；截图链路写了就已在上面硬错。
+      invariantCount: (res.invariants || []).length,
       summaryFile: summaryRel,
       effectiveAdapter,
       criteria: res.criteria,

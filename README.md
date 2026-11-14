@@ -131,6 +131,10 @@ node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --
 - **intent v2 要锚**：`anchors` 至少 1 条具体参照物（参考图 / 具体游戏名 / 前作），`kind:"image"` 的 `ref` 必须真实存在；
   另加 `restate`（≤200 字复述）、`notWanted`（不要什么）、`freeVsFixed`（哪些定死、哪些自由）、`howWeVerify`（人眼还是指标算过）。
   只有"指标+权重+目标"的 v1 写法**仍然能跑**，但会 warn 且台帐记 `degraded` —— 等于把审美全交给指标。
+- **硬不变量**（0.7.0）：`intent.invariants` 里写 `[{id, check, why}]` —— **不合格直接判废，不进距离**
+  （指标负责"像不像"，不变量负责"是不是"：解压回不去、接口 500、越界写坏这类废方案，分数再高也不要）。
+  目标/起点违规 = 硬错；字段取不到 = 硬错；没写 = 不拦但默认 warn「没写硬不变量：搜索会拿底线换分数」
+  （`--no-invariants-warn` 关掉终端提醒）。文法与语义见 `skills/selfloop/references/intent-and-ledger.md` 的 §1.7。
 
 **台帐**：`<out>/nodes/NN-<node>.json`，字段固定 —— `node / seq / status(done|skipped|degraded|failed) / producer / ms / inputs[] / decision{why,basis[]} / artifacts[] / cost`，`skipped` 必须带 reason。
 初版覆盖 `intent` / `target` / `stability` / `precheck` / `search` / `finalize`（截图链路没有 stability 节点 → 记 `skipped` 并写明原因）。
@@ -317,12 +321,14 @@ test/command.test.mjs            21 个用例（命令观测 + 弄坏能红 + �
 9. **包内零本机绝对路径**，有测试钉住（全文扫「盘符+冒号+反斜杠」）；日志文件也不许进包（`files` 里有 `!**/*.log`）。
 10. **`package.json` 保留 `"private": true`**：本包的装机形态是「目录 / `git+https`」，不依赖 npm registry；`npm publish` 属于发版动作。
 11. **执行器内部仍叫 `iter.ps1` / `capture.mjs`**：文件名没改（改了要动一堆 `$PSScriptRoot` 相对引用，收益为零）。它们内部日志里出现的 `dsh-vfx-loop` 字样属于历史字符串，没跟着正名改。
+12. **硬不变量只在命令链路**（0.7.0）：`iter.ps1`（截图链路）暂不支持门禁 —— 它的观测是页面指标、判定在 PowerShell 里，没有测试守着 PS 侧实现。在截图链路的 intent 里写 `invariants` 会**硬错**（宁可拒跑，也不假装装了门禁）；要用门禁就走命令观测链路（`cmdloop.mjs`）。
 
 ## 测试
 
 ```powershell
 cd <包目录>
-node test/plugin.test.mjs      # 54 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）、写护栏（段边界/大小写/junction/端到端拒写）
+node test/plugin.test.mjs      # 55 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）、写护栏（段边界/大小写/junction/端到端拒写）
+node test/invariants.test.mjs  # 10 个用例：硬不变量（目标/起点硬错、候选判废不进距离、默认 warn 与开关、文法错、字段取不到、两条变异体证明"弄坏能红"、截图链路 fail-closed）
 ```
 
 测试不起宿主、不装 profile、不开端口、不跑闭环。

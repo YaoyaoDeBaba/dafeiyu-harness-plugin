@@ -12,6 +12,7 @@
 //        [--step-ratio 0.1] [--max-rounds 20] [--max-stagnant 2] [--strategy coordinate|random]
 //        [--params a,b,c]            # 覆盖 adapter.params.list（name 或 name=初值）
 //        [--intent <file>] [--no-intent]   # 需求转译闸（0.5.0）：默认读 <out>/intent.json
+//        [--no-invariants-warn]            # 关掉"没写硬不变量"的默认 warn（0.7.0；门禁仍没装）
 //
 // 产出（--out 下）：curve.csv / best.json / report.md / params\ / outputs\ / **nodes\（节点台帐 0.5.0）**
 'use strict';
@@ -38,6 +39,12 @@ import {
   stepOf,
 } from './cmdlib.mjs';
 import { INTENT_MUTANT, NO_INTENT_REASON, criteriaOverrides, intentNodeRecord, intentSummaryLines, intentSummaryOf, resolveIntent, writeIntentSummary } from './intent.mjs';
+import {
+  INVARIANTS_MUTANT,
+  assertInvariantPass,
+  createInvariantGate,
+  invariantSectionLines,
+} from './invariants.mjs';
 
 // ledger.js 是 CommonJS（截图链路的 finalize.js 也 require 它），这里用 createRequire 拉。
 const requireCjs = createRequire(import.meta.url);
@@ -60,6 +67,7 @@ const USAGE = `用法：
   --params a,b=3      覆盖 adapter.params.list（name 取基线现值，name=值 显式起跑）
   --intent <file>     需求转译文件（缺省读 <out>/intent.json）；没有它 = 硬错（会写出 intent.template.json）
   --no-intent         显式跳过需求转译（放行的唯一姿势；台帐 nodes/01-intent.json 记 skipped 并写明原因）
+  --no-invariants-warn  没写硬不变量时不再 warn（默认 warn：搜索会拿底线换分数）
   --help              这份说明
 
 需求转译闸（0.5.0；intent v2 在 0.5.1，比活性预检更早，因为它会改判据）：
@@ -73,7 +81,13 @@ const USAGE = `用法：
 
 观测稳定性闸（0.4.1）：搜索前先用起点参数把命令连跑 observe.stability.repeat 次（默认 3），
 任一指标相对离散度 (max-min)/max(|mean|,1e-9) 超过 maxSpread（默认 0.02）就中文硬错。
-这几次是真实评估、记进预算（默认多花 2 次）；预算不够会硬错提示提高 --budget 或显式 repeat=1。`;
+这几次是真实评估、记进预算（默认多花 2 次）；预算不够会硬错提示提高 --budget 或显式 repeat=1。
+
+硬不变量（0.7.0，默认行为不变）：
+  intent.invariants 里写 [{id, check, why}]，每次评估拿到观测后先过门禁：任一 fail → 该候选判废
+  （不进距离比较、不能成为 best）；目标/起点过不了 = 硬错（判据/目标自相矛盾）。
+  没写 invariants → 不拦，但默认 warn「没写硬不变量：搜索会拿底线换分数」，--no-invariants-warn 可关。
+  截图链路（iter.ps1）暂不支持门禁：在截图链路的 intent 里写 invariants 会硬错（宁可拒跑，也不假装装了门禁）。`;
 
 function parseArgs(argv) {
   const a = {
@@ -88,6 +102,7 @@ function parseArgs(argv) {
     params: '',
     intent: '',
     noIntent: false,
+    noInvariantsWarn: false,
     help: false,
   };
   const takes = {
@@ -110,6 +125,10 @@ function parseArgs(argv) {
     }
     if (k === '--no-intent') {
       a.noIntent = true;
+      continue;
+    }
+    if (k === '--no-invariants-warn') {
+      a.noInvariantsWarn = true;
       continue;
     }
     const key = takes[k];
@@ -251,6 +270,8 @@ function run(args) {
 
   // ---------------------------------------------------------------- 需求转译闸（0.5.0）
   // 位置：**所有评估之前**（比目标帧/目标指标、比活性预检、比稳定性闸都早），因为它会改判据。
+  // 硬不变量（0.7.0）也挂在 intent 上：intent 块结束时要把它带出来（块作用域）。
+  let intentInvariants = [];
   {
     const gt0 = Date.now();
     RUN_PHASE = 'intent';
@@ -261,6 +282,7 @@ function run(args) {
       metricIds: plan.observe.metricIds,
       chain: 'cmd',
     });
+    intentInvariants = Array.isArray(intent.invariants) ? intent.invariants : [];
     const { weights: intentWeights, targets: intentTargets } = criteriaOverrides(intent.criteria);
     if (Object.keys(intentWeights).length) {
       applyMetricOverrides(plan, { weights: intentWeights });
@@ -292,6 +314,21 @@ function run(args) {
       log(`[intent][warn] ${intent.reason}`);
     }
     intentTargetsOverride = intentTargets;
+    intentInvariants = Array.isArray(intent.invariants) ? intent.invariants : [];
+  }
+
+  // ---------------------------------------------------------------- 硬不变量门禁（0.7.0）
+  // 位置：intent 之后、**所有评估之前**。它不参与距离（不进 d），只回答"合格/不合格"：
+  // 每次评估拿到观测先过门禁，任一 fail → 该候选判废（不进距离比较、不能成为 best）。
+  // 没写 invariants = 维持现状（不拦），但默认 warn 一句：允许搜索拿底线换分数这件事必须被看见。
+  const invGate = createInvariantGate(intentInvariants);
+  if (invGate.declared) {
+    log(`[invariants] ${invGate.items.length} 条硬不变量：${invGate.items.map((it) => it.id + '（' + it.text + '）').join(' / ')}`);
+  } else if (!args.noInvariantsWarn) {
+    log(
+      '[invariants][warn] 没写硬不变量：搜索会拿底线换分数 —— 指标只回答"更接近"，不回答"合格"。' +
+        '在 intent.invariants 里加一条 {id, check, why}；不想看这条提醒用 --no-invariants-warn',
+    );
   }
 
   // 实时评估流的一行：append + close（appendFileSync 每次自己 open/write/close，不会攒在缓冲区）。
@@ -329,6 +366,7 @@ function run(args) {
       note: meta.note,
       params,
       row: res.row,
+      fields: res.fields || {},
       stdout: res.stdout,
       stderr: res.stderr,
       ms: res.ms,
@@ -341,6 +379,13 @@ function run(args) {
       pens: res.dist ? res.dist.pens : [],
       pen: res.dist ? res.dist.penSum : 0,
     };
+    // 硬不变量门禁（0.7.0）：每次评估拿到观测先过一遍 —— 这条是**唯一**的过门点
+    // （目标 / 起点 / 稳定性 / 预检 / 搜索都从这里走），所以不会漏掉某条路径。
+    // 硬错（字段取不到 / 文法看不懂）会在这里直接抛出，不降级、不静默判过。
+    rec.inv = invGate.check(
+      { metrics: res.row, fields: res.fields || {}, stdout: res.stdout, stderr: res.stderr },
+      { seq, phase: meta.phase || '' },
+    );
     evals.push(rec);
     appendLive(rec, meta);
     const doc = {
@@ -357,6 +402,8 @@ function run(args) {
       dist: r6(rec.dist),
       parts: rec.parts,
       pens: rec.pens,
+      // 硬不变量（0.7.0）：这份原始输出过没过门禁（rejected 的候选保留原文，方便事后看"为什么废"）
+      invariants: { ok: rec.inv.ok, failed: rec.inv.failures.map((f) => f.id) },
       stdout: rec.stdout,
       stderr: rec.stderr,
     };
@@ -383,6 +430,7 @@ function run(args) {
   // ---------------------------------------------------------------- 目标
   let trow;
   let targetInfo;
+  let targetRec = null;
   RUN_PHASE = 'target';
   const tTarget = Date.now();
   if (plan.target.mode === 'metrics') {
@@ -402,6 +450,7 @@ function run(args) {
     const got = evaluateCached(tp, { id: 'target', round: 0, note: 'target', phase: 'target' });
     if (!got) throw new Error('预算太小：连目标都没跑成（--budget 至少 1）');
     const rec = evals[got.seq - 1];
+    targetRec = rec;
     trow = rec.row;
     targetInfo = {
       kind: 'params',
@@ -427,10 +476,27 @@ function run(args) {
   targetInfo.effective = { ...trow };
   if (targetOverrides.length) targetInfo.intentOverrides = targetOverrides;
 
+  // 硬不变量 · 目标也要过（0.7.0）：目标自己违规 = 判据/目标自相矛盾，拒绝开跑。
+  // 两种目标来源都过：target.params 跑出来的那一次观测已由 runEval 过门（这里只判结论）；
+  // target.metrics 直接给的数值没有命令输出，用「指标行 + 空字段表」过门。
+  if (targetRec) {
+    assertInvariantPass(targetRec.inv, '目标（target.params 跑出来的观测）');
+  } else {
+    const eff = invGate.check({ metrics: trow, fields: {} }, { seq: null, phase: 'target' });
+    assertInvariantPass(eff, '目标（adapter.target.metrics 直接给的数值）');
+  }
+  // intent 覆盖过目标值时，覆盖后的生效目标也要过（否则"必须无损"这类不变量会和被改过的目标打架）
+  if (targetOverrides.length) {
+    const eff = invGate.check({ metrics: trow, fields: targetRec ? targetRec.fields : {} }, { seq: targetRec ? targetRec.seq : null, phase: 'target' });
+    assertInvariantPass(eff, '目标（intent 覆盖后的生效值）');
+  }
+
   // ---------------------------------------------------------------- 起点
   const startGot = evaluateCached(plan.startParams, { id: 'e001', round: 0, note: 'start', phase: 'start' });
   if (!startGot) throw new Error('预算太小：起点都没跑成（--budget 至少 1）');
   const startRec = evals[startGot.seq - 1];
+  // 硬不变量 · 起点也要过（0.7.0）：起点就违规 = 判据/起点自相矛盾 → 硬错，不搜
+  assertInvariantPass(startRec.inv, '起点（plan.startParams）');
   const startDist = startRec.dist;
   const baseParams = { ...plan.startParams };
   log(`[start] d=${startDist.toFixed(4)}  ${keyOf(baseParams, plan.wl)}`);
@@ -452,6 +518,9 @@ function run(args) {
         ...targetOverrides.map((o) => `intent 覆盖 ${o.id}：${num(o.from)} → ${num(o.to)}`),
         `起点距离 d=${d4(startDist)}`,
         `起点参数：${plan.wl.map((k) => k + '=' + num(baseParams[k])).join('  ')}`,
+        invGate.declared
+          ? `硬不变量：目标与起点通过 ${invGate.items.length} 条门禁（${invGate.items.map((it) => it.id).join(' / ')}）`
+          : '硬不变量：0 条（没装门禁 —— 搜索可以拿底线换分数）',
       ],
     },
     artifacts: [],
@@ -566,6 +635,7 @@ function run(args) {
   const precheckRows = [];
   const alive = [];
   const dead = [];
+  const rejectedPrecheck = [];
   for (const k of plan.wl) {
     if (usage.used >= args.budget) {
       log('[precheck][warn] 预检阶段预算耗尽，后面的参数没扫到');
@@ -575,22 +645,30 @@ function run(args) {
     const got = evaluateCached(pv, { id: 'pc_' + k, round: -1, note: 'precheck:' + k, phase: 'precheck' });
     if (!got) break;
     const rec = evals[got.seq - 1];
-    const dDelta = Math.abs(rec.dist - startDist);
+    // 门禁拒绝的预检点既不是 alive 也不是 dead：轴可能是活的，只是**这一点不合格**。
+    // 把它当 dead 会冤枉一根好轴，当 alive 会让搜索从废点出发 —— 所以单列第三类。
+    const gated = Boolean(rec.inv && !rec.inv.ok);
+    const dDelta = gated ? null : Math.abs(rec.dist - startDist);
     const outputSame = rec.stdoutSha === startRec.stdoutSha;
-    const verdict = dDelta <= 1e-9 ? 'dead' : 'alive';
-    (verdict === 'alive' ? alive : dead).push(k);
+    const verdict = gated ? 'rejected' : dDelta <= 1e-9 ? 'dead' : 'alive';
+    if (verdict === 'alive') alive.push(k);
+    else if (verdict === 'dead') dead.push(k);
+    else rejectedPrecheck.push(k);
     precheckRows.push({
       param: k,
       start: r6(baseParams[k]),
       perturbed: r6(pv[k]),
       dist: r6(rec.dist),
-      dDelta: r6(dDelta),
+      dDelta: dDelta === null ? null : r6(dDelta),
       outputSame,
       verdict,
       seq: rec.seq,
+      invFailed: gated ? rec.inv.failures.map((f) => f.id) : [],
     });
     log(
-      `[precheck] ${k} ${num(baseParams[k])}->${num(pv[k])}  d=${rec.dist.toFixed(4)}  Δd=${dDelta.toFixed(6)}  输出同=${outputSame ? 'Y' : 'N'}  => ${verdict}`,
+      `[precheck] ${k} ${num(baseParams[k])}->${num(pv[k])}  d=${rec.dist.toFixed(4)}  ` +
+        (gated ? `门禁拒绝（${rec.inv.failures.map((f) => f.id).join(',')}）` : `Δd=${dDelta.toFixed(6)}  输出同=${outputSame ? 'Y' : 'N'}`) +
+        `  => ${verdict}`,
     );
   }
 
@@ -600,7 +678,9 @@ function run(args) {
     stopReason = dead.length ? 'all-dead' : 'no-alive-after-precheck';
     stopDetail = dead.length
       ? `白名单 ${dead.length} 个参数全部 dead（改一档距离一点不动），一次搜索都没跑`
-      : '预检阶段预算耗尽，一个参数都没扫出来';
+      : rejectedPrecheck.length
+        ? `预检点全部被硬不变量拒绝（${rejectedPrecheck.join(' / ')}）：那些点不合格，不能从那里出发`
+        : '预检阶段预算耗尽，一个参数都没扫出来';
   }
 
   // 台帐 · precheck：扫完才是 done；预算中途断 → degraded（"扫了一半"这种事必须留下来）
@@ -617,7 +697,13 @@ function run(args) {
         basis: [
           `活 ${alive.length} 个：${alive.join(' / ') || '（无）'}`,
           `dead ${dead.length} 个：${dead.join(' / ') || '（无）'}`,
-          ...precheckRows.map((r) => `${r.param}: ${num(r.start)}→${num(r.perturbed)} Δd=${r.dDelta === 0 ? '0' : f6(r.dDelta)} → ${r.verdict}`),
+          ...(invGate.declared ? [`硬不变量拒绝 ${rejectedPrecheck.length} 个预检点：${rejectedPrecheck.join(' / ') || '（无）'}（不算活轴，也不算 dead）`] : []),
+          ...precheckRows.map(
+            (r) =>
+              `${r.param}: ${num(r.start)}→${num(r.perturbed)} ` +
+              (r.verdict === 'rejected' ? `门禁拒绝（${r.invFailed.join(',')}）` : `Δd=${r.dDelta === 0 ? '0' : f6(r.dDelta)}`) +
+              ` → ${r.verdict}`,
+          ),
         ],
       },
       artifacts: [],
@@ -682,15 +768,29 @@ function run(args) {
     }
 
     let pick = null;
+    let roundRejected = 0;
     for (const h of hit) {
       const rec = evals[h.seq - 1];
+      // 候选级门禁（0.7.0）：违反硬不变量的候选判废 —— 不进距离比较、不能成为 best。
+      // 注意 `none` 是当前最优（它当初就过过门），所以正常情况下这一轮总有可用候选。
+      if (!rec.inv || !rec.inv.ok) {
+        roundRejected += 1;
+        continue;
+      }
       if (pick === null || rec.dist < pick.dist) pick = { seq: h.seq, dist: rec.dist, note: h.note, vec: h.vec };
     }
-    if (!pick) throw new Error(`第 ${roundNo} 轮没有任何可用评估`);
+    if (!pick) {
+      // 极端情况：连 none 都没过门（说明 best 本身被门禁否掉了，不该发生）—— 记一轮、停，不假装有改进
+      roundLog.push({ round: roundNo, cands: hit.map((h) => ({ note: h.note, seq: h.seq })), winner: null, rejected: roundRejected });
+      stopReason = 'invariants-gate';
+      stopDetail = `第 ${roundNo} 轮所有候选（含当前最优）都被硬不变量拒绝：${hit.map((h) => h.note).join(', ')}`;
+      break;
+    }
 
-    roundLog.push({ round: roundNo, cands: hit.map((h) => ({ note: h.note, seq: h.seq })), winner: pick.seq });
+    roundLog.push({ round: roundNo, cands: hit.map((h) => ({ note: h.note, seq: h.seq })), winner: pick.seq, rejected: roundRejected });
     log(
-      `[round ${roundNo}] ${hit.map((h) => h.note + '=' + d4(evals[h.seq - 1].dist)).join('  ')}   -> 胜出 ${pick.note} d=${d4(pick.dist)}  已用 ${usage.used}/${args.budget}`,
+      `[round ${roundNo}] ${hit.map((h) => h.note + '=' + (evals[h.seq - 1].inv && !evals[h.seq - 1].inv.ok ? 'REJ' : d4(evals[h.seq - 1].dist))).join('  ')}` +
+        `   -> 胜出 ${pick.note} d=${d4(pick.dist)}${roundRejected ? `（门禁拒绝 ${roundRejected} 个）` : ''}  已用 ${usage.used}/${args.budget}`,
     );
 
     if (pick.dist < bestDist - 1e-9) {
@@ -730,7 +830,10 @@ function run(args) {
           : `不跑搜索：${stopDetail}`,
         basis: [
           `轮数 ${roundLog.length}，评估 ${usage.search} 次（缓存命中 ${usage.cache}）`,
-          ...roundLog.map((r) => `第 ${r.round} 轮胜出 seq=${r.winner}（候选 ${r.cands.map((c) => c.note).join(',')}）`),
+          invGate.declared
+            ? `硬不变量：门禁拒绝 ${invGate.summary().rejected} 个候选（其中预检 ${rejectedPrecheck.length} 个；拒绝的候选不进距离比较、不能成为 best）`
+            : '硬不变量：0 条（门禁未装 —— 搜索会拿底线换分数）',
+          ...roundLog.map((r) => `第 ${r.round} 轮胜出 seq=${r.winner ?? '（无：全部被门禁拒绝）'}（候选 ${r.cands.map((c) => c.note).join(',')}${r.rejected ? `；门禁拒绝 ${r.rejected} 个` : ''}）`),
           `起点 d=${d4(startDist)} → 最佳 d=${d4(bestDist)}`,
           `终止 ${stopReason}${stopDetail ? ' — ' + stopDetail : ''}`,
         ],
@@ -760,6 +863,9 @@ function run(args) {
     // 稳定性闸的**配置**进指纹（换阈值/换样数本来就该换 hash）；
     // 采样到的**数值**不进指纹 —— 那是观测，不是决策（同 seed 同参数的重跑必须还是一个 hash）。
     stability: { repeat: stabCfg.repeat, maxSpread: stabCfg.maxSpread, checked: stability ? stability.checked : false },
+    // 硬不变量（0.7.0）：门禁**文法**进指纹（换不变量本来就该换 hash）；
+    // 拒绝的**次数/样本**不进指纹 —— 那是观测结果，不是决策配置（换 out 目录重跑必须还是同一个 hash）。
+    invariants: { mutant: INVARIANTS_MUTANT, items: invGate.items.map((it) => [it.id, it.text]) },
     whitelist: plan.wl.map((k) => k + ':' + r6(baseParams[k])),
     base: plan.baseSha256,
     metricsCfg: { metrics: JSON.stringify(plan.scoreCfg.metrics ?? plan.observe.metrics), score: JSON.stringify(plan.scoreCfg) },
@@ -805,7 +911,7 @@ function run(args) {
 
   // ---------------------------------------------------------------- curve.csv
   const hdr = ['round', 'eval_seq', 'id', 'note']
-    .concat(plan.wl, ['dist', 'pen'])
+    .concat(plan.wl, ['dist', 'pen', 'inv'])
     .concat(plan.observe.metricIds.map((id) => 'm:' + id))
     .concat(plan.observe.metricIds.map((id) => 'nd:' + id))
     .concat(['output']);
@@ -813,7 +919,7 @@ function run(args) {
   for (const e of evals) {
     const row = [e.round, e.seq, e.id, e.note]
       .concat(plan.wl.map((k) => f6(e.params[k])))
-      .concat([f6(e.dist), f6(e.pen)])
+      .concat([f6(e.dist), f6(e.pen), e.inv && !e.inv.ok ? '0' : '1'])
       .concat(plan.observe.metricIds.map((id) => f6(e.row[id])))
       .concat(plan.observe.metricIds.map((id) => f6(e.parts[id])))
       .concat([outputs.get(e.seq) ?? '']);
@@ -826,7 +932,7 @@ function run(args) {
     schema: 'cmd-iter/1',
     hash,
     hashOf:
-      '决策指纹：目标锚点指标 / 指标与距离配置 / 命令与解析方式 / 种子与步长 / 白名单与起始值 / 基线参数文件 / 预检结果 / 每点参数与距离 / 终止原因。不含时间、路径、原始命令输出',
+      '决策指纹：目标锚点指标 / 指标与距离配置 / 命令与解析方式 / 种子与步长 / 白名单与起始值 / 基线参数文件 / 硬不变量文法 / 预检结果 / 每点参数与距离 / 终止原因。不含时间、路径、原始命令输出',
     metricIds: plan.observe.metricIds,
     metricsCfg: { metrics: plan.observe.metrics, score: plan.scoreCfg },
     target: targetInfo,
@@ -840,6 +946,15 @@ function run(args) {
     // 观测稳定性闸（0.4.1）：repeat 次的指标原值 / 每条指标的 spread / 判定结论。
     // 这个字段缺席 = 这一步根本没跑（正常跑不会缺席，只有变异体 noStability 会）。
     ...(stability ? { stability } : {}),
+    // 硬不变量门禁（0.7.0）：每条 id 的通过/拒绝次数 + 最近一次拒绝的原始观测片段。
+    // declared=false = 没写（没装门禁），此时 rejected 恒 0。
+    invariants: {
+      declared: invGate.declared,
+      rejected: invGate.summary().rejected,
+      items: invGate.summary().items,
+      mutant: INVARIANTS_MUTANT,
+      warnSuppressed: Boolean(args.noInvariantsWarn),
+    },
     seed: args.seed,
     stepRatio: args.stepRatio,
     budget: args.budget,
@@ -876,6 +991,9 @@ function run(args) {
         pens: e.pens,
         output: outputs.get(e.seq) ?? '',
         ms: e.ms,
+        // 硬不变量（0.7.0）：这一条过了没有/被哪几个 id 拦住（拒绝的候选仍然留原文，方便事后复盘）
+        inv: e.inv ? e.inv.ok : true,
+        invFail: e.inv && !e.inv.ok ? e.inv.failures.map((f) => f.id) : [],
       };
       for (const id of plan.observe.metricIds) o['m_' + id] = r6(e.row[id]);
       return o;
@@ -900,9 +1018,9 @@ function run(args) {
   writeFileSync(join(outDir, 'best.json'), JSON.stringify(bestJson, null, 2), 'utf8');
 
   // ---------------------------------------------------------------- report.md
-  writeFileSync(join(outDir, 'report.md'), buildReport({ plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams, dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outputs, outDir, startedAt, endedAt, stability, stabCfg, nodes: ledger.nodes, intentSummary }), 'utf8');
+  writeFileSync(join(outDir, 'report.md'), buildReport({ plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams, dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outputs, outDir, startedAt, endedAt, stability, stabCfg, nodes: ledger.nodes, intentSummary, invSummary: invGate.summary(), invDeclared: invGate.declared, rejectedPrecheck }), 'utf8');
 
-  const summary = `HASH ${hash}\nstart=${r6(startDist)} best=${r6(bestDist)} drop=${dropPct === null ? 'n/a' : dropPct + '%'} stability=${stability ? (stability.checked ? 'ok' : 'off') : 'skipped'} stop=${stopReason} used=${usage.used}/${args.budget} elapsed=${elapsedSec}s nodes=${ledger.nodes.length}`;
+  const summary = `HASH ${hash}\nstart=${r6(startDist)} best=${r6(bestDist)} drop=${dropPct === null ? 'n/a' : dropPct + '%'} stability=${stability ? (stability.checked ? 'ok' : 'off') : 'skipped'} invariants=${invGate.declared ? invGate.items.length + '条/拒' + invGate.summary().rejected : 'off'} stop=${stopReason} used=${usage.used}/${args.budget} elapsed=${elapsedSec}s nodes=${ledger.nodes.length}`;
   log(summary);
   return { hash, startDist, bestDist, dropPct, stopReason, usage, elapsedSec, outDir, plan, evals, precheckRows, alive, dead, bestJson, nodes: ledger.nodes };
 }
@@ -923,6 +1041,8 @@ function reproduceCommand(args) {
   // 复现命令里必须带上这道闸的选择：不带的话重跑的判据来源和这次不一样（--no-intent 与 intent 是两种 run）
   if (args.noIntent) parts.push('--no-intent');
   else if (args.intent) parts.push(`--intent "${args.intent}"`);
+  // 门禁的 warn 开关也要带上：重跑时终端输出必须和这次一致（少一条 warn 就等于换了一套默认）
+  if (args.noInvariantsWarn) parts.push('--no-invariants-warn');
   return parts.join(' ');
 }
 
@@ -931,7 +1051,7 @@ function buildReport(ctx) {
   const {
     plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams,
     dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outDir, startedAt, endedAt,
-    stability, nodes, intentSummary,
+    stability, nodes, intentSummary, invSummary, invDeclared, rejectedPrecheck,
   } = ctx;
   const WL = plan.wl;
   const MID = plan.observe.metricIds;
@@ -945,7 +1065,8 @@ function buildReport(ctx) {
       .map((x) => (mx - mn < 1e-12 ? SPARK[3] : SPARK[Math.round(((x - mn) / (mx - mn)) * (SPARK.length - 1))]))
       .join('');
   };
-  const deadRows = precheckRows.filter((r) => r.verdict !== 'alive');
+  const deadRows = precheckRows.filter((r) => r.verdict === 'dead');
+  const rejectedRows = precheckRows.filter((r) => r.verdict === 'rejected');
 
   // 每轮的行（照抄 finalize.js 的 roundRows 口径：优先用驱动写的 rounds 日志）
   const seqMap = new Map(evals.map((e) => [e.seq, e]));
@@ -1060,22 +1181,28 @@ function buildReport(ctx) {
   md.push('| 搜索策略 | `' + args.strategy + '`（步长 ±' + args.stepRatio * 100 + '%，maxRounds ' + args.maxRounds + ' / maxStagnant ' + args.maxStagnant + '） |');
   md.push('| 种子 | `' + args.seed + '` |');
   md.push('| 总耗时 | ' + elapsedSec + 's（单次评估 ' + msPerEval + 'ms 中位数） |');
+  // 硬不变量（0.7.0）：这一行必须是上表的一员（放在表格关闭的空行之前），别单独 push 成一段
+  md.push('| 硬不变量 | ' + (invDeclared ? '**' + invSummary.items.length + ' 条**（门禁拒绝 ' + invSummary.rejected + ' 次观测）' : '**没写**（门禁未装：搜索会拿底线换分数）') + ' |');
   md.push('');
   md.push(...stabBlock);
+  // 硬不变量门禁的明细节：每条 id 的通过/拒绝次数 + 最近一次拒绝的原始观测片段。
+  md.push(...invariantSectionLines(invSummary, { warnSuppressed: Boolean(args.noInvariantsWarn) }));
   md.push('## 1. 参数活性预检');
   md.push('');
-  md.push('口径与 `iter.ps1` §5.3 一致：对每个参数在起始点基础上 +1 步，与起点比 `Δd`。`Δd==0` → `dead`（`输出同` 列说明是"命令输出逐字节相同"还是"输出变了但判据没动"）。');
+  md.push('口径与 `iter.ps1` §5.3 一致：对每个参数在起始点基础上 +1 步，与起点比 `Δd`。`Δd==0` → `dead`（`输出同` 列说明是"命令输出逐字节相同"还是"输出变了但判据没动"）。被硬不变量拒绝的预检点单列为 `rejected`：不算活轴、也不算 dead（轴可能是好的，只是这一点不合格）。');
   md.push('');
   md.push('| 参数 | 起始值 | 扰动值 | 该点距离 | Δd | 输出同 | 判定 |');
   md.push('|---|---|---|---|---|---|---|');
   for (const r of precheckRows) {
+    const verdict = r.verdict === 'alive' ? '活' : r.verdict === 'rejected' ? '**门禁拒绝**（' + (r.invFailed || []).join(',') + '）' : '**dead**';
     md.push(
-      `| \`${r.param}\` | ${num(r.start)} | ${num(r.perturbed)} | ${d4(r.dist)} | ${r.dDelta === 0 ? '0' : f6(r.dDelta)} | ${r.outputSame ? '是' : '否'} | ${r.verdict === 'alive' ? '活' : '**dead**'} |`,
+      `| \`${r.param}\` | ${num(r.start)} | ${num(r.perturbed)} | ${d4(r.dist)} | ${r.verdict === 'rejected' ? '—' : r.dDelta === 0 ? '0' : f6(r.dDelta)} | ${r.outputSame ? '是' : '否'} | ${verdict} |`,
     );
   }
   md.push('');
   if (deadRows.length) md.push('**dead: `' + deadRows.map((r) => r.param).join('`, `') + '`** —— 已从搜索轴里剔除，不花预算。');
-  else md.push('**预检结果：白名单全活。**');
+  if (rejectedRows.length) md.push('**被门禁拒绝: `' + rejectedRows.map((r) => r.param).join('`, `') + '`** —— 那些点不合格，不能从那里出发（不当作"参数无效"）。');
+  if (!deadRows.length && !rejectedRows.length) md.push('**预检结果：白名单全活。**');
   md.push('');
   md.push('## 2. 距离曲线（文字版）');
   md.push('');
@@ -1156,6 +1283,7 @@ function buildReport(ctx) {
   md.push('- **random 策略不跨执行器可比**：`cmdloop.mjs` 用自己的伪随机（`iter.ps1` 是 .NET `[Random]`），同 seed 只在同一个执行器里可复现；`coordinate` 两边口径一致。');
   md.push('- **只认标量指标**：命令输出里取到的必须是数（数组型指标要 metrics2.js 的提取器，那是浏览器链路）。');
   md.push('- **判据只做粗筛**：它能把候选排序、把坏掉的报警；"这个数好不好"不能问它。');
+  md.push('- **硬不变量只在命令链路**（0.7.0）：`iter.ps1`（截图链路）暂不支持门禁 —— 它的观测是页面指标、判定在 PowerShell 里，没有测试守着 PS 侧实现；在截图链路的 intent 里写 invariants 会**硬错**（宁可拒跑，也不假装装了门禁）。');
   md.push('- **命令必须是确定性的**：同一个参数跑两次给不同的数，那就不是观测、是噪声。0.4.1 起**先验一遍再搜**（观测稳定性闸：起点参数连跑 `observe.stability.repeat` 次，任一指标相对离散度 > `maxSpread` 就硬错），比"跑完再解释为什么结果怪"省事得多。');
   md.push('- **稳定性闸只看"同一个参数重复跑"**：它证明观测可重复，不证明**判据**本身有意义；而且相对离散度在指标接近 0 时会放大（分母兜底 1e-9），0 附近的指标请自己看一眼 spread 的绝对值。');
   md.push('- **本次统计**：' + evals.length + ' 个评估点，`outputs/` ' + ctx.outputs.size + ' 份原始输出。');

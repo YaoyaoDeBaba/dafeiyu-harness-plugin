@@ -590,7 +590,8 @@ export function computeDist(plan, row, trow) {
   return r;
 }
 
-// 跑一次命令。返回 { row, dist, stdout, stderr, ms, timedOut, stdoutSha, paramsFile, argv }
+// 跑一次命令。返回 { row, fields, dist, stdout, stderr, ms, timedOut, stdoutSha, paramsFile, argv }
+// fields = 按 observe.parse 解析出来的原始字段表（硬不变量的 field 可以取它）。
 // 四类失败都是**中文硬错**：超时 / 非零退出 / 输出解析不出来 / 指标缺失。
 export function evaluate(plan, opts) {
   const { params, outDir, seq } = opts;
@@ -616,7 +617,7 @@ export function evaluate(plan, opts) {
       // 变异体：超时当正常，指标全 0（正是"静默当 0"这个坑）—— 超时断言必须变红
       const row = {};
       for (const m of plan.metrics) row[m.id] = 0;
-      return { row, dist: opts.trow ? computeDist(plan, row, opts.trow) : null, stdout, stderr, ms, timedOut: true, stdoutSha: sha256Text(stdout), paramsFile, argv };
+      return { row, fields: {}, dist: opts.trow ? computeDist(plan, row, opts.trow) : null, stdout, stderr, ms, timedOut: true, stdoutSha: sha256Text(stdout), paramsFile, argv };
     }
     die(
       `命令超时（>${plan.observe.timeoutMs}ms）：${plan.observe.cmdRaw}（argv=${JSON.stringify(argv)}）\n` +
@@ -636,7 +637,8 @@ export function evaluate(plan, opts) {
   const row = rowFromFields(fields, plan.metrics);
   // 目标自己那一次评估没有"目标行"可比 —— 不算距离（不是"距离 0"，是没有距离）
   const d = opts.trow ? computeDist(plan, row, opts.trow) : null;
-  return { row, dist: d, stdout, stderr, ms, timedOut: false, stdoutSha: sha256Text(stdout), paramsFile, argv };
+  // fields 原样带上：硬不变量（invariants）的 field 除了指标 id，还可以取命令输出里的任意扁平字段。
+  return { row, fields, dist: d, stdout, stderr, ms, timedOut: false, stdoutSha: sha256Text(stdout), paramsFile, argv };
 }
 
 // 证据包里的 outputs/：每次评估的原始命令输出，**截断到 4KB**（超了标 truncated:true，方便一眼看出不是全文）
