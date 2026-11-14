@@ -26,6 +26,32 @@ function intentSummaryOf(res) {
   const fvf = r.freeVsFixed || { present: false, fixed: [], free: [] };
   const hwv = r.howWeVerify || null;
   const confirm = Array.isArray(r.confirm) ? r.confirm : [];
+  // v2.1：criteria 的"用户原话 / 怎么量"也进摘要（**不参与距离**，只做人读的台帐）。
+  // 缺的字段在报告里写 ⚠ —— 让"这条判据是凭空编的"在报告上就看得见。
+  const criteria = (Array.isArray(r.criteria) ? r.criteria : []).map((c) => ({
+    id: c.id,
+    weight: c.weight === null || c.weight === undefined ? null : Number(c.weight),
+    target: c.target === null || c.target === undefined ? null : Number(c.target),
+    anchor: String(c.anchor || ''),
+    userWords: String(c.userWords || ''),
+    howMeasured: String(c.howMeasured || ''),
+    hasUserWords: Boolean(String(c.userWords || '').trim()),
+    hasHowMeasured: Boolean(String(c.howMeasured || '').trim()),
+    humanEyes: Boolean(c.humanEyes),
+    why: String(c.why || ''),
+  }));
+  const prv =
+    r.provenance && typeof r.provenance === 'object'
+      ? {
+          userWords: Number(r.provenance.userWords || 0),
+          howMeasured: Number(r.provenance.howMeasured || 0),
+          neither: Number(r.provenance.neither || 0),
+        }
+      : {
+          userWords: criteria.filter((c) => c.hasUserWords).length,
+          howMeasured: criteria.filter((c) => c.hasHowMeasured).length,
+          neither: criteria.filter((c) => !c.hasUserWords && !c.hasHowMeasured).length,
+        };
   return {
     version: r.version === undefined ? null : r.version,
     isV1: Boolean(r.isV1),
@@ -38,6 +64,8 @@ function intentSummaryOf(res) {
     notWanted: { present: Boolean(nw.present), items: Array.isArray(nw.items) ? nw.items : [] },
     freeVsFixed: { present: Boolean(fvf.present), fixed: fvf.fixed || [], free: fvf.free || [] },
     howWeVerify: hwv ? { human: Boolean(hwv.human), metrics: Boolean(hwv.metrics), note: hwv.note || '' } : null,
+    criteria,
+    provenance: prv,
     confirm: { total: confirm.length, answered: it.confirmed === true },
     confirmed: it.confirmed === true,
     confirmedBy: String(it.confirmedBy || ''),
@@ -115,6 +143,39 @@ function intentSummaryLines(summary) {
         ? '人眼看'
         : '指标阈值';
   lines.push('- **验收**：' + vText + (hwv && hwv.note ? '；' + hwv.note : ''));
+  // v2.1：每条判据后面挂"原话 / 量法"（缺的写 ⚠）——
+  // 这是这一版要治的病：判据只写"色阶可数"这种看似精确的假指标时，报告上是空白的。
+  const cs = Array.isArray(summary.criteria) ? summary.criteria : [];
+  if (cs.length) {
+    const prv = summary.provenance || { userWords: 0, howMeasured: 0, neither: 0 };
+    lines.push(
+      '- **判据**：' +
+        cs.length +
+        ' 条（有原话 ' +
+        (prv.userWords || 0) +
+        ' / 有量法 ' +
+        (prv.howMeasured || 0) +
+        ' / 两者都无 ' +
+        (prv.neither || 0) +
+        '）',
+    );
+    for (const c of cs) {
+      const bits = [];
+      if (c.weight !== null && c.weight !== undefined) bits.push('weight=' + c.weight);
+      if (c.target !== null && c.target !== undefined) bits.push('target=' + c.target);
+      lines.push(
+        '  - `' +
+          c.id +
+          '`' +
+          (bits.length ? '（' + bits.join(' ') + '）' : '') +
+          '：原话：' +
+          (c.hasUserWords ? c.userWords : '⚠') +
+          ' / 量法：' +
+          (c.hasHowMeasured ? c.howMeasured : '⚠') +
+          (c.humanEyes ? '（⚠ 量法靠人看：搜索不能用它当判据，考虑降权或改成可测量的量）' : ''),
+      );
+    }
+  }
   const c = summary.confirm || { total: 0 };
   lines.push(
     '- **确认**：`confirmed=' +

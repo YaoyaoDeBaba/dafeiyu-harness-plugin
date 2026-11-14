@@ -33,6 +33,22 @@
 // v1 的 intent **仍然能跑**，但会打中文 warn、台帐 01-intent 记 degraded（不是 done）——
 // 缺了这四样，等于把审美全交给指标。
 //
+// ════════════════ v2.1：给每条 criteria 补"用户原话 / 怎么量"（专治"编假指标"）════════════════
+// 为什么再升（外部实跑得出的硬教训，一句话）：
+//   **把用户嘴里的观感词（脆 / 糊 / 有主次）原样下发，等于没说**；而为了显得专业去编一个
+//   看似精确的假指标（比如拿"色阶可数"当审美），会诱导搜索优化错方向 —— 历史上"越修越平"就是这么来的。
+// 所以每条判据必须回答两个问题：**用户原话是什么**（来源）+ **这个数怎么量**（可复算）。
+//   · userWords   —— 照抄用户怎么说，不翻译（他说"看着发虚、没有锐劲"，就写这句）；
+//   · howMeasured —— 这个数怎么量出来的（"沿法线扫 alpha 25%→75% 的像素距离，越短越锐"）。
+// 判定：
+//   两个都有 → 这条判据记 done；
+//   只有一个 → 允许，但 intent 节点 degraded，reason 点名缺哪个（来源不可追溯 / 没人能复算）；
+//   两个都没有 → **硬错**："这条判据没有任何用户原话/量法，等于凭空编的指标——要么写用户怎么说，
+//                要么写怎么量，要么删掉"（比 warn 更硬：假指标一旦进了搜索，跑完一整轮才知道方向错了）；
+//   howMeasured 里明说"靠人看"（暂无口径 / 靠参考图对照）→ **允许**（这是诚实的说法），但该条 warn：
+//                搜索不能用它当判据 —— 考虑降权或改成可测量的量。不硬错（诚实 > 假装精确）。
+// 三个字段（userWords / howMeasured / why）**都不进距离计算**，只进台帐与报告。
+//
 // 用法（给人看）：
 //   node harness/intent.mjs gate --out <run目录> --adapter <a.json> [--intent <file>] [--no-intent]
 //        [--chain cmd|screenshot] [--metric-ids cov,lapVar]
@@ -65,6 +81,11 @@ export const MAX_CONFIRM = 3;
 // 常量与实现都在 harness/intent-summary.js（唯一实现），这里只转出去给调用方用。
 export const INTENT_SUMMARY_FILE = intentSummaryCjs.INTENT_SUMMARY_FILE;
 export const V1_WARNING = '这是 v1 intent（没有锚/反例/自由度），等于把审美全交给指标——建议升级到 v2';
+// v2.1：howMeasured 里出现这些字样 = 作者**诚实地**承认"这个数只能靠人看"。
+// 它不算硬错（诚实 > 假装精确），但搜索不能用它当判据 —— 该条 warn。
+export const HUMAN_EYES_PATTERNS = ['暂无口径', '靠参考图对照', '靠人看', '靠人眼', '人眼对照', '人眼判断', '肉眼对照'];
+export const HUMAN_EYES_RE = new RegExp(HUMAN_EYES_PATTERNS.join('|'));
+export const HUMAN_EYES_WARNING_HEAD = '这条口径是「靠人看」，搜索不能用它当判据——考虑降权或改成可测量的量';
 
 // 变异开关：**只给测试用**（证明"改动门禁后测试真的会红"），不设时行为完全正常。
 //   alwaysPass      —— 闸恒放行（没有文件也不报错）→ "无 intent 必须硬错"那条断言必红；
@@ -101,6 +122,11 @@ export function intentTemplate(metricIds = [], chain = 'cmd') {
         'text 的 ref 是具体游戏名 / 前作 / 一句话观感 —— "3A 次世代"这种抽象口号不是锚。',
       '③ 判据：criteria 最多 5 条（轻合规：写越厚，花在做到上的预算越少），每条都要 anchor（指向某个 anchors[i] 或一句具体参照）。' +
         'id 必须是这份 adapter 里真实存在的指标 id：' + ids + '。写错 id 是硬错，不会静默忽略。',
+      '③-b 每条判据还要回答两个问题（v2.1，专治"编假指标"）：' +
+        'userWords = 用户原话（他说"看着发虚、没有锐劲"就照抄，别翻译成"色阶可数"这种看似精确的数）；' +
+        'howMeasured = 这个数怎么量（例："沿法线扫 alpha 25%→75% 的像素距离，越短越锐"）。' +
+        '两个都空 = 硬错（"等于凭空编的指标"）；只写一个 = 能跑但 intent 记 degraded（缺原话 → 来源不可追溯，缺量法 → 没人能复算）；' +
+        'howMeasured 写"暂无口径/靠参考图对照"是允许的（诚实的说法），但该条会 warn：搜索不能用它当判据。这两个字段不参与距离。',
       '④ ' + targetNote + '。',
       '⑤ 反例 / 自由度 / 验收：notWanted（明确不要什么）、freeVsFixed{fixed,free}（哪些必须对、哪些可以自由）、' +
         'howWeVerify{human,metrics,note}（怎么算过）。**字段缺失 = 降级**（台帐 degraded）：没写反例/自由度，等于全权交给搜索。',
@@ -194,14 +220,18 @@ export function validateAnchors(raw, baseDir) {
 }
 
 // criteria 校验：条数上限（轻合规）、id 必须存在、权重/目标值必须是数、不许重复；
-// v2 每条还必须带 anchor（指向某个 anchors[i] 或一句具体参照）。
-// 返回 [{id, weight|null, target|null, anchor, why}]（null = 这一项没提，不该覆盖）。
+// v2 每条还必须带 anchor（指向某个 anchors[i] 或一句具体参照）；
+// v2.1 每条还必须带 userWords / howMeasured 至少一个（两个都空 = 硬错："凭空编的指标"）。
+// 返回 [{id, weight|null, target|null, anchor, userWords, howMeasured, hasUserWords, hasHowMeasured,
+//        humanEyes, why}]（null = 这一项没提，不该覆盖）。
 export function validateCriteria(raw, metricIds, opts = {}) {
   const known = metricIds.map(String);
   const anchors = Array.isArray(opts.anchors) ? opts.anchors : [];
   const requireAnchor = Boolean(opts.requireAnchor);
+  // v2 才硬要来源与量法；v1 老写法只降级（向后兼容：老文件不许被这一条拦死）
+  const requireProvenance = Boolean(opts.requireProvenance);
   if (raw === undefined || raw === null) return [];
-  if (!Array.isArray(raw)) die(`intent.criteria 要是数组（每项 {id, weight, target, anchor, why}），收到 ${typeof raw}`);
+  if (!Array.isArray(raw)) die(`intent.criteria 要是数组（每项 {id, weight, target, anchor, userWords, howMeasured, why}），收到 ${typeof raw}`);
   if (raw.length > MAX_CRITERIA) {
     die(
       `intent.criteria 有 ${raw.length} 条 > 上限 ${MAX_CRITERIA} 条（轻合规：写越厚，花在做到上的预算越少）\n` +
@@ -212,7 +242,7 @@ export function validateCriteria(raw, metricIds, opts = {}) {
   const seen = new Set();
   const unknown = [];
   raw.forEach((c, i) => {
-    if (!c || typeof c !== 'object' || Array.isArray(c)) die(`intent.criteria[${i}] 不是对象（要 {id, weight, target, anchor, why}）：${JSON.stringify(c)}`);
+    if (!c || typeof c !== 'object' || Array.isArray(c)) die(`intent.criteria[${i}] 不是对象（要 {id, weight, target, anchor, userWords, howMeasured, why}）：${JSON.stringify(c)}`);
     const id = String(c.id ?? '').trim();
     if (!id) die(`intent.criteria[${i}] 缺 id（这份 adapter 的指标是：${known.join(' / ') || '（一个都没有）'}）`);
     if (!known.includes(id)) {
@@ -249,7 +279,23 @@ export function validateCriteria(raw, metricIds, opts = {}) {
         }
       }
     }
-    out.push({ id, weight, target, anchor, why: String(c.why ?? '') });
+    // ---- v2.1：用户原话 + 怎么量（专治"编假指标"；这两个字段**不进距离**）----
+    // 空串和"没写"一样算没有：字段在但写了个空串，等于什么都没说（这正是"凭空编"的常见装法）。
+    const userWords = String(c.userWords ?? '').trim();
+    const howMeasured = String(c.howMeasured ?? '').trim();
+    const hasUserWords = Boolean(userWords);
+    const hasHowMeasured = Boolean(howMeasured);
+    if (!hasUserWords && !hasHowMeasured && requireProvenance && INTENT_MUTANT !== 'provenanceWarnOnly') {
+      die(
+        `intent.criteria.${id}：这条判据没有任何用户原话/量法，等于凭空编的指标——要么写用户怎么说，要么写怎么量，要么删掉\n` +
+          `  userWords   照抄用户怎么说（他说"看着发虚、没有锐劲"就写这句，别翻译成"色阶可数"这种看似精确的数）\n` +
+          `  howMeasured 这个数怎么量（例：沿法线扫 alpha 25%→75% 的像素距离，越短越锐）\n` +
+          `  为什么拦：观感词原样下发等于没说；为了显得专业编一个假指标，会诱导搜索优化错方向 —— 历史上"越修越平"就是这么来的`,
+      );
+    }
+    // 诚实地说"这个数只能靠人看"是允许的，但搜索不能用它当判据 → 该条 warn（不硬错）
+    const humanEyes = hasHowMeasured && HUMAN_EYES_RE.test(howMeasured);
+    out.push({ id, weight, target, anchor, userWords, howMeasured, hasUserWords, hasHowMeasured, humanEyes, why: String(c.why ?? '') });
   });
   if (unknown.length) {
     die(
@@ -376,7 +422,7 @@ export function resolveIntent(opts = {}) {
   let anchors = [];
   if (j.anchors !== undefined && j.anchors !== null) anchors = validateAnchors(j.anchors, baseDir);
   else if (!isV1) anchors = validateAnchors(undefined, baseDir);
-  const criteria = validateCriteria(j.criteria, metricIds, { anchors, requireAnchor: !isV1 });
+  const criteria = validateCriteria(j.criteria, metricIds, { anchors, requireAnchor: !isV1, requireProvenance: !isV1 });
 
   let confirmArr = [];
   if (j.confirm !== undefined && j.confirm !== null) {
@@ -409,6 +455,41 @@ export function resolveIntent(opts = {}) {
   }
 
   const understood = String(j.understood ?? restate ?? '').trim();
+
+  // ------------------------------------------------------------ v2.1：判据的来源与量法（不参与距离）
+  // 回答两个问题：**用户原话是什么**（来源可追溯）+ **这个数怎么量**（别人能复算）。
+  // 两个都有 = 这条判据站得住；只有一个 = 能跑但降级；两个都空 = 上一段已经硬错（v2）。
+  const prov = { userWords: 0, howMeasured: 0, neither: 0 };
+  for (const c of criteria) {
+    if (c.hasUserWords) prov.userWords += 1;
+    if (c.hasHowMeasured) prov.howMeasured += 1;
+    if (!c.hasUserWords && !c.hasHowMeasured) prov.neither += 1;
+  }
+  const missingWords = criteria.filter((c) => !c.hasUserWords).map((c) => c.id);
+  const missingMeas = criteria.filter((c) => !c.hasHowMeasured).map((c) => c.id);
+  if (isV1) {
+    // v1 老写法不许被拦死：只把这条欠账补进 reason（"也缺 userWords/howMeasured"）
+    if (prov.neither > 0) {
+      degradedWhy.push(
+        `v1 intent 也缺 userWords/howMeasured（criteria: ${criteria.filter((c) => !c.hasUserWords && !c.hasHowMeasured).map((c) => c.id).join('、')}）` +
+          `：判据没有用户原话，来源不可追溯；也没有量法，没人能复算这个数`,
+      );
+    }
+  } else {
+    if (missingWords.length) {
+      warnings.push(`缺 userWords（criteria: ${missingWords.join('、')}）：这条判据没有用户原话，来源不可追溯`);
+      degradedWhy.push(`缺 userWords（criteria: ${missingWords.join('、')}）：这条判据没有用户原话，来源不可追溯`);
+    }
+    if (missingMeas.length) {
+      warnings.push(`缺 howMeasured（criteria: ${missingMeas.join('、')}）：没人能复算这个数`);
+      degradedWhy.push(`缺 howMeasured（criteria: ${missingMeas.join('、')}）：没人能复算这个数`);
+    }
+  }
+  // 诚实地说"靠人看"是允许的，但搜索不能用它当判据 → 每条 warn 一句（不硬错、不降级）
+  for (const c of criteria) {
+    if (c.humanEyes) warnings.push(`criteria.${c.id} ${HUMAN_EYES_WARNING_HEAD}（量法：${c.howMeasured}）`);
+  }
+
   if (isV1) {
     warnings.push(V1_WARNING);
     degradedWhy.push('v1 intent（无 version / criteria 无 anchor）：缺锚、反例、自由度、验收方式 —— 审美全交给指标');
@@ -444,6 +525,8 @@ export function resolveIntent(opts = {}) {
     restate,
     anchors,
     criteria,
+    // v2.1：有原话几条 / 有量法几条 / 两者都无几条（只做记录与呈现，**不参与距离**）
+    provenance: prov,
     notWanted: nw,
     freeVsFixed: fvf,
     howWeVerify: hwv,
@@ -469,6 +552,7 @@ function skippedShape(o = {}) {
     restate: '',
     anchors: [],
     criteria: [],
+    provenance: { userWords: 0, howMeasured: 0, neither: 0 },
     notWanted: { present: false, items: [] },
     freeVsFixed: { present: false, fixed: [], free: [] },
     howWeVerify: null,
@@ -582,10 +666,26 @@ export function intentNodeRecord(res, extra = {}) {
         const bits = [];
         if (c.weight !== null) bits.push('weight=' + c.weight);
         if (c.target !== null) bits.push('target=' + c.target);
-        basis.push(`覆盖判据 ${c.id}：${bits.join(' ')}${c.anchor ? '（锚：' + c.anchor + '）' : ''}${c.why ? '（原因：' + c.why + '）' : ''}`);
+        // v2.1：来源与量法也逐条记账（缺的写 ⚠，一眼看出哪条判据是"凭空"的）
+        const provBits =
+          '（原话：' + (c.hasUserWords ? c.userWords : '⚠') + ' / 量法：' + (c.hasHowMeasured ? c.howMeasured : '⚠') + '）';
+        basis.push(
+          `覆盖判据 ${c.id}：${bits.join(' ')}${c.anchor ? '（锚：' + c.anchor + '）' : ''}${c.why ? '（原因：' + c.why + '）' : ''}${provBits}`,
+        );
+      }
+      // v2.1：来源与量法的分项计数（回答"这次判据里有多少条真的说得出来源/量法"）
+      const prv = res.provenance || { userWords: 0, howMeasured: 0, neither: 0 };
+      basis.push(`判据来源：有原话 ${prv.userWords} 条 / 有量法 ${prv.howMeasured} 条 / 两者都无 ${prv.neither} 条`);
+      if (res.criteria.some((c) => c.humanEyes)) {
+        basis.push(
+          '量法靠人看的判据：' +
+            res.criteria.filter((c) => c.humanEyes).map((c) => '`' + c.id + '`').join(' / ') +
+            '（搜索不能用它当判据 —— 考虑降权或改成可测量的量）',
+        );
       }
     } else {
       basis.push('criteria 为空：没有覆盖任何判据');
+      basis.push('判据来源：有原话 0 条 / 有量法 0 条 / 两者都无 0 条');
     }
     for (const w of extra.notes || []) basis.push('adapter 派生：' + w);
     for (const w of res.warnings || []) basis.push('提醒：' + w);
@@ -682,6 +782,8 @@ function gateCli(argv) {
       summaryFile: summaryRel,
       effectiveAdapter,
       criteria: res.criteria,
+      // v2.1：有原话几条 / 有量法几条 / 两者都无几条（不参与距离，只做记录与呈现）
+      provenance: res.provenance || { userWords: 0, howMeasured: 0, neither: 0 },
       warnings: res.warnings || [],
     }),
   );

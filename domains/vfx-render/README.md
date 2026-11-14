@@ -34,12 +34,12 @@ Selfloop 引擎的第一个领域适配包。**引擎不认识这里的任何词
 
 | 文件 | 一句话 |
 |---|---|
-| `references/demand-translator.md` | 需求翻译器：九节骨架、三条信条、风格锚点、形态自由度 + 正确性锚点、F2 案例（技能文档与模板、案例合并） |
-| `references/pitfalls.md` | 坑表：真机翻车症状 → 病根 → 需求书写法修正 |
-| `references/glsl-guardrails.md` | GLSL 八雷、两种宿主的确定性哈希、uDebug 六档、NaN 与预算口径 |
-| `references/no-bloom.md` | 没有 tone mapping/bloom 时，用四层构造法自己造发光感 |
+| `references/demand-translator.md` | 需求翻译器（**主观 → 客观的翻译器**）：十节骨架（末节=验收指标表）、§3.5 十二组「用户话术 → 客观指标 → 怎么量」、技法一律条件式、像素尺子公式 + 两张表、F2 案例 |
+| `references/pitfalls.md` | 坑表：真机翻车症状 → 病根 → 需求书写法修正；含「需求书内部不自洽」七类（2026-11-15 施工侧回传） |
+| `references/glsl-guardrails.md` | GLSL **十一条硬契约** + **三条实现铁律**、两种宿主的确定性哈希、uDebug 六档、NaN 与预算口径 |
+| `references/no-bloom.md` | **可选**：没有 tone mapping/bloom 时自造发光感的四种做法之一（不是必做；硬约束只有峰值 ≤1.0 / 主体预乘 / 光走加法） |
 | `references/construction-contracts.md` | 施工前置约束：案例 A 的舞台事实 + 11 条硬契约（混合、色阶描边、形状噪声、GLSL 雷区…） |
-| `references/tooling.md` | 工具索引：评测页契约、带状网格、粒子框架、验收量具 |
+| `references/tooling.md` | 工具索引：评测页契约、带状网格、粒子框架、验收量具，以及「量具 ↔ 验收指标」的对应 |
 | `references/runtime-libs.md` | 粒子/带子的用法要点与验收方式（只吸收方法论，代码未吸收） |
 | `recipes/glsl/hash-nosin.glsl` | 无 sin 浮点哈希（hash11/12/22/33），跨驱动稳定 |
 | `recipes/glsl/hash-pcg.glsl` | 整数 PCG 哈希，仅原生 300 页面可用 |
@@ -54,7 +54,8 @@ Selfloop 引擎的第一个领域适配包。**引擎不认识这里的任何词
 
 | 资产 | 来源 | 许可 |
 |---|---|---|
-| `references/demand-translator.md`、`pitfalls.md`、`glsl-guardrails.md`、`no-bloom.md`、`tooling.md`、`construction-contracts.md` | 案例 A 的需求翻译技能、施工前置约束等文档，2026-11-14 随案例移交 | 自研（未单独声明开源许可证） |
+| `references/demand-translator.md`、`pitfalls.md`、`glsl-guardrails.md`、`no-bloom.md`、`tooling.md` | 案例 A 的「VFX 需求翻译器」技能（首版 2026-11-14 随案例移交；**2026-11-15 实跑两轮后的修订版已吸收**：定位改「主观→客观翻译器」、§3.5 十二组对照、十条骨架、十一条 GLSL 契约 + 三条实现铁律、技法条件式） | 自研（未单独声明开源许可证） |
+| `references/construction-contracts.md` | 案例 A 的施工前置约束文档，2026-11-14 随案例移交（2026-11-15 修正像素尺子） | 自研（未单独声明开源许可证） |
 | `references/runtime-libs.md` | 案例 A 的 vfx-kit 用法速查（代码本体未吸收） | 未确认（代码未吸收） |
 | `recipes/glsl/hash-nosin.glsl`、`fbm.glsl` | godot-shaders / pixijs-filters（逐文件头标注了具体出处） | MIT |
 | `recipes/glsl/hash-pcg.glsl` | 来源方自研（算法为公开 PCG 变体） | 自研 |

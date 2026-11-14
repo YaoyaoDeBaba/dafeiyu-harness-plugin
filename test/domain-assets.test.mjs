@@ -125,3 +125,51 @@ test('⑥ 资产清单防丢：references 7 份、recipes 8 份，名字对得�
     'toon-shade.glsl',
   ])
 })
+
+// ⑧⑨（0.6.0 只到 ⑥；编号沿用交办清单，⑦ 空号未用）以下两条是 2026-11-15 修订版吸收时新加的——它们钉的是
+// 「这次修订最值钱的两块内容别在下次改动里悄悄退化回去」：
+//   ⑧ §3.5 的「主观词 → 客观指标」对照表还在不在（删几行 = 翻译能力被掏空）
+//   ⑨ GLSL 护栏是不是还被当成旧版「八条硬雷」+ 有没有三条实现铁律
+
+test('⑧ demand-translator.md 有「主观词 → 客观指标」映射表（≥10 组），且带「怎么量」口径', () => {
+  const text = readFileSync(join(REFS, 'demand-translator.md'), 'utf8')
+  for (const label of ['用户话术', '客观指标', '怎么量']) {
+    assert.ok(text.includes(label), `映射表缺表头「${label}」—— 没有「怎么量」的指标等于没法验收`)
+  }
+  // 只数 §3.5 那一节的表行：从 "## 3.5" 到下一个二级标题之间。
+  const start = text.indexOf('## 3.5')
+  assert.notEqual(start, -1, '找不到 §3.5「主观词 → 客观指标」—— 这是本领域最值钱的一张表')
+  const nextH2 = text.indexOf('\n## ', start + 5)
+  const block = text.slice(start, nextH2 === -1 ? undefined : nextH2)
+  const rows = block.split(/\r?\n/).filter((line) => {
+    const t = line.trim()
+    if (!t.startsWith('|')) return false
+    if (/^\|[\s:|-]+\|$/.test(t)) return false // 分隔行
+    if (t.includes('用户话术')) return false // 表头行
+    return (t.match(/\|/g) || []).length >= 3 // 至少 2 列内容
+  })
+  assert.ok(
+    rows.length >= 10,
+    `§3.5 映射表只有 ${rows.length} 行数据（要求 ≥10）—— 删行就是掏空这个领域的翻译能力`,
+  )
+})
+
+test('⑨ glsl-guardrails.md 是「十一条硬契约 + 三条实现铁律」，不是旧的八条', () => {
+  const text = readFileSync(join(REFS, 'glsl-guardrails.md'), 'utf8')
+  assert.ok(text.includes('十一条'), 'glsl-guardrails.md 缺「十一条」—— 2026-11-15 修订版已把八条升到十一条，退回去就是丢三条真机契约')
+  assert.ok(text.includes('三条实现铁律'), 'glsl-guardrails.md 缺「三条实现铁律」—— 这三条是「编译能过但画面错」的唯一防线')
+  // 三条铁律各自的关键词：漏一条就红。
+  assert.ok(text.includes('useProgram'), '缺铁律 1 的关键词 useProgram（draw() 必须绑定 program，否则 uniform 静默丢弃）')
+  assert.ok(text.includes('varying'), '缺铁律 2 的关键词 varying（极径绝不做 varying，否则整张 quad 是常数）')
+  assert.ok(text.includes('精确为 0'), '缺铁律 3 的关键词「精确为 0」（quad 四边界必须精确为 0，不能是「很小」）')
+  // 「退回旧版」的判据落在**标题**上，不在正文提及：正文里出现「八条硬雷 → 十一条」这种溯源是好事，
+  // 但一级标题退回成「八条」就等于资产退化。
+  const badHeadings = text
+    .split(/\r?\n/)
+    .filter((line) => /^#{1,3}\s/.test(line) && /八条|八雷/.test(line))
+  assert.deepEqual(
+    badHeadings,
+    [],
+    'glsl-guardrails.md 的标题还写着「八条」—— 旧版已被十一条取代（正文里溯源可以提，标题不行）',
+  )
+})

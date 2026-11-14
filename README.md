@@ -132,6 +132,7 @@ node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --
 - **intent v2 要锚**：`anchors` 至少 1 条具体参照物（参考图 / 具体游戏名 / 前作），`kind:"image"` 的 `ref` 必须真实存在；
   另加 `restate`（≤200 字复述）、`notWanted`（不要什么）、`freeVsFixed`（哪些定死、哪些自由）、`howWeVerify`（人眼还是指标算过）。
   只有"指标+权重+目标"的 v1 写法**仍然能跑**，但会 warn 且台帐记 `degraded` —— 等于把审美全交给指标。
+- **判据必须带来源**（0.10.0）：`intent.criteria[]` 每条要写 `userWords`（用户原话）或 `howMeasured`（怎么量）；两个都空直接拒跑——「为了显得专业编一个看似精确的假指标」是"越修越平"的根因。
 - **硬不变量**（0.7.0）：`intent.invariants` 里写 `[{id, check, why}]` —— **不合格直接判废，不进距离**
   （指标负责"像不像"，不变量负责"是不是"：解压回不去、接口 500、越界写坏这类废方案，分数再高也不要）。
   目标/起点违规 = 硬错；字段取不到 = 硬错；没写 = 不拦但默认 warn「没写硬不变量：搜索会拿底线换分数」
@@ -279,6 +280,7 @@ test/command.test.mjs            21 个用例（命令观测 + 弄坏能红 + �
 test/audit.test.mjs              10 个用例（历史证据包复算 + --dir 批量 + 不可判定/截断，不进包）
 test/crash.test.mjs              1 个用例（目标参数 == 起点参数的退化配置回归，不进包）
 test/research.test.mjs           10 个用例（调研节点：应用的项由引擎自己算 changed，装饰性调研记 degraded，不进包）
+test/domain-assets.test.mjs      8 个用例（领域资产：来源/许可/映射表 ≥10 组/十一条契约不许回退，不进包）
 ```
 
 `harness/` 里逐件的作用：

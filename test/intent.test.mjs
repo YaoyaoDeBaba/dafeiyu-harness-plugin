@@ -21,9 +21,15 @@
 //   ⑮ v1 intent           → 能跑，但 01-intent 是 degraded 且 reason 含 v1
 //   ⑯ restate 为空        → 硬错
 //   ⑰ 弄坏能红 ×2         → anchorAlwaysTrue 让 ⑫ 塌；v1AsDone 让 ⑮ 塌
+//   ── v2.1（专治"编假指标"）：
+//   ⑱ criteria 同时有 userWords + howMeasured → done；报告与台帐里写得出原话/量法 + 三项计数
+//   ⑲ criteria 只有 anchor（两个都空）→ 硬错，错误信息含"凭空编的指标"
+//   ⑳ criteria 只有 userWords → 能跑，节点 degraded，reason 含"缺 howMeasured"
+//   ㉑ howMeasured 写"暂无口径，靠参考图对照" → 能跑 + warn 含"靠人看"（不硬错）
+//   ㉒ 弄坏能红           → provenanceWarnOnly（两个都空只 warn）让 ⑲ 塌
 //
 // 变异开关（只给测试用，见 harness/intent.mjs 的 INTENT_MUTANT）：
-//   SELFLOOP_INTENT_MUTANT=alwaysPass|dropSkipRecord|anchorAlwaysTrue|v1AsDone node test/intent.test.mjs
+//   SELFLOOP_INTENT_MUTANT=alwaysPass|dropSkipRecord|anchorAlwaysTrue|v1AsDone|provenanceWarnOnly node test/intent.test.mjs
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
@@ -67,8 +73,20 @@ function writeIntent(out, over = {}) {
       { kind: 'text', ref: '崩坏：星穹铁道（具体游戏名，不是抽象风格）', why: '配色与勾线参照' },
     ],
     criteria: [
-      { id: 'size', weight: 2, target: 10, anchor: 'anchors[0]：参考图里的体积刻度', why: '体积是你说的重点' },
-      { id: 'loss', weight: 1, anchor: 'anchors[1]：参考游戏里的画质下限', why: '次要点，别归零' },
+      {
+        id: 'size', weight: 2, target: 10,
+        anchor: 'anchors[0]：参考图里的体积刻度',
+        userWords: '用户原话：体积得压回 10，不然装不进镜像',
+        howMeasured: '解压后目录总字节数 ÷ 源目录总字节数',
+        why: '体积是你说的重点',
+      },
+      {
+        id: 'loss', weight: 1,
+        anchor: 'anchors[1]：参考游戏里的画质下限',
+        userWords: '用户原话：别为了压体积把画质压没了',
+        howMeasured: 'loss = 1 − 解压后与源逐字节相等的比例',
+        why: '次要点，别归零',
+      },
     ],
     notWanted: ['不要写实/PBR 连续渐变', '不要像素噪点式的硬过渡'],
     freeVsFixed: {
@@ -276,8 +294,20 @@ test('⑧ 截图链路（intent.mjs gate --chain screenshot）：权重进派生
   writeIntent(out, {
     restate: '火柱要更粗更硬，但别变成一根直线光',
     criteria: [
-      { id: 'cov', weight: 0.6, target: 0.02, anchor: 'anchors[0]：参考图里的亮核占比', why: '你说的更粗' },
-      { id: 'lapVar', weight: 0.2, anchor: 'anchors[1]：参考游戏里的边缘锐利度', why: '细节次要' },
+      {
+        id: 'cov', weight: 0.6, target: 0.02,
+        anchor: 'anchors[0]：参考图里的亮核占比',
+        userWords: '用户原话：火柱要更粗更硬，但别变成一根直线光',
+        howMeasured: '亮核像素数 ÷ 整幅像素数',
+        why: '你说的更粗',
+      },
+      {
+        id: 'lapVar', weight: 0.2,
+        anchor: 'anchors[1]：参考游戏里的边缘锐利度',
+        userWords: '用户原话：边缘要有锐劲，别糊成一坨',
+        howMeasured: '沿法线扫 alpha 25%→75% 的像素距离，越短越锐',
+        why: '细节次要',
+      },
     ],
   })
   const r = spawnSync(process.execPath, [INTENT_CLI, 'gate', '--out', out, '--adapter', FIRE_RAY, '--chain', 'screenshot'], {
@@ -549,4 +579,138 @@ test('⑰-2 弄坏能红：v1 的 degraded 改回 done（v1AsDone）→ ⑮ 的�
   assert.equal(node.reason, '', 'done 时 reason 是空串 → ⑮ 的 reason 断言也塌了')
   const md = readFileSync(join(out, 'report.md'), 'utf8')
   assert.ok(!/intent v1 · degraded/.test(md), '⑮ 的"report 要标 v1 degraded"断言塌了')
+})
+
+// ════════════════════════════════════════ v2.1（0.9.1）：用户原话 / 怎么量（专治"编假指标"）
+// 契约：criteria[] 每条新增 userWords / howMeasured，至少写一个；
+//   两个都有 → done；只有一个 → 能跑但 degraded（reason 点名缺哪个）；两个都空 → 硬错（"凭空编的指标"）；
+//   howMeasured 明说"靠人看"（暂无口径/靠参考图对照）→ 允许 + 该条 warn（搜索不能用它当判据）。
+
+// ---------------------------------------------------------------- ⑱ 两个字段都有 → done
+test('⑱ criteria 同时有 userWords + howMeasured → done；报告与台帐里都写得出原话/量法', () => {
+  const out = tmp('prov-ok')
+  writeIntent(out, {
+    criteria: [
+      {
+        id: 'size', weight: 2, target: 10,
+        anchor: 'anchors[0]：参考图里的体积刻度',
+        userWords: '用户原话：看着发虚、没有锐劲，体积还得压回 10',
+        howMeasured: '沿法线扫 alpha 25%→75% 的像素距离，越短越锐；体积 = 解压后总字节 ÷ 源总字节',
+        why: '你说的“脆”',
+      },
+    ],
+  })
+  const r = runCli(['--adapter', ECHO_ADAPTER, '--out', out, '--budget', '10'])
+  assert.equal(r.status, 0, `两个字段都有必须能跑通，实际 exit=${r.status}\n${r.out.slice(-1500)}`)
+
+  const node = readJson(join(nodeDir(out), '01-intent.json'))
+  assert.equal(node.status, 'done', `两个字段都有 = done，实际 ${node.status}：${node.reason}`)
+  assert.equal(node.reason, '', 'done 时不该有降级原因')
+
+  // 台帐 basis：有原话 N 条 / 有量法 M 条 / 两者都无 0 条
+  const basis = node.decision.basis.join('\n')
+  assert.match(basis, /有原话 1 条 \/ 有量法 1 条 \/ 两者都无 0 条/, `basis 要列出三样计数：\n${basis}`)
+  assert.match(basis, /原话：用户原话：看着发虚、没有锐劲/, 'basis 要能查到那条原话')
+  assert.match(basis, /量法：沿法线扫 alpha 25%/, 'basis 要能查到那条量法')
+
+  // report.md 的 intent 摘要段：每条判据后面挂（原话：… / 量法：…）
+  const md = readFileSync(join(out, 'report.md'), 'utf8')
+  assert.match(md, /原话：用户原话：看着发虚/, `报告里要写出用户原话：\n${md.slice(0, 1200)}`)
+  assert.match(md, /量法：沿法线扫 alpha 25%/, '报告里要写出量法')
+  assert.ok(!/原话：⚠/.test(md), '两个都写了的判据不该出现 ⚠')
+
+  // 落盘的摘要：机器可读，并且明写"不参与距离"
+  const sum = readJson(join(out, 'intent.summary.json'))
+  assert.equal(sum.participatesInDistance, false, '原话/量法**不参与距离**（只做记录与呈现）')
+  assert.deepEqual(sum.provenance, { userWords: 1, howMeasured: 1, neither: 0 })
+  assert.equal(sum.criteria[0].userWords.startsWith('用户原话：'), true)
+})
+
+// ---------------------------------------------------------------- ⑲ 两个都没有 → 硬错
+test('⑲ criteria 只有 anchor（userWords/howMeasured 都没有）→ 硬错"凭空编的指标"', () => {
+  const out = tmp('prov-none')
+  writeIntent(out, {
+    criteria: [{ id: 'size', weight: 1, anchor: 'anchors[0]：参考图里的体积刻度', why: '看起来专业的一条指标' }],
+  })
+  const r = runCli(['--adapter', ECHO_ADAPTER, '--out', out, '--budget', '6'])
+  assert.equal(r.status, 1, `没有任何用户原话/量法必须拒跑，实际 exit=${r.status}\n${r.out}`)
+  assert.match(r.out, /需求转译闸/, '要自报家门（哪道闸拦的）')
+  assert.match(r.out, /凭空编的指标/, '错误信息要点破：这条判据等于凭空编的')
+  assert.match(r.out, /没有任何用户原话\/量法/, '要直接说缺的是什么')
+  assert.match(r.out, /要么写用户怎么说，要么写怎么量，要么删掉/, '要给出三条出口')
+  assert.ok(!existsSync(join(out, 'best.json')), '不许产出证据包')
+  const node = readJson(join(nodeDir(out), '01-intent.json'))
+  assert.equal(node.status, 'failed', '硬错中断在 intent 这一步，台帐要留痕')
+})
+
+// ---------------------------------------------------------------- ⑳ 只有一个 → degraded
+test('⑳ criteria 只有 userWords → 能跑，但 intent 节点 degraded 且 reason 含"缺 howMeasured"', () => {
+  const out = tmp('prov-half')
+  writeIntent(out, {
+    criteria: [
+      {
+        id: 'size', weight: 2, target: 10,
+        anchor: 'anchors[0]：参考图里的体积刻度',
+        userWords: '用户原话：体积得压回 10，不然装不进镜像',
+        why: '体积是你说的重点',
+      },
+    ],
+  })
+  const r = runCli(['--adapter', ECHO_ADAPTER, '--out', out, '--budget', '10'])
+  assert.equal(r.status, 0, `只有一个字段必须仍能跑（不硬拦），实际 exit=${r.status}\n${r.out.slice(-1200)}`)
+  assert.ok(existsSync(join(out, 'best.json')), '降级不等于拒跑：证据包照出')
+  const node = readJson(join(nodeDir(out), '01-intent.json'))
+  assert.equal(node.status, 'degraded', `只有一个字段要记 degraded（不假装 done），实际 ${node.status}`)
+  assert.match(node.reason, /缺 howMeasured/, `reason 要点名缺哪个：${node.reason}`)
+  assert.match(node.reason, /没人能复算这个数/, 'reason 要说清后果')
+  assert.ok(!/缺 userWords/.test(node.reason), '写了 userWords 就不该报缺 userWords')
+  // 报告里缺的那一项写 ⚠
+  const md = readFileSync(join(out, 'report.md'), 'utf8')
+  assert.match(md, /原话：用户原话：体积得压回 10/, '报告里要有那条原话')
+  assert.match(md, /量法：⚠/, '缺量法的那条在报告里写 ⚠')
+})
+
+// ---------------------------------------------------------------- ㉑ "靠人看"的量法：允许 + warn
+test('㉑ howMeasured 写「暂无口径，靠参考图对照」→ 能跑 + warn 含"靠人看"（不硬错）', () => {
+  const out = tmp('prov-humaneyes')
+  writeIntent(out, {
+    criteria: [
+      {
+        id: 'loss', weight: 1,
+        anchor: 'anchors[1]：参考游戏里的画质下限',
+        userWords: '用户原话：别为了压体积把画质压没了',
+        howMeasured: '暂无口径，靠参考图对照',
+        why: '这条只能人眼看',
+      },
+    ],
+  })
+  const r = runCli(['--adapter', ECHO_ADAPTER, '--out', out, '--budget', '10'])
+  assert.equal(r.status, 0, `诚实地写"靠人看"必须能跑（不硬错），实际 exit=${r.status}\n${r.out.slice(-1200)}`)
+  assert.match(r.out, /靠人看/, '终端要 warn 一句"这条口径是「靠人看」"')
+  assert.match(r.out, /搜索不能用它当判据/, 'warn 要说清后果：搜索不能用它当判据')
+
+  const node = readJson(join(nodeDir(out), '01-intent.json'))
+  assert.equal(node.status, 'done', `两个字段都有（量法是"靠人看"）→ 仍是 done（warn 不降级），实际 ${node.status}：${node.reason}`)
+  const basis = node.decision.basis.join('\n')
+  assert.match(basis, /量法靠人看的判据：`loss`/, `basis 要点名哪条判据只能人看：\n${basis}`)
+  const md = readFileSync(join(out, 'report.md'), 'utf8')
+  assert.match(md, /量法靠人看/, '报告里也要能看出这条判据搜索用不了')
+})
+
+// ---------------------------------------------------------------- ㉒ 弄坏能红：硬错改 warn
+// 同 ⑦/⑰ 的口径：把"两个都空 → 硬错"改成只 warn（SELFLOOP_INTENT_MUTANT=provenanceWarnOnly），
+// ⑲ 的硬错断言必须塌 —— 证明它不是"再测一遍功能"，而是真的接在实现上。
+test('㉒ 弄坏能红：两个都没有只 warn（provenanceWarnOnly）→ ⑲ 的硬错断言必塌', () => {
+  const out = tmp('mut-prov')
+  writeIntent(out, {
+    criteria: [{ id: 'size', weight: 1, anchor: 'anchors[0]：参考图里的体积刻度', why: '看起来专业的一条指标' }],
+  })
+  const r = runCli(['--adapter', ECHO_ADAPTER, '--out', out, '--budget', '8'], { SELFLOOP_INTENT_MUTANT: 'provenanceWarnOnly' })
+  // ⑲ 断言 exit 1 + 错误里有"凭空编的指标"；只 warn 之后它必然 exit 0
+  assert.equal(r.status, 0, `变异体该跑完（这正是"假指标可以随口编"的危险），实际 exit=${r.status}\n${r.out.slice(-800)}`)
+  assert.ok(!/凭空编的指标/.test(r.out), '⑲ 的 assert.match(r.out, /凭空编的指标/) 在这份实现上不可能成立')
+  assert.ok(existsSync(join(out, 'best.json')), '假指标也照样产出证据包 —— 谁也看不出它是编的')
+  const node = readJson(join(nodeDir(out), '01-intent.json'))
+  assert.equal(node.status, 'degraded', '⑲ 的 assert.equal(node.status,"failed") 塌了；这里只能退到 degraded')
+  assert.match(node.reason, /缺 userWords/, '至少要在台帐里承认缺原话')
 })
