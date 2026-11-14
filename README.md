@@ -140,8 +140,14 @@ node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --
   `stop=invariant-blocked`，明确区别于"参数全 dead"）；**贴阈值**（目标离阈值 <1% / <1e-6 → 提示"下一版微调就可能翻脸"）。
 - **复算历史结论**（0.8.0）：`node harness/audit.mjs <run目录> --intent <intent.json> [--json] [--strict]` ——
   拿**今天**的不变量对旧 run 的每个评估点重新判：多少点不合格 / 当时的 best 还算不算数 / 新的最优是哪个点
-  （按当时记录的距离，在"今天合格"的点里挑）。exit `0`=best 仍合格、`1`=今天不合格（`--strict` 时"有更优点"也算）、
-  `2`=跑不起来（缺 `outputs/`、截图链路、intent 文法错）。只对命令链路的 run 生效，截图链路报"暂不支持"。
+  （按当时记录的距离，在"今天合格"的点里挑）。
+  判定分三类、不许互相冒充：`ok` / `fail`（真的判出不合格）/ `undecidable`（字段取不到、stdout 解析不出来、
+  或**原始输出被截断 `capped:true`** —— 它是"证据不够"，**不算不合格**）。
+  exit `0`=best 仍合格、`1`=今天不合格（`--strict` 时"有更优点"也算）、`2`=跑不起来（缺 `outputs/`、截图链路、intent 文法错）
+  **或某个 run 的所有点都不可判定（证据包坏了）**、`3`=best 那个点判不了。只对命令链路的 run 生效，截图链路报"暂不支持"。
+  发版前一条命令扫历史证据包：`node harness/audit.mjs --dir <runs根> --intent <intent.json>` —— 扫根目录**下一层**的
+  每个 run，逐个复算，最后给总表（名字 / 点数 / 今天不合格数 / 不可判定数 / best 是否合格 / exit）；
+  退出码取最严重的那个（有一个 `1` 就是 `1`）。
 
 **台帐**：`<out>/nodes/NN-<node>.json`，字段固定 —— `node / seq / status(done|skipped|degraded|failed) / producer / ms / inputs[] / decision{why,basis[]} / artifacts[] / cost`，`skipped` 必须带 reason。
 初版覆盖 `intent` / `target` / `stability` / `precheck` / `search` / `finalize`（截图链路没有 stability 节点 → 记 `skipped` 并写明原因）。
@@ -269,6 +275,8 @@ CHANGELOG.md                     改动记录（随包分发，`files` 里有它
 test/plugin.test.mjs             55 个用例（不进包）
 test/hue.test.mjs                12 个用例（色相判据，不进包）
 test/command.test.mjs            21 个用例（命令观测 + 弄坏能红 + 包体积预算示例，不进包）
+test/audit.test.mjs              10 个用例（历史证据包复算 + --dir 批量 + 不可判定/截断，不进包）
+test/crash.test.mjs              1 个用例（目标参数 == 起点参数的退化配置回归，不进包）
 ```
 
 `harness/` 里逐件的作用：
@@ -329,6 +337,7 @@ test/command.test.mjs            21 个用例（命令观测 + 弄坏能红 + �
 10. **`package.json` 保留 `"private": true`**：本包的装机形态是「目录 / `git+https`」，不依赖 npm registry；`npm publish` 属于发版动作。
 11. **执行器内部仍叫 `iter.ps1` / `capture.mjs`**：文件名没改（改了要动一堆 `$PSScriptRoot` 相对引用，收益为零）。它们内部日志里出现的 `dsh-vfx-loop` 字样属于历史字符串，没跟着正名改。
 12. **硬不变量只在命令链路**（0.7.0）：`iter.ps1`（截图链路）暂不支持门禁 —— 它的观测是页面指标、判定在 PowerShell 里，没有测试守着 PS 侧实现。在截图链路的 intent 里写 `invariants` 会**硬错**（宁可拒跑，也不假装装了门禁）；要用门禁就走命令观测链路（`cmdloop.mjs`）。
+13. **起点即目标 = `degraded`**：`target.mode=params` 且目标参数与起点参数完全相同时（或起点距离本来就算出 0），这轮能跑完，但"调到目标了"这句话不成立 —— 搜索没有起点差异可用、降幅恒 `n/a`。证据包里会标出来：台帐 `target` 节点记 `degraded` + 原因、`best.json` 的 `degraded[{code,why}]`、终端一条 `[degraded][warn]`、`report.md` 表里一行。别只看 `dropPct`。
 
 ## 测试
 
@@ -336,10 +345,11 @@ test/command.test.mjs            21 个用例（命令观测 + 弄坏能红 + �
 cd <包目录>
 node test/plugin.test.mjs      # 55 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）、写护栏（段边界/大小写/junction/端到端拒写）
 node test/invariants.test.mjs  # 13 个用例：硬不变量（目标/起点硬错、候选判废不进距离、默认 warn 与开关、文法错、字段取不到、两条变异体证明"弄坏能红"、截图链路 fail-closed）+ 0.8.0 三条门禁病（假门告警 / `stop=invariant-blocked` 早停 / 目标贴阈值）
-node test/audit.test.mjs       # 5 个用例：拿今天的标准复算旧 run（更严 → exit 1 + 新最优、更松 → exit 0、--strict、缺 outputs → exit 2、--json 字段齐、截图链路"暂不支持"）
+node test/audit.test.mjs       # 10 个用例：拿今天的标准复算旧 run（更严 → exit 1 + 新最优、更松 → exit 0、--strict、缺 outputs → exit 2、--json 字段齐、截图链路"暂不支持"）+ `--dir` 批量总表、全部不可判定 → exit 2、`capped` 截断点记 undecidable、两条变异体证明这两条断言有牙
+node test/crash.test.mjs       # 1 个用例：目标参数 == 起点参数（退化配置）不崩 —— [start] 正常打印、startDist 不是 null、输出被复用但距离补算、标 degraded、同 seed 两次 hash 一致
 ```
 
-`npm test` 一条命令跑完全部：55 + 12 + 21 + 19 + 6 + 6 + 13 + 5 = **137**。
+`npm test` 一条命令跑完全部：55 + 12 + 21 + 19 + 6 + 6 + 13 + 10 + 1 = **143**。
 
 测试不起宿主、不装 profile、不开端口、不跑闭环。
 

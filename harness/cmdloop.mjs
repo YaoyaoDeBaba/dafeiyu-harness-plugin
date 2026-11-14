@@ -27,6 +27,7 @@ import {
   applyMetricOverrides,
   assertStability,
   capOutputDoc,
+  computeDist,
   evaluate,
   ensureOutDir,
   keyOf,
@@ -368,6 +369,36 @@ function run(args) {
     );
   };
 
+  // outputs/ 的一份原始输出（每次评估一份）。抽成函数是因为它要能被**补写**：
+  // 目标那次评估跑的时候还没有目标行，dist 只能是 null；等同一个点被当成起点/预检点从缓存里读出来，
+  // 距离要补算，这份文件里的 dist 也得跟着落地 —— 否则证据包里的"起点距离"和 best.json 会打架。
+  const writeOutputDoc = (rec) => {
+    const doc = {
+      seq: rec.seq,
+      id: rec.id,
+      round: rec.round,
+      note: rec.note,
+      cmd: plan.observe.cmdRaw,
+      argv: rec.argv,
+      paramsFile: relative(outDir, rec.paramsFile),
+      params: rec.params,
+      ms: rec.ms,
+      metrics: rec.row,
+      dist: r6(rec.dist),
+      parts: rec.parts,
+      pens: rec.pens,
+      // 硬不变量（0.7.0）：这份原始输出过没过门禁（rejected 的候选保留原文，方便事后看"为什么废"）
+      invariants: { ok: rec.inv.ok, failed: rec.inv.failures.map((f) => f.id) },
+      stdout: rec.stdout,
+      stderr: rec.stderr,
+    };
+    const capped = capOutputDoc(doc);
+    const rel = join('outputs', 'e' + String(rec.seq).padStart(3, '0') + '.json');
+    writeFileSync(join(outDir, rel), capped.text, 'utf8');
+    outputs.set(rec.seq, rel);
+    return rel;
+  };
+
   // 真正跑一次命令并把它记进证据包（**不查缓存、也不写缓存**）。
   // 稳定性闸要拿同一组参数连跑 repeat 次：走缓存的话第 2 次就"命中"了，等于什么都没验。
   const runEval = (params, meta) => {
@@ -404,30 +435,25 @@ function run(args) {
     );
     evals.push(rec);
     appendLive(rec, meta);
-    const doc = {
-      seq,
-      id: rec.id,
-      round: rec.round,
-      note: rec.note,
-      cmd: plan.observe.cmdRaw,
-      argv: rec.argv,
-      paramsFile: relative(outDir, rec.paramsFile),
-      params,
-      ms: rec.ms,
-      metrics: rec.row,
-      dist: r6(rec.dist),
-      parts: rec.parts,
-      pens: rec.pens,
-      // 硬不变量（0.7.0）：这份原始输出过没过门禁（rejected 的候选保留原文，方便事后看"为什么废"）
-      invariants: { ok: rec.inv.ok, failed: rec.inv.failures.map((f) => f.id) },
-      stdout: rec.stdout,
-      stderr: rec.stderr,
-    };
-    const capped = capOutputDoc(doc);
-    const rel = join('outputs', 'e' + String(seq).padStart(3, '0') + '.json');
-    writeFileSync(join(outDir, rel), capped.text, 'utf8');
-    outputs.set(seq, rel);
+    writeOutputDoc(rec);
     return { seq, rec, cached: false };
+  };
+
+  // 缓存键是「点」（参数），不是「阶段」：同一个点先当目标点、再当起点时，观测可以整体复用。
+  // 但**目标那次评估跑的时候还没有目标行**（trow 未定义），evaluate() 按约定把 dist 记成 null ——
+  // 那是"目标自己跟自己没有距离"，不是"这个点没有距离"。这条约定只对目标那一刻成立，
+  // 不该跟着缓存一起被后面的起点/预检读走（读走就是拿 null 去 toFixed，直接崩）。
+  // 所以命中缓存时：观测照用、不重跑命令，**距离按当前真正的目标行重算**（与普通评估同一套判据）。
+  const materializeDist = (rec) => {
+    if (!rec || rec.dist !== null || trow === undefined) return rec;
+    const d = computeDist(plan, rec.row, trow);
+    rec.dist = d.d;
+    rec.base = d.base;
+    rec.parts = d.parts;
+    rec.pens = d.pens;
+    rec.pen = d.penSum;
+    writeOutputDoc(rec); // 证据包也要跟上（当初写的时候还没有目标行）
+    return rec;
   };
 
   // 一次评估（带缓存与预算闸）；返回 { seq, rec } 或 null（预算耗尽）
@@ -435,7 +461,8 @@ function run(args) {
     const key = keyOf(params, plan.wl);
     if (cache.has(key)) {
       usage.cache += 1;
-      return { seq: cache.get(key), rec: evals[cache.get(key) - 1], cached: true };
+      const rec = materializeDist(evals[cache.get(key) - 1]);
+      return { seq: rec.seq, rec, cached: true };
     }
     if (usage.used >= args.budget) return null;
     const got = runEval(params, meta);
@@ -522,10 +549,31 @@ function run(args) {
   const baseParams = { ...plan.startParams };
   log(`[start] d=${startDist.toFixed(4)}  ${keyOf(baseParams, plan.wl)}`);
 
+  // 退化配置（degraded）：起点就是目标。这种 run 能跑完，但它证明不了"搜索把东西调好了"：
+  //   · target.params 与起点参数完全相同 → 起点即目标，搜索没有起点差异可用；
+  //   · 起点这一点的距离本来就是 0  → 起点已经命中目标，没有可下降的空间。
+  // 不拦、不报错（这是合法的边界配置），但必须留痕（台帐 + best.json + 报告）：
+  // 否则一份 dropPct=n/a、bestDist==startDist 的证据包会被读成"已经调到目标了"。
+  const targetKeys = plan.target.mode === 'params' ? Object.keys(plan.target.params) : [];
+  const targetEqualsStart =
+    targetKeys.length > 0 &&
+    targetKeys.every((k) => plan.wl.includes(k)) &&
+    plan.wl.every((k) => Math.abs(Number(baseParams[k]) - Number(plan.target.params[k])) < 1e-9);
+  const degraded = [];
+  if (targetEqualsStart) {
+    degraded.push({
+      code: 'target-equals-start',
+      why: '起点即目标：target.params 与起点参数完全相同，搜索没有起点差异可用（降幅恒 n/a，best 只能等于起点）',
+    });
+  } else if (startDist === 0) {
+    degraded.push({ code: 'start-hits-target', why: '起点已命中目标：起点距离为 0，没有可下降的空间（降幅恒 n/a）' });
+  }
+  for (const dg of degraded) log(`[degraded][warn] ${dg.why}`);
+
   // 台帐 · target（目标帧/目标指标 + 起点）：起点那一次评估也算这一步花的预算
   ledger.add({
     node: 'target',
-    status: 'done',
+    status: degraded.length ? 'degraded' : 'done',
     producer: 'engine',
     ms: Date.now() - tTarget,
     inputs: targetInfo.kind === 'metrics' ? ['adapter.target.metrics', 'intent.criteria[].target'] : ['adapter.target.params', 'adapter.config.path', 'intent.criteria[].target'],
@@ -542,10 +590,12 @@ function run(args) {
         invGate.declared
           ? `硬不变量：目标与起点通过 ${invGate.items.length} 条门禁（${invGate.items.map((it) => it.id).join(' / ')}）`
           : '硬不变量：0 条（没装门禁 —— 搜索可以拿底线换分数）',
+        ...(degraded.length ? [`退化（degraded）：${degraded[0].code} —— ${degraded[0].why}`] : []),
       ],
     },
     artifacts: [],
     cost: { evals: usage.target + usage.start },
+    reason: degraded.length ? degraded[0].why : '',
   });
   RUN_PHASE = '';
 
@@ -1049,6 +1099,9 @@ function run(args) {
     dropAbs,
     dropPct,
     stop: { reason: stopReason, detail: stopDetail },
+    // 退化配置（起点即目标 / 起点已命中目标）：能跑完，但"调到目标了"这句话在它身上不成立 ——
+    // 机器读这一条，别只看 dropPct（那种 run 的降幅恒为 n/a）。
+    degraded,
     // 节点台帐（0.5.0）：机器读的那一份（每节点一条 <out>/nodes/NN-<node>.json，这里只做索引）
     nodes: {
       dir: 'nodes',
@@ -1096,7 +1149,7 @@ function run(args) {
   writeFileSync(join(outDir, 'best.json'), JSON.stringify(bestJson, null, 2), 'utf8');
 
   // ---------------------------------------------------------------- report.md
-  writeFileSync(join(outDir, 'report.md'), buildReport({ plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams, dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outputs, outDir, startedAt, endedAt, stability, stabCfg, nodes: ledger.nodes, intentSummary, invSummary: invGate.summary(), invDeclared: invGate.declared, rejectedPrecheck, fakeGate, targetProximity, gateBlock: { rounds: gateBlockRounds, streak: gatedStreak } }), 'utf8');
+  writeFileSync(join(outDir, 'report.md'), buildReport({ plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams, dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outputs, outDir, startedAt, endedAt, stability, stabCfg, nodes: ledger.nodes, intentSummary, invSummary: invGate.summary(), invDeclared: invGate.declared, rejectedPrecheck, fakeGate, targetProximity, degraded, gateBlock: { rounds: gateBlockRounds, streak: gatedStreak } }), 'utf8');
 
   const summary = `HASH ${hash}\nstart=${r6(startDist)} best=${r6(bestDist)} drop=${dropPct === null ? 'n/a' : dropPct + '%'} stability=${stability ? (stability.checked ? 'ok' : 'off') : 'skipped'} invariants=${invGate.declared ? invGate.items.length + '条/拒' + invGate.summary().rejected : 'off'} stop=${stopReason} used=${usage.used}/${args.budget} elapsed=${elapsedSec}s nodes=${ledger.nodes.length}`;
   log(summary);
@@ -1131,7 +1184,7 @@ function buildReport(ctx) {
     plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams,
     dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outDir, startedAt, endedAt,
     stability, nodes, intentSummary, invSummary, invDeclared, rejectedPrecheck,
-    fakeGate, targetProximity, gateBlock,
+    fakeGate, targetProximity, gateBlock, degraded,
   } = ctx;
   const WL = plan.wl;
   const MID = plan.observe.metricIds;
@@ -1271,6 +1324,8 @@ function buildReport(ctx) {
   md.push('| 基线参数文件 | `' + plan.baseFile + '`' + (plan.baseSha256 ? ' sha256=`' + plan.baseSha256.slice(0, 16) + '…`' : '') + ' |');
   md.push('| 起始 / 最佳距离 | ' + d4(startDist) + ' / **' + d4(bestDist) + '** |');
   md.push('| 降幅 | **' + (dropPct === null ? 'n/a' : dropPct.toFixed(1) + '%') + '**（绝对 ' + d4(dropAbs) + '） |');
+  // 退化配置：降幅 n/a 的原因必须写在表里，否则这份证据包会被读成"已经调到目标了"
+  if (Array.isArray(degraded) && degraded.length) md.push('| 退化配置 | `degraded` `' + degraded[0].code + '` — ' + degraded[0].why + ' |');
   md.push(
     '| 评估次数 | **' + usage.used + ' / 上限 ' + args.budget + '**（目标 ' + usage.target + ' + 起点 ' + usage.start + ' + 稳定性 ' + usage.stability + ' + 预检 ' + usage.precheck + ' + 搜索 ' + usage.search + '，缓存命中 ' + usage.cache + '） |',
   );
@@ -1388,7 +1443,7 @@ function buildReport(ctx) {
   md.push('- **只认标量指标**：命令输出里取到的必须是数（数组型指标要 metrics2.js 的提取器，那是浏览器链路）。');
   md.push('- **判据只做粗筛**：它能把候选排序、把坏掉的报警；"这个数好不好"不能问它。');
   md.push('- **硬不变量只在命令链路**（0.7.0）：`iter.ps1`（截图链路）暂不支持门禁 —— 它的观测是页面指标、判定在 PowerShell 里，没有测试守着 PS 侧实现；在截图链路的 intent 里写 invariants 会**硬错**（宁可拒跑，也不假装装了门禁）。');
-  md.push('- **门禁语义会漂**（0.8.0）：不变量是"今天的"判据，改了阈值之后这份证据包里的"最优"就未必还算数 —— 拿今天的标准复算一遍：`node harness/audit.mjs "' + outDir + '" --intent <今天的 intent.json>`（exit 0 = best 仍合格，1 = 今天不合格，2 = 跑不起来）。');
+  md.push('- **门禁语义会漂**（0.8.0）：不变量是"今天的"判据，改了阈值之后这份证据包里的"最优"就未必还算数 —— 拿今天的标准复算一遍：`node harness/audit.mjs "' + outDir + '" --intent <今天的 intent.json>`（exit 0 = best 仍合格，1 = 今天不合格，2 = 跑不起来或证据包坏了，3 = best 判不了）。发版前扫一整批：`node harness/audit.mjs --dir <runs根> --intent <今天的 intent.json>`。');
   md.push('- **命令必须是确定性的**：同一个参数跑两次给不同的数，那就不是观测、是噪声。0.4.1 起**先验一遍再搜**（观测稳定性闸：起点参数连跑 `observe.stability.repeat` 次，任一指标相对离散度 > `maxSpread` 就硬错），比"跑完再解释为什么结果怪"省事得多。');
   md.push('- **稳定性闸只看"同一个参数重复跑"**：它证明观测可重复，不证明**判据**本身有意义；而且相对离散度在指标接近 0 时会放大（分母兜底 1e-9），0 附近的指标请自己看一眼 spread 的绝对值。');
   md.push('- **本次统计**：' + evals.length + ' 个评估点，`outputs/` ' + ctx.outputs.size + ' 份原始输出。');

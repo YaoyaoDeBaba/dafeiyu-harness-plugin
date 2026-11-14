@@ -641,13 +641,17 @@ export function evaluate(plan, opts) {
   return { row, fields, dist: d, stdout, stderr, ms, timedOut: false, stdoutSha: sha256Text(stdout), paramsFile, argv };
 }
 
-// 证据包里的 outputs/：每次评估的原始命令输出，**截断到 4KB**（超了标 truncated:true，方便一眼看出不是全文）
+// 证据包里的 outputs/：每次评估的原始命令输出，**截断到 4KB**（超了标 truncated:true，方便一眼看出不是全文）。
+// `capped:true` 是给**机器**读的同一个事实（truncated 是人读的措辞）：原始输出被截过，尾巴已经不在了 ——
+// audit.mjs 见到它就把这个点记成"不可判定"，而不是拿半份 stdout 去复算字段型不变量。
+// 两份标记同时写，是因为老证据包里已经有 truncated（没有 capped），两边说的必须是同一件事。
 export const OUTPUT_CAP_BYTES = 4096;
 export function capOutputDoc(doc) {
   let text = JSON.stringify(doc, null, 2);
   if (Buffer.byteLength(text, 'utf8') <= OUTPUT_CAP_BYTES) return { text, truncated: false };
   const trimmed = { ...doc };
   trimmed.truncated = true;
+  trimmed.capped = true;
   for (const key of ['stdout', 'stderr']) {
     let body = String(trimmed[key] ?? '');
     trimmed[key] = body.slice(0, 1200);
