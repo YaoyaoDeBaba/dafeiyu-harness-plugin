@@ -92,7 +92,123 @@ for (const e of B.evals) {
 }
 fs.writeFileSync(path.join(outDir, 'curve.csv'), lines.join('\n') + '\n', 'utf8');
 
-// ---------- best.json ----------
+// ---------- 节点台帐（0.5.0）----------
+// iter.ps1 在"解析完 adapter、做任何评估之前"已经写过 01-intent.json（intent 硬闸）。
+// 这里把后面几个节点补齐（resume 模式：接着 01 往下编号，不覆盖它）：
+//   target / stability / precheck / search / finalize
+// 为什么在 finalize 里补：这些数据全在 _run.json 里，收尾时一次落盘最省事，也**不用动 iter.ps1 的搜索主流程**。
+// 诚实口径：截图链路没有逐节点计时 → ms 一律 null（不是 0）；成本用 cost.evals + msPerEval 估。
+const { createLedger, summaryLines } = require('./ledger.js');
+const ledger = createLedger(outDir, { mode: 'resume' });
+const estCost = (n) => ({ evals: n, msPerEval: M.msPerEval });
+const rounds = Array.isArray(B.rounds) ? B.rounds : [];
+const stopReason = B.stop.reason;
+
+ledger.add({
+    node: 'target',
+    status: 'done',
+    producer: 'engine',
+    ms: null,
+    inputs: [B.target.kind === 'json' ? 'adapter.target.params（跑一次渲成目标帧）' : '目标帧 png', 'shots/target.png'],
+    decision: {
+        why: B.target.kind === 'json'
+            ? '目标来自参数：按那组参数渲一张当锚点，再用起始参数渲起始帧'
+            : (B.target.srcFrom === 'adapter' ? '目标来自 adapter.target（png）' : '目标来自命令行 -Target'),
+        basis: [
+            '目标 sha256=' + String(B.target.sha256 || '').slice(0, 16) + '…',
+            '起始帧距离 d=' + d4(start),
+            '目标指标 ' + MID.map((id) => id + '=' + metricCell((B.target.metrics || {})[id])).join('  ')
+        ]
+    },
+    artifacts: ['shots/target.png'],
+    cost: estCost((B.usage.target || 0) + (B.usage.start || 0))
+});
+
+// 截图链路**没有**命令链路那道"同参数重复采样"的稳定性闸；它的等价物是 freeze.verify=strict
+// （同一 URL 连拍两张逐字节比）。这里必须把这件事记下来 —— "没有这一节"和"这一节被跳过"是两回事。
+const freezeOn = M.freezeVerify === 'strict' || M.freezeVerify === 'warn';
+ledger.add({
+    node: 'stability',
+    status: freezeOn && M.freezeVerified ? 'skipped' : 'degraded',
+    producer: 'engine',
+    ms: null,
+    inputs: ['adapter.freeze.verify=' + M.freezeVerify],
+    decision: {
+        why: '截图链路没有"同参数重复采样"的观测稳定性闸；等价物是冻帧自检 freeze.verify',
+        basis: [
+            'freeze.verify=' + M.freezeVerify + '，实测 verified=' + Boolean(M.freezeVerified),
+            '跳过的是"命令连跑 N 次算离散度"，不是"冻帧可重复"（后者由 freeze.verify 覆盖）'
+        ]
+    },
+    artifacts: [],
+    cost: { evals: 0 },
+    reason: freezeOn && M.freezeVerified
+        ? '截图链路没有观测稳定性闸（无 stability 节点）：等价物 freeze.verify=' + M.freezeVerify + ' 已通过（同 URL 连拍两张逐字节相同）'
+        : 'freeze.verify=' + M.freezeVerify + ' 且 verified=' + Boolean(M.freezeVerified) + '：这次没有验证冻帧可重复'
+});
+
+const pcRows = (B.precheck && Array.isArray(B.precheck.rows)) ? B.precheck.rows : [];
+ledger.add({
+    node: 'precheck',
+    status: 'done',
+    producer: 'engine',
+    ms: null,
+    inputs: ['adapter.params（白名单）', 'startParams'],
+    decision: {
+        why: '每个参数在起始点基础上 +1 步，与起始帧比 Δd；Δd==0 判 dead 并从搜索轴剔除',
+        basis: [
+            '活 ' + (B.alive || []).length + ' 个：' + ((B.alive || []).join(' / ') || '（无）'),
+            'dead ' + (B.dead || []).length + ' 个：' + ((B.dead || []).join(' / ') || '（无）'),
+            ...pcRows.map((r) => r.param + ': →' + num(r.perturbed) + ' Δd=' + (r.dDelta === 0 ? '0' : f6(r.dDelta)) + ' → ' + r.verdict)
+        ]
+    },
+    artifacts: [],
+    cost: estCost(B.usage.precheck || 0)
+});
+
+ledger.add({
+    node: 'search',
+    status: rounds.length ? 'done' : 'skipped',
+    producer: 'engine',
+    ms: null,
+    inputs: ['precheck 判活的参数轴：' + ((B.alive || []).join(' / ') || '（无）'), 'strategy=' + M.strategy + ' stepRatio=' + M.stepRatio],
+    decision: {
+        why: rounds.length
+            ? '坐标下降 ' + rounds.length + ' 轮；每轮只动一根轴 ±1 步，胜出者必须严格更小才接受'
+            : '不跑搜索：' + stopReason,
+        basis: [
+            '轮数 ' + rounds.length + '，评估 ' + (B.usage.search || 0) + ' 次（缓存命中 ' + (B.usage.cache || 0) + '）',
+            ...rounds.map((r) => '第 ' + r.round + ' 轮胜出 seq=' + r.winner + '（候选 ' + (r.cands || []).map((c) => c.note).join(',') + '）'),
+            '起始 d=' + d4(start) + ' → 最佳 d=' + d4(best),
+            '终止 ' + stopReason + (B.stop.detail ? ' — ' + B.stop.detail : '')
+        ]
+    },
+    artifacts: [],
+    cost: estCost(B.usage.search || 0),
+    reason: rounds.length ? '' : String(stopReason) + (B.stop.detail ? '：' + B.stop.detail : '')
+});
+
+ledger.add({
+    node: 'finalize',
+    status: 'done',
+    producer: 'engine',
+    ms: null,
+    inputs: ['logs/_run.json（原始轨迹）', '决策指纹（目标/判据/白名单/预检/每点/终止原因）'],
+    decision: {
+        why: '把"决定搜到哪"的东西规范化后取 sha256 当复验判据；换 -Out 目录重跑 hash 必须一样',
+        basis: [
+            'hash=' + hash,
+            '终止 ' + stopReason + (B.stop.detail ? ' — ' + B.stop.detail : ''),
+            'cleanup：镜像 vfx.json ' + Sha16(M.mirrorShaBefore) + ' → ' + Sha16(M.mirrorShaAfter) + '（应等于基线 ' + Sha16(M.baseSha256) + '）；本体 ' + Sha16(M.bodyShaBefore) + ' → ' + Sha16(M.bodyShaAfter) + '（必须一致）',
+            '评估 ' + B.usage.used + '/' + M.budget + '，用时 ' + M.elapsedSec + 's（单次 ' + M.msPerEval + 'ms 中位数）'
+        ]
+    },
+    artifacts: ['best.json', 'curve.csv', 'report.md', 'shots/target.png', 'shots/best.png', 'shots/thumbs/', 'logs/'],
+    cost: { evals: B.usage.used, ms: Math.round((M.elapsedSec || 0) * 1000) }
+});
+
+function Sha16(h) { return String(h || '').slice(0, 16) || '<none>'; }
+
 const bestJson = {
     schema: 't3-iter/2',
     hash,
@@ -112,6 +228,12 @@ const bestJson = {
     dropAbs: dropAbs === null ? null : r6(dropAbs),
     dropPct,
     stop: B.stop,
+    // 节点台帐索引（0.5.0）：每节点一条 <out>/nodes/NN-<node>.json，这里只做索引
+    nodes: {
+        dir: 'nodes',
+        counts: ledger.counts(),
+        items: ledger.nodes.map((n) => ({ seq: n.seq, node: n.node, status: n.status, reason: n.reason }))
+    },
     evaluations: B.usage,
     bestPng: B.best.png,
     targetPng: B.target.png,
@@ -311,6 +433,12 @@ md.push('- **留档图体积**：`shots/` 每张约 20KB（' + M.w + '×' + M.h 
 md.push('- **只在 ' + (M.pageFile ? M.pageFile.split('/').pop() : '冻帧页') + ' 单页跑**：本证据包只覆盖这一页的观测，其它页面的行为不在本次范围内。');
 md.push('- **参数活性是"当前交付态"的性质**：`directDraw=1` 时美术类旋钮全死（E2 §3.1），换个实现就得重跑预检。');
 md.push('');
+
+// 节点台帐汇总（0.5.0）：一行数字 + 每条被跳过/被降级的原因，插在标题与结论之间。
+// 这是"哪些节点被绕过"的唯一答案 —— 尤其截图链路没有 stability 闸这件事，以前报告里一个字都没有。
+const summaryBlock = summaryLines(ledger.nodes);
+const conclIdx = md.findIndex((line) => line.startsWith('> '));
+md.splice(conclIdx < 0 ? md.length : conclIdx, 0, ...summaryBlock, '');
 
 fs.writeFileSync(path.join(outDir, 'report.md'), md.join('\n'), 'utf8');
 

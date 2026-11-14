@@ -97,11 +97,36 @@ pwsh -NoProfile -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\
 ### 命令观测（不需要浏览器、跨平台）
 
 ```bash
-node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --budget 40
+node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --budget 40 --no-intent
 ```
 
-要调的不是画面而是"一串数"（构建耗时 / 接口延迟 / 日志里的错误数 / 求解残差）时走这条：adapter 里加一节 `observe`（`type: command` + `cmd` + `parse` + `metrics`），执行器跑命令、从 stdout 取数、用**同一份 `score.js`** 算距离、出同构证据包（`curve.csv` / `best.json` / `report.md` + `outputs/` 原始输出）。怎么给非图形目标写 adapter、常见坑，见 `skills/selfloop/references/command-observe.md`；字段表见 `harness/适配层-说明.md` 第六节。
+要调的不是画面而是"一串数"（构建耗时 / 接口延迟 / 日志里的错误数 / 求解残差）时走这条：adapter 里加一节 `observe`（`type: command` + `cmd` + `parse` + `metrics`），执行器跑命令、从 stdout 取数、用**同一份 `score.js`** 算距离、出同构证据包（`curve.csv` / `best.json` / `report.md` + `outputs/` + `nodes/` 台帐）。怎么给非图形目标写 adapter、常见坑，见 `skills/selfloop/references/command-observe.md`；字段表见 `harness/适配层-说明.md` 第六节。
 缺 `observe` 节的 adapter 行为完全不变（还是截图链路）。
+
+### 需求转译闸与节点台帐（0.5.0）
+
+**跑之前必须有一份经过确认的需求转译**，否则拒跑；每一步都落一条台帐。两个入口同一套规则：
+
+| 开关 | 命令链路 `cmdloop.mjs` | 截图链路 `iter.ps1` | 作用 |
+|---|---|---|---|
+| 给一份需求转译 | `--intent <file>` | `-Intent <file>` | 指定需求转译文件；**不给则读 `<out>/intent.json`** |
+| 显式跳过 | `--no-intent` | `-NoIntent` | 放行，但台帐里必须留一条 `intent` = `skipped`（跳过要有名字） |
+
+```bash
+# 1) 先跑一次，让引擎把模板写出来（它会拒跑并给出中文说明 + <out>/intent.template.json）
+node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --budget 40
+# 2) 填 <out>/intent.json：understood / criteria（按 id 覆盖权重与目标值）/ uncertain / confirm / confirmed
+# 3) 再跑同一条命令 → 过闸，report.md 顶部多一行「本次运行：5 done / 1 skipped / 0 degraded」
+```
+
+- 没有 intent 文件 → 中文硬错 + 写出 `intent.template.json`（错误里说清：填什么 / 填完怎么确认 / 显式跳过的开关）；
+- `confirmed !== true` → 中文硬错，把 `confirm[]` 里待确认的问题**原样列出**；
+- `criteria` 里写了 adapter 不存在的指标 id → **中文硬错（绝不静默忽略）**；
+- 过了闸就把 `criteria` 按 id 覆盖到判据上（权重 / 目标值），覆盖了哪几条写进台帐。
+
+**台帐**：`<out>/nodes/NN-<node>.json`，字段固定 —— `node / seq / status(done|skipped|degraded|failed) / producer / ms / inputs[] / decision{why,basis[]} / artifacts[] / cost`，`skipped` 必须带 reason。
+初版覆盖 `intent` / `target` / `stability` / `precheck` / `search` / `finalize`（截图链路没有 stability 节点 → 记 `skipped` 并写明原因）。
+怎么填 intent、硬闸语义、`--no-intent` 的代价、台帐字段表与已知缺口：**`skills/selfloop/references/intent-and-ledger.md`**。
 
 ## 安装
 
@@ -237,7 +262,9 @@ test/command.test.mjs            21 个用例（命令观测 + 弄坏能红 + �
 | `apply_params.js` | 改参：`flat-params` 形态（扁平 `{params:{...}}`），同样走 `--protect` |
 | `writeguard.js` | 写护栏：判定 `out` 是否落在 `guard.protectPaths` 下（两个改参脚本共用） |
 | `cmdloop.mjs` | **命令观测入口**（0.4.0）：解析 `observe` → 跑命令 → 取数 → 预检 → 坐标下降 → 出同构证据包（+ `outputs/`）；纯 node、跨平台 |
-| `cmdlib.mjs` | `cmdloop.mjs` 的零件：`observe` 解析、命令执行（超时/退出码/解析/指标缺失全硬错）、参数文件、`iter.ps1` 坐标下降口径的照抄件 |
+| `cmdlib.mjs` | `cmdloop.mjs` 的零件：`observe` 解析、命令执行（超时/退出码/解析/指标缺失全硬错）、参数文件、`iter.ps1` 坐标下降口径的照抄件、判据覆盖（intent） |
+| `intent.mjs` | **需求转译闸**（0.5.0）：读/校验 intent、写模板、`criteria` 覆盖判据（未知 id 硬错）；也是截图链路 `-Intent` 的实现（`gate` 子命令，逻辑只有这一份） |
+| `ledger.js` | **节点台帐**（0.5.0）：`<out>/nodes/NN-<node>.json` 的字段校验与写入、`report.md` 顶部汇总行（`本次运行：N done / N skipped / N degraded`）；`cmdloop.mjs` 与 `finalize.js` 共用 |
 | `adapter.json` | **字段模板**（`template:true`）：只有字段和注释，**不能直接跑**；`iter.ps1` 不带 `-Adapter` 时会被拒绝 |
 | `适配层-说明.md` | adapter 字段语义（v3 全部字段 + 优先级） |
 | `package.json` | **只做一件事**：把这一层钉成 `"type": "commonjs"`（包根是 `"type": "module"`，而 `score/metrics2/finalize/apply/apply_params` 是从上游原件（案例 A）移植来的 CommonJS 脚本） |

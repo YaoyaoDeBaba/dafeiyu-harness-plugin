@@ -27,6 +27,8 @@
 #   -Tier     画质档（默认 low，等价 renderScale 0.5；url-time 宿主无运行时档位接口时跳过）
 #   -Strategy coordinate（默认）| random | bayes（bayes 只有钩子，未实现）
 #   -Adapter  适配层 json（缺省 = 本脚本同目录 adapter.json）
+#   -Intent   需求转译文件（缺省读 <Out>\intent.json）；没有它 = 硬错（会写出 intent.template.json）
+#   -NoIntent  显式跳过需求转译（放行的唯一姿势；台帐 nodes\01-intent.json 记 skipped 并写明原因）
 #   -Root     旧语义「项目根目录」：**默认空**，运行时按 命令行 > adapter.clientRoot 的上级 > $PSScriptRoot\..
 #             推导；只在 adapter 没给 server.staticScript 时当兜底用。包内已自带静态服，通常用不到。
 #   -ProfileRoot  浏览器 profile 根目录（默认 %TEMP%\dsh-vfx-loop）。必须与本包以外的东西隔离：
@@ -44,6 +46,8 @@ param(
     [int]$Budget = 60,
     [string]$Out = '',
     [string]$Adapter = '',
+    [string]$Intent = '',
+    [switch]$NoIntent,
     [int]$Seed = 0,
     [int]$T = 0,
     [int]$StepMs = 0,
@@ -407,6 +411,34 @@ $logs = Join-Path $Out 'logs'
 $baseDir = Join-Path $Out 'base'
 foreach ($d in @($Out, $shots, $thumbs, $logs, $baseDir)) { if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null } }
 
+# ---------------- 0.2 需求转译闸（intent 硬闸 · 0.5.0） ----------------
+# 位置：解析完 adapter、**任何评估之前**（比目标帧渲染、活性预检、起浏览器都早），因为它会改判据。
+# 逻辑只有一份：harness\intent.mjs 的 gate 子命令 —— 两个入口共用同一套闸，PS 这边只转发、只切 adapter。
+#   · 没有 intent.json   → 硬错 + 写出 <Out>\intent.template.json（填什么/怎么确认/怎么跳过，都写在错误里）
+#   · confirmed !== true → 硬错 + 原样列出 confirm[] 里待确认的问题
+#   · confirmed === true → 通过；criteria 的**权重**覆盖进一份派生 adapter（未知 id 硬错）；
+#                         截图链路的目标锚点来自目标帧实测，criteria[].target 只记账不生效 → 台帐记 degraded
+#   · -NoIntent          → 放行的唯一姿势，但台帐必须记一条 skipped（跳过要有名字）
+$script:adapterOrig = $Adapter
+$gateArgs = @((Join-Path $PSScriptRoot 'intent.mjs'), 'gate', '--out', $Out, '--adapter', $Adapter, '--chain', 'screenshot')
+if ($Intent) { $gateArgs += @('--intent', $Intent) }
+if ($NoIntent) { $gateArgs += '--no-intent' }
+$gateArgs += @('--metric-ids', (@($script:metricIds) -join ','))
+$gateLines = @(& node @gateArgs 2>&1)
+$gateCode = $LASTEXITCODE
+if ($gateCode -ne 0) {
+    throw ('需求转译闸没过（intent 硬闸）：' + (($gateLines | ForEach-Object { [string]$_ }) -join [Environment]::NewLine))
+}
+$gateJson = ''
+foreach ($ln in $gateLines) { $s = ([string]$ln).Trim(); if ($s.StartsWith('{')) { $gateJson = $s } }
+if (-not $gateJson) { throw ('需求转译闸没有回执（intent.mjs 应当打印一行 JSON）：' + (($gateLines | ForEach-Object { [string]$_ }) -join ' ')) }
+$gate = $gateJson | ConvertFrom-Json -AsHashtable
+Write-Output ('[intent] 闸=' + [string]$gate['status'] + '  台帐=' + [string]$gate['nodeFile'] + $(if ($NoIntent) { '（-NoIntent：显式跳过需求转译）' } else { '' }))
+if ($gate['effectiveAdapter']) {
+    $Adapter = [string]$gate['effectiveAdapter']
+    Write-Output ('[intent] criteria 覆盖判据 → 派生 adapter：' + $Adapter)
+}
+
 $cfgRel = ([string]$A.config.path).Replace('/', '\')   # 配置文件在 client 下的相对路径（来自适配层）
 $mirrorJson = Join-Path $Mirror $cfgRel
 # 写护栏执行点①（早失败，不浪费预算）：镜像配置文件落在保护路径里 = "写回本体"的前兆。
@@ -439,7 +471,9 @@ $bodyShaBefore = Get-Sha $bodyJson
 
 # ---------------- 1. 目标解析（P2.6：命令行 -Target > adapter.target > 报错，不许静默兜底） ----------------
 # 三种 mode：png（现成帧）/ params（跑起来渲一张）/ default（块内现值 + 当前冻帧时刻渲一张）
-$adapterDir = Split-Path -Parent $Adapter
+# 注意：intent 闸可能已经把 $Adapter 换成 <Out>\intent\adapter.effective.json（只有 metrics 权重变了），
+# 但 target.path / params.activityPath 这些相对路径是相对**原始 adapter 目录**的 —— 所以这里用原始目录。
+$adapterDir = Split-Path -Parent $script:adapterOrig
 function Resolve-Rel([string]$p, [string]$baseDir) {
     if (-not $p) { return '' }
     if ([IO.Path]::IsPathRooted($p)) { return $p }
@@ -586,7 +620,7 @@ if ($wl.Count -eq 0) { throw '白名单解析为空（-Params / adapter.params �
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $tAll0 = $sw.ElapsedMilliseconds
-$cmdline = 'pwsh -File ' + (Join-Path $ToolDir 'iter.ps1') + $(if ($bound.ContainsKey('Adapter')) { ' -Adapter "' + $Adapter + '"' } else { '' }) + $(if ($targetSrc -eq 'cli') { ' -Target ' + $(if (Test-Path $Target) { '"' + $Target + '"' } else { "'" + $Target + "'" }) } else { '' }) + $(if ($bound.ContainsKey('Params')) { ' -Params ' + $Params } else { '' }) + ' -Budget ' + $Budget + ' -Out ' + $Out + $(if ($clockMode -eq 'n/a') { '' } else { ' -Seed ' + $Seed + ' -T ' + $T }) + ' -Tier ' + $Tier + ' -W ' + $W + ' -H ' + $H + ' -Strategy ' + $Strategy + $(if ($HiShot) { ' -HiShot' } else { '' })
+$cmdline = 'pwsh -File ' + (Join-Path $ToolDir 'iter.ps1') + $(if ($bound.ContainsKey('Adapter')) { ' -Adapter "' + $script:adapterOrig + '"' } else { '' }) + $(if ($targetSrc -eq 'cli') { ' -Target ' + $(if (Test-Path $Target) { '"' + $Target + '"' } else { "'" + $Target + "'" }) } else { '' }) + $(if ($bound.ContainsKey('Params')) { ' -Params ' + $Params } else { '' }) + ' -Budget ' + $Budget + ' -Out ' + $Out + $(if ($clockMode -eq 'n/a') { '' } else { ' -Seed ' + $Seed + ' -T ' + $T }) + ' -Tier ' + $Tier + ' -W ' + $W + ' -H ' + $H + ' -Strategy ' + $Strategy + $(if ($NoIntent) { ' -NoIntent' } else { '' }) + $(if ($Intent) { ' -Intent "' + $Intent + '"' } else { '' }) + $(if ($HiShot) { ' -HiShot' } else { '' })
 
 Write-Output ('[init] Out=' + $Out)
 Write-Output ('[init] 基线 vfx.json sha256=' + $baseSha)
@@ -1073,6 +1107,9 @@ $bundle = [ordered]@{
         metricsJson = (ConvertTo-Json -InputObject @($A.metrics) -Compress -Depth 8)
         scoreJson = (ConvertTo-Json -InputObject $A.score -Compress -Depth 8)
         adapter = $A.name; adapterPath = $Adapter; adapterSchema = [string]$A.schema
+        # 0.5.0：intent 闸有没有改判据 —— 改了就记下"原始 adapter 是谁、派生的是谁"，报告里可查
+        adapterIntentOrig = $(if ($Adapter -ne $script:adapterOrig) { $script:adapterOrig } else { '' })
+        intentNode = 'nodes/01-intent.json'
         captureJs = $captureJs; pageFile = $pageFile; freezeProtocol = $freezeProto
         clockMode = $clockMode; clockStepMs = $clockStepMs
         staticPort = $StaticPort; cdpPort = $CdpPort; profPrefix = $profPrefix; profileRoot = $ProfileRoot; root = $Root

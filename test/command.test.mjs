@@ -40,8 +40,12 @@ function tmp(tag) {
 }
 
 // 跑一次 cmdloop.mjs（子进程 = 真执行器，不是 in-process 复刻）
+// 0.5.0 起 cmdloop 默认要求一份**经过确认**的需求转译（intent 硬闸）。这些用例测的是命令观测/稳定性闸/收敛，
+// 不是需求转译本身，所以统一显式 `--no-intent`：**这不是把默认改回放行**，而是"显式跳过"——
+// 台帐里会留一条 `skipped intent`，跳过有名字（需求转译的用例单独在 test/intent.test.mjs）。
 function runCli(args, env = {}) {
-  const r = spawnSync(process.execPath, [CLI, ...args], {
+  const withGate = args.some((a) => a === '--no-intent' || a === '--intent') ? args : [...args, '--no-intent']
+  const r = spawnSync(process.execPath, [CLI, ...withGate], {
     cwd: ROOT,
     encoding: 'utf8',
     env: { ...process.env, ...env },

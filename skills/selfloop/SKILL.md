@@ -93,7 +93,10 @@ pwsh -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\vfx-render\
 
 换目标（图还是数值）就换 adapter，命令形状不变。`target` / `params` 命令行没给、adapter 也没有就直接报错；`page.readbackExpr` 不给则跳过回读自检（打 warn，证据包里记 `selfCheck:false`）。
 
-一次 run 产出（都在 `-Out` 下）：`curve.csv`（每轮距离）、`best.json`（最优参数）、`report.md`、`shots\`（target / best / 逐轮缩略）、`logs\`（每次评估的指标包）、`base\`（基线配置副本）。
+一次 run 产出（都在 `-Out` 下）：`curve.csv`（每轮距离）、`best.json`（最优参数）、`report.md`（顶部有「本次运行：N done / N skipped / N degraded」汇总行）、`shots\`（target / best / 逐轮缩略）、`logs\`（每次评估的指标包）、`base\`（基线配置副本）、`nodes\`（**节点台帐**：每节点一条 `NN-<node>.json`）。
+
+**跑之前要先过需求转译闸（0.5.0）**：默认读 `<Out>\intent.json`，没有就拒跑并写出 `intent.template.json`；确认后 `criteria` 会按 id 覆盖判据（权重 / 目标值）。
+确实要跳过就显式 `-NoIntent`（台帐会记一条 `skipped intent`，跳过有名字）。怎么填、硬闸语义、台帐字段表见 `references/intent-and-ledger.md`。
 
 **纪律**：只改自己范围内的配置（**本体拒写由 adapter 的 `guard.protectPaths` 声明**，改参脚本会拒绝写进这些目录；前后交哈希）；浏览器用独立 `--user-data-dir`、按 PID 收尾；端口各 run 独占，别抢别人的；`capture.mjs` 自带父进程死亡看门狗，**判据是父进程没了，不是跑了多久**，别自己再加"超时杀"。
 
@@ -125,6 +128,7 @@ references 一览：
 - `references/pitfalls.md` —— 按症状查坑（构建 / 参数 / 测量 / 传递）
 - `references/host-adaptation.md` —— 新宿主怎么接：五步改造、阈值实测、冻帧协议怎么选、反证要求
 - `references/command-observe.md` —— **观测是一条命令的输出**：给非图形目标（耗时/延迟/日志计数/残差）写 adapter、`observe` 字段表、**稳定性闸**（默认连跑 3 次、离散度 >0.02 就拒跑）、哪些口径是复用哪些是照抄、常见坑
+- `references/intent-and-ledger.md` —— **需求转译闸 + 节点台帐**：intent 怎么填（`criteria` 按 id 覆盖权重/目标值）、硬闸三条规则与错误原文、`--no-intent` / `-NoIntent` 的代价、台帐字段表与 status 语义、两个入口各写哪些节点、初版已知缺口
 - `references/domains-vfx.md` —— vfx-render 领域：现场怎么接、三份 adapter、进程卫生、题目外的话
 
 ## 两条执行器（选一个）

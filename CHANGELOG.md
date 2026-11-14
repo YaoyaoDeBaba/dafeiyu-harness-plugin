@@ -3,6 +3,45 @@
 > 规矩：**改了 `harness/` 里的执行器就要在这里记一笔**，并注明"要不要回灌上游原件（案例 A，见 README「案例与来源」）"。
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
+## 0.5.0（未发布）· 看得见的过程：需求转译硬闸 + 节点台帐
+
+> 前六版一直在补"中段"（观测 → 判据 → 搜索）。这一版补的是**头**：需求输入之后必须先被消化、且必须被人确认，才允许开跑；
+> 同时把流水线每一步落成一条能机器读的台帐 —— 以前"哪些节点被绕过"只散在日志里，等于没有答案。
+> 两条都来自用户的原话："需求输入之后有没有真被消化理解""哪些在起效、哪些被绕过，每个节点看得清楚"。
+
+- **新增需求转译（intent）契约与硬闸**：运行目录 `<out>/intent.json`（或命令链路 `--intent <file>`、截图链路 `-Intent <file>` 指定）。
+  结构 `{understood, criteria[{id,weight,target,why}], uncertain[], confirm[], confirmed, confirmedBy, confirmedAt}`。
+  三条硬错（全部中文 + 非零退出）：① 没有文件 → 拒跑 + **写出 `intent.template.json`**（错误里说清填什么/填完怎么确认/显式跳过的开关）；
+  ② `confirmed !== true` → 拒跑并把 `confirm[]` **原样逐条列出**；③ `criteria[].id` 在 adapter 里不存在 → 拒跑（**绝不静默忽略**）。
+  `confirmed: true` 时 `criteria` 按 id 覆盖判据（`weight` 改权重、`target` 改目标值），覆盖了哪几条写进台帐。
+  **位置**：所有评估之前（比目标帧/目标指标、比活性预检、比稳定性闸都早），因为它会改判据。
+- **显式跳过是一等公民**：命令链路 `--no-intent`、截图链路 `-NoIntent` → 放行，但台帐必须记一条 `intent` = `skipped`，
+  reason 写"显式 --no-intent 跳过需求转译"。默认路径**没有**、也不会改成放行。
+- **新增节点台帐**：每节点一条 `<out>/nodes/NN-<node>.json`，字段固定
+  `{node, seq, status(done|skipped|degraded|failed), producer(agent|engine|host), ms, inputs[], decision{why,basis[]}, artifacts[], cost, reason}`；
+  `skipped`/`degraded`/`failed` **必须带 reason**（跳过要有名字）。初版覆盖 `intent` / `target` / `stability` / `precheck` / `search` / `finalize`。
+- **`report.md` 顶部汇总行**：`本次运行：N done / N skipped / N degraded`，下面逐条列 skipped/degraded 的 node 与原因（最多 8 行，多了写"还有 N 条见 nodes/"）。
+  计数与 `nodes/` 里实际条数**必须相等**（测试钉住了）。
+- **新增文件**：`harness/intent.mjs`（闸 + 模板 + `criteria` 覆盖；也是截图链路 `-Intent` 的实现，`gate` 子命令，**逻辑只有这一份**）、
+  `harness/ledger.js`（台帐字段校验/写入 + 汇总行，`cmdloop.mjs` 与 `finalize.js` 共用，CommonJS）。
+- **改动的执行器**：`cmdloop.mjs`（闸 + 六个节点 + 报告汇总 + 硬错补 `failed` 节点）、`cmdlib.mjs`（新增 `applyMetricOverrides`：改权重后**重新 plan()**）、
+  `iter.ps1`（只加 `-Intent`/`-NoIntent` 两个参数 + 在"解析完 adapter、任何评估之前"转调 `intent.mjs gate`，**浏览器/冻帧/清理逻辑一个字节没动**）、
+  `finalize.js`（截图链路缺的节点由它从 `_run.json` 补齐；`best.json` 增 `nodes` 索引）。
+- **截图链路的两处诚实降级**：① 没有"同参数重复采样"的稳定性闸 → `stability` 节点记 `skipped` 并写明等价物是 `freeze.verify`；
+  ② `criteria[].target` 在截图链路没有落点（锚点来自目标帧实测）→ `intent` 节点记 `degraded`，**不假装生效、也不硬错**。
+  另外 `iter.ps1` 的 `ms` 一律 `null`（没逐节点计时，不编 0）。
+- **新增 11 条测试（`test/intent.test.mjs`，现在 55 + 12 + 21 + 11 = 99）**：①无 intent 硬错 + 模板；②未确认硬错且列 `confirm[]`；
+  ③过闸 + 汇总行 + `01-intent` 是 `done` + **权重/目标真的落到判据上**；④未知 id 硬错且不产出 `best.json`；⑤`--no-intent` 走通且 `skipped` 留痕；
+  ⑥台帐一致性（字段/枚举/seq 连续/汇总行计数 == 文件条数）；⑦弄坏能红 ×2（`SELFLOOP_INTENT_MUTANT=alwaysPass` → ① 塌；`dropSkipRecord` → ⑤ 塌）；
+  ⑧截图链路的闸（权重进派生 adapter、`criteria[].target` 只记账、未知 id 同样硬错）；⑨`finalize.js` 补齐截图链路台帐；⑩两个入口都接了闸（含 iter.ps1 语法解析）。
+- **`test/command.test.mjs` 的 `runCli` 统一加 `--no-intent`**（不是把默认改回放行）：那些用例测的是命令观测/稳定性闸，
+  跳过被显式记录下来 —— 台帐里多一条 `skipped intent`，并且 ①/⑬ 等断言照旧。示例 adapter 跑一轮不受硬闸影响。
+- **文档**：新增 `skills/selfloop/references/intent-and-ledger.md`（怎么填 intent / 硬闸语义 / `--no-intent` 的代价 / 台帐字段表 / 两个入口各写哪些节点 / 初版已知缺口）；
+  `README.md` 用法段加 `--intent` / `--no-intent` 两个开关与"跑之前要先过闸"的三步示例；`SKILL.md` 的产出清单与 references 一览各加一条。
+- **硬约束**：不 commit、不 push、`package.json` 的 `version` 仍是 `0.4.2`（清单测试钉着它，bump 留给发布）；`npm test` 全绿。
+- **回灌提醒**：`harness/intent.mjs` / `harness/ledger.js` 是包内新增文件（上游原件没有对应物）；`cmdloop.mjs` / `cmdlib.mjs` 同样是包内新增文件；
+  `iter.ps1` / `finalize.js` 与上游原件（案例 A）已分叉，回灌时按改动点手动改。
+
 ## 0.4.2（未发布）· 真实非图形目标试刀：包体积预算
 
 > 0.4.0/0.4.1 把观测来源放宽到命令、又给它装了稳定性闸，但**到这一版为止，命令链路只跑过一个手算示例**（`command-echo`：两个指标是两个公式，没人会拿它做工程）。

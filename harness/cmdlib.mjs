@@ -518,6 +518,36 @@ function safePlanText(P) {
   }
 }
 
+// ---------------------------------------------------------------- 判据覆盖（intent 插槽，0.5.0）
+// 需求转译的 criteria 要能改"哪条指标算数、各多少权重"—— 这一层就是那个落点。
+// 纪律：
+//   · id 必须在 plan 里真实存在，否则**硬错**（写错一个 id 就悄悄按原判据跑完，是最坏的一种"看起来做了"）；
+//   · 只改 weight，不动 extract / norm（换归一化就不只是"更看重它"，是换了一把尺）；
+//   · 改完必须**重新 plan()** —— 距离是 plan 算好的，改了 weight 不重算等于没改；
+//   · 目标值（target）不在这儿改：那是"观测出来的目标"，由调用方在拿到 trow 之后覆盖（见 cmdloop.mjs）。
+export function applyMetricOverrides(plan, overrides = {}) {
+  const weights = overrides.weights || {};
+  const ids = plan.observe.metricIds;
+  const unknown = Object.keys(weights).filter((id) => !ids.includes(id));
+  if (unknown.length) {
+    die(`判据覆盖里有 adapter 不认识的指标 id：${unknown.join('、')}（这份 adapter 的指标：${ids.join(' / ')}）`);
+  }
+  for (const m of plan.metrics) if (Object.prototype.hasOwnProperty.call(weights, m.id)) m.weight = Number(weights[m.id]);
+  for (const m of plan.observe.metrics) if (Object.prototype.hasOwnProperty.call(weights, m.id)) m.weight = Number(weights[m.id]);
+  let P;
+  try {
+    P = score.plan({
+      metrics: plan.metrics.map((m) => ({ id: m.id, extract: m.field, weight: m.weight, norm: m.norm })),
+      score: plan.scoreCfg,
+    });
+  } catch (e) {
+    die(`intent 覆盖判据之后判据配置不可用（score.js 拒绝）：${e?.message ?? e}`);
+  }
+  plan.scorePlan = P;
+  plan.scoreText = safePlanText(P);
+  return plan;
+}
+
 export function sha256File(file) {
   return createHash('sha256').update(readFileSync(file)).digest('hex');
 }
