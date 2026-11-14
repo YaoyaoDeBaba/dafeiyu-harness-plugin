@@ -3,6 +3,36 @@
 > 规矩：**改了 `harness/` 里的执行器就要在这里记一笔**，并注明"要不要回灌上游原件（案例 A，见 README「案例与来源」）"。
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
+## 0.5.2（未发布）· 边跑边看：`live.jsonl` + `watch.mjs`
+
+> 0.5.0/0.5.1 解决的是"**事后可读**"：`report.md` 顶部有 `N done / N skipped / N degraded`，`nodes/NN-*.json` 每个节点一条。
+> 但用户现在常常在手机远程，**跑的时候看不见过程**：不知道跑到第几轮、哪个节点在跑、哪些被绕过、产物在哪。
+> 这一版只补"看"，**不动搜索逻辑、不动判据、不碰 `iter.ps1`**：执行器多写一条流水，另加一个只读文件的视图。
+
+- **`cmdloop.mjs` 写 `<out>/live.jsonl`**：每做一次真实评估追加一行
+  `{seq, round, t(本地 ISO 带时区), d, best(当前最优), params, evalMs, note(target|start|stability|precheck|search), budget}`。
+  `appendFileSync` 每次 open/write/close（立刻 flush，不攒到最后）；开跑清空旧流（一个 `--out` = 一次 run），
+  失败/中止**不删已有行**。改动只在 `runEval` 落点加一行，搜索/缓存/预算语义一个字节没动。
+- **新增 `harness/watch.mjs`**（纯 node、跨平台、只读磁盘、不连引擎）：
+  `node harness/watch.mjs <out目录> [--once] [--interval 500] [--timeout 60] [--json]`。
+  按间隔清屏重画一屏五段（顺序固定）：① 状态行 `run … · 第 N 轮 / 预算 N（已评 N）· best …（降幅）· 单次 …ms`；
+  ② 6 个节点各一行（`✔` done / `⏝` running / `–` skipped（原因截 40 字）/ `!` degraded / `✗` failed / `·` pending）+ 计数；
+  ③ `live.jsonl` 末尾最近 3 个评估点；④ 产物**绝对路径**（`shots/best.png`、`shots/target.png`、`report.md`、
+  `best.json`、`curve.csv`、`nodes/`，存在才列）；⑤ `Ctrl+C 退出 · 跑完自动显示 summary`。
+  读到 `nodes/` 里有 `finalize`（done/failed）→ 画最后一屏自动退（exit 0）；`--timeout` 防挂死；
+  `--json` 输出同一份一屏数据（`round/budget/evaluated/best/nodes[]/recent/artifacts…`）给以后的面板读。
+  **没有 `live.jsonl` 也能跑**（截图链路）：第 3 段写"（没有实时评估流：这条链路只写节点台帐）"，其余照常。
+- **报告可复制**：命令链路的 `report.md` 末尾新增一行 `实时视图：node harness/watch.mjs "<本目录>"`。
+- **新增 6 条测试（`test/watch.test.mjs`，现在 55 + 12 + 21 + 19 + 6 = 113）**：① 一屏含轮次/best/`d=`/产物绝对路径/`6 done`；
+  ② skipped 原因片段可见；③ `finalize` 已存在 → 正常模式 3 秒内自动退（不等 `--timeout 5`）；
+  ④ 没有 `live.jsonl` 不崩且说明可见；⑤ `--json` 可 `JSON.parse` 且含 `round/budget/evaluated/best/nodes[]`；
+  ⑥ 真链路 `--budget 8 --no-intent`：`live.jsonl` ≥6 行、逐行可 parse、`seq` 递增，**且子进程运行期间就数到 ≥3 行**
+  （把 append 改成攒到最后写 → ⑥ 红）。`npm test` 已把 `watch.test.mjs` 挂进来。
+- **文档**：`skills/selfloop/references/intent-and-ledger.md` 新增 §6.2「跑的时候怎么看」（用法 + 一屏各段含义 +
+  截图链路差异）；`README.md` 命令观测用法段加一行。
+- **硬约束**：不 commit、不 push、**不改版本号**（`package.json` 仍是 `0.5.1`，bump 留给发布）；
+  不改 `iter.ps1`；不装依赖（只用 node 内置模块，Windows 清屏用 ANSI 不用 `cls`）。
+
 ## 0.5.1（未发布）· 需求转译升到 v2：锚 / 反例 / 自由度 / 验收方式
 
 > 为什么升：三份真实实验复盘（多模型视效产线）的结论是「**提示词写法是第一杠杆，模型只抬上限不抬下限**」，

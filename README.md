@@ -100,6 +100,8 @@ pwsh -NoProfile -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\
 node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --budget 40 --no-intent
 ```
 
+跑的时候另开一个终端 `node harness/watch.mjs runs/cmd1`：一屏看轮次 / 节点状态 / 最近 3 个评估点 / 产物**绝对路径**，跑完自动退（截图链路也能看，只是没有实时评估流）。`--once` 只画一帧、`--json` 吐一屏数据给面板读、`--timeout` 到点自动退。
+
 要调的不是画面而是"一串数"（构建耗时 / 接口延迟 / 日志里的错误数 / 求解残差）时走这条：adapter 里加一节 `observe`（`type: command` + `cmd` + `parse` + `metrics`），执行器跑命令、从 stdout 取数、用**同一份 `score.js`** 算距离、出同构证据包（`curve.csv` / `best.json` / `report.md` + `outputs/` + `nodes/` 台帐）。怎么给非图形目标写 adapter、常见坑，见 `skills/selfloop/references/command-observe.md`；字段表见 `harness/适配层-说明.md` 第六节。
 缺 `observe` 节的 adapter 行为完全不变（还是截图链路）。
 

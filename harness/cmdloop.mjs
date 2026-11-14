@@ -16,7 +16,7 @@
 // 产出（--out 下）：curve.csv / best.json / report.md / params\ / outputs\ / **nodes\（节点台帐 0.5.0）**
 'use strict';
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -187,6 +187,28 @@ function median(arr) {
   return v.length % 2 ? v[mid] : Math.round((v[mid - 1] + v[mid]) / 2);
 }
 
+// 本地时间 ISO（带 +08:00 这类偏移）。live.jsonl 是人读的，不带时区会让人误判"跑得早/晚"。
+function localIso(d = new Date()) {
+  const p = (n, w = 2) => String(Math.abs(Math.floor(n))).padStart(w, '0');
+  const off = -d.getTimezoneOffset();
+  const sign = off >= 0 ? '+' : '-';
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` +
+    `T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}` +
+    `.${p(d.getMilliseconds(), 3)}` +
+    `${sign}${p(Math.abs(off) / 60)}:${p(Math.abs(off) % 60)}`
+  );
+}
+
+// live.jsonl 的 note：人一眼要看的是"这次评估属于哪一段"（预检死掉一个参数 vs 搜索走了一步）。
+function liveNote(meta) {
+  if (meta.phase === 'target') return 'target';
+  if (meta.phase === 'start') return 'start';
+  if (meta.phase === 'stability') return 'stability';
+  if (meta.phase === 'precheck') return 'precheck';
+  return 'search';
+}
+
 function run(args) {
   const startedAt = new Date().toISOString();
   const t0 = Date.now();
@@ -196,6 +218,12 @@ function run(args) {
   const plan = resolveCommandPlan(adapter, adapterFile, { params: args.params });
   const outDir = ensureOutDir(args.out);
   for (const sub of ['params', 'outputs']) mkdirSync(join(outDir, sub), { recursive: true });
+
+  // 实时评估流（0.5.2）：一个 --out = 一次 run，开跑先把旧流清掉；之后每评估一行、立刻 flush。
+  // 只做观测，**不参与任何判定** —— 搜索逻辑一行没动（watch.mjs 只读它）。
+  const liveFile = join(outDir, 'live.jsonl');
+  writeFileSync(liveFile, '', 'utf8');
+  let liveBest = Infinity;
 
   const usage = { used: 0, target: 0, start: 0, stability: 0, precheck: 0, search: 0, cache: 0 };
   const evals = [];
@@ -266,6 +294,27 @@ function run(args) {
     intentTargetsOverride = intentTargets;
   }
 
+  // 实时评估流的一行：append + close（appendFileSync 每次自己 open/write/close，不会攒在缓冲区）。
+  // 失败/中止时已有行原样留在 <out>/live.jsonl 里 —— "跑到哪一步断的"不该被清掉。
+  const appendLive = (rec, meta) => {
+    if (Number.isFinite(rec.dist)) liveBest = Math.min(liveBest, rec.dist);
+    appendFileSync(
+      liveFile,
+      JSON.stringify({
+        seq: rec.seq,
+        round: rec.round,
+        t: localIso(),
+        d: Number.isFinite(rec.dist) ? r6(rec.dist) : null,
+        best: Number.isFinite(liveBest) ? r6(liveBest) : null,
+        params: rec.params,
+        evalMs: rec.ms,
+        note: liveNote(meta),
+        budget: args.budget,
+      }) + '\n',
+      'utf8',
+    );
+  };
+
   // 真正跑一次命令并把它记进证据包（**不查缓存、也不写缓存**）。
   // 稳定性闸要拿同一组参数连跑 repeat 次：走缓存的话第 2 次就"命中"了，等于什么都没验。
   const runEval = (params, meta) => {
@@ -293,6 +342,7 @@ function run(args) {
       pen: res.dist ? res.dist.penSum : 0,
     };
     evals.push(rec);
+    appendLive(rec, meta);
     const doc = {
       seq,
       id: rec.id,
@@ -1111,6 +1161,9 @@ function buildReport(ctx) {
   md.push('- **本次统计**：' + evals.length + ' 个评估点，`outputs/` ' + ctx.outputs.size + ' 份原始输出。');
   md.push('');
   md.push(`生成时间：${ctx.startedAt} → ${ctx.endedAt}；输出目录：\`${ctx.outDir}\`。`);
+  md.push('');
+  // 边跑边看（0.5.2）：直接给下一轮能复制的命令，别让人回头翻文档找 watch.mjs 的参数。
+  md.push(`实时视图：node harness/watch.mjs "${ctx.outDir}"`);
   md.push('');
   return md.join('\n');
 }

@@ -338,6 +338,50 @@ reason 写"criteria[].target 在截图链路不生效……已记账，未参与
 - 两个入口口径一致：命令链路由 `cmdloop.mjs` 直接算，截图链路由 `finalize.js` 读同一个文件
   （`harness/intent-summary.js` 是唯一实现，防止两份漂）。
 
+### 6.2 跑的时候怎么看（0.5.2 · `watch.mjs`）
+
+不用等跑完翻文件：另开一个终端，指到这次 run 的输出目录就行。
+
+```bash
+node harness/watch.mjs runs/cmd1           # 每 0.5 秒重画；跑完（finalize 落盘）自动退
+node harness/watch.mjs runs/cmd1 --once    # 只画一帧就退（排查 / 脚本里用）
+node harness/watch.mjs runs/cmd1 --json    # 不画界面，吐一屏 JSON（给面板直接读）
+node harness/watch.mjs runs/cmd1 --interval 200 --timeout 120   # 重画间隔 / 最长看多久（默认 500ms / 60s）
+```
+
+它**只读磁盘**（不连引擎、不开端口），数据来源三处：`<out>/live.jsonl`（命令链路每评估一行，立刻 flush；
+截图链路没有这个文件）、`<out>/nodes/*.json`（两条链路都有）、证据包文件（判断产物存不存在）。
+
+一屏五段，顺序固定：
+
+```
+run cmd1  ·  第 3 轮 / 预算 60（已评 32）  ·  best 0.0804（-62.1%）  ·  单次 85ms
+✔ intent    done 12ms
+✔ target    done 165ms
+– stability skipped（截图链路没有这道闸）
+✔ precheck  done 190ms
+⏝ search    running
+· finalize  pending
+  3 done / 1 skipped / 0 degraded
+#30 d=0.0904 α=0.96 β=1.46  ·  #31 d=0.0881 α=0.94 β=1.46  ·  #32 d=0.0804 α=0.96 β=1.46
+<out>\shots\best.png
+<out>\report.md
+<out>\nodes
+Ctrl+C 退出 · 跑完自动显示 summary
+```
+
+| 段 | 含义 | 看什么 |
+|---|---|---|
+| 第 1 行 | 当前轮次 / 预算与已评次数 / 当前 best（相对起点的降幅）/ 单次评估中位数耗时 | `已评` 涨不动 = 卡在某一次命令；`best` 不再降 = 在空转 |
+| 节点行 | 6 个流水线节点各一行：`✔` done / `⏝` running / `–` skipped / `!` degraded / `✗` failed / `·` 还没到 | **哪些被绕过**：`–`/`!` 后面必有原因（截 40 字）；`⏝` 是"最后一条评估属于它" |
+| 计数行 | 与 `report.md` 顶部同一口径（`N done / N skipped / N degraded`） | 数字和节点行对不上就是台帐写歪了 |
+| 评估点行 | `live.jsonl` 末尾 3 条：`#seq d=… 参数缩写` | 是不是在**同一片**里打转（参数几乎不动、d 不变）；预检阶段会看到 `note=precheck` 的点 |
+| 产物路径 | 存在才列，**绝对路径**，每行一个 | 手机远程时直接复制 `shots/best.png` / `report.md` 的路径 |
+
+没有 `live.jsonl` 时（截图链路 `iter.ps1`），第 3 段显示"（没有实时评估流：这条链路只写节点台帐）"，其余照常。
+跑完（`nodes/` 里有 `finalize` 且 `status=done|failed`）会画最后一屏再以 0 退出；`--timeout` 是防挂死的兜底。
+`report.md` 末尾也会打印一条可直接复制的 `实时视图：node harness/watch.mjs "<本目录>"`。
+
 ---
 
 ## 7. 已知缺口（别当 bug）
