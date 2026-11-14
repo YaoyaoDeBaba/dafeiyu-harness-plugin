@@ -98,7 +98,8 @@ test('目标参数 == 起点参数：不崩、[start] 正着打印、start 距�
   assert.match(b1.degraded[0].why, /起点即目标/)
   assert.match(r1.out, /\[degraded\]\[warn\] 起点即目标/, '终端也要说一句（不然 drop=n/a 会被读成"已达标"）')
   assert.match(readFileSync(join(out1, 'report.md'), 'utf8'), /退化配置 \| `degraded` `target-equals-start`/, 'report.md 里要有这一行')
-  const nodeDoc = readJson(join(out1, 'nodes', '02-target.json'))
+  // research 节点插到 02 之后，target 从 02 变 03
+  const nodeDoc = readJson(join(out1, 'nodes', '03-target.json'))
   assert.equal(nodeDoc.status, 'degraded', '台帐里 target 节点记 degraded（不是 done）')
   assert.match(nodeDoc.reason, /搜索没有起点差异可用/)
   // ⑤ 同 seed 两次 → hash 一致（距离补算不能把指纹弄成非确定性的）

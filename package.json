@@ -1,6 +1,6 @@
 {
   "name": "dsh-selfloop",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "private": true,
   "description": "Selfloop（权臣）—— 自主闭环引擎插件：任意可测目标 + 可调参数，都能用「观测 → 判定 → 搜索」把参数自动调到接近目标，并产出可复验的证据包。注册 selfloop_probe / selfloop_list_adapters 两个只读工具，包内带执行器 harness（iter.ps1 等 8 件跑一轮的必需件）、自带静态服、首个领域 vfx-render 的 3 份适配器，以及 selfloop 技能。Windows 优先。",
   "type": "module",
@@ -38,7 +38,7 @@
     }
   },
   "scripts": {
-    "test": "node test/plugin.test.mjs && node test/hue.test.mjs && node test/command.test.mjs && node test/intent.test.mjs && node test/watch.test.mjs && node test/domain-assets.test.mjs && node test/invariants.test.mjs && node test/audit.test.mjs && node test/crash.test.mjs"
+    "test": "node test/plugin.test.mjs && node test/hue.test.mjs && node test/command.test.mjs && node test/intent.test.mjs && node test/watch.test.mjs && node test/domain-assets.test.mjs && node test/invariants.test.mjs && node test/audit.test.mjs && node test/crash.test.mjs && node test/research.test.mjs"
   },
   "keywords": [
     "dsh-plugin",

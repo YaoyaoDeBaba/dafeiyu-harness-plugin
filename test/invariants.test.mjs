@@ -263,8 +263,8 @@ test('③ 候选违反硬不变量 → 判废（不进距离、不做 best），
   assert.ok(rejectedLine, 'report.md 必须写出门禁拒绝次数')
   assert.ok(Number(rejectedLine[1]) > 0, `report 里的拒绝次数应 > 0，实际 ${rejectedLine && rejectedLine[1]}`)
   assert.match(report, /"guard":\s*0/, 'report 要保留最近一次拒绝的原始观测片段')
-  // 台帐 search 节点 basis
-  const node = readJson(join(out, 'nodes', '05-search.json'))
+  // 台帐 search 节点 basis（research 插到 02 之后，search 从 05 变 06）
+  const node = readJson(join(out, 'nodes', '06-search.json'))
   assert.ok(node.decision.basis.some((s) => /门禁拒绝 \d+ 个候选/.test(s)), 'search 节点的 basis 要写"门禁拒绝 N 个候选"')
   // 图省事的写法（dist 更小但违例）不能靠缓存绕过：curve 里被拒点标了 inv=0
   const rejectedPts = best.curve.filter((c) => c.inv === false && c.invFail.includes('no_dead_band'))

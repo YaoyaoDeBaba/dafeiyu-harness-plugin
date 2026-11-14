@@ -7,7 +7,8 @@
 >
 > 0.5.0 做的是：**跑之前必须有一份经过确认的需求转译**（否则拒跑）、**每一步都落一条能机器读的台帐**。
 > 0.5.1 做的是：把 intent 从 v1 升到 **v2**，补上 **锚 / 反例 / 自由度 / 验收方式** 四样（见 §1.5）。
-> 调研（research）插槽还没做，见 §7 已知缺口。
+> 0.9.0 做的是：**调研（research）成为真节点**（02 号，排在 intent 之后、target 之前）——
+> 判据不是"搜了几条"，而是"**它有没有真的改变判据或起点**"（`changed`，由引擎自己算）。见 §2.5。
 
 ---
 
@@ -275,6 +276,17 @@ v2 新增的六条硬错：
 | 目标 / 起点本身违反不变量 | 硬错，点名 id + why + 观测值 + "判据/目标自相矛盾" |
 | 截图链路写了 `invariants` | 硬错（fail-closed）："截图链路不支持硬不变量"，绝不静默忽略 |
 
+**0.9.0 新增的硬错（调研，细节见 §2.5）**：
+
+| 情况 | 引擎的反应 |
+|---|---|
+| `findings[i].kind="image"` 的 `ref` 解析后**不存在** | 硬错，点名 ref、给出解析出的绝对路径，并说明"图不在，这一轮调研没有参照物" |
+| `extracted[i].apply="criteria"` 但 `id` 不在 adapter 指标里 | 硬错，点名 id + 列出真实指标 id（绝不静默忽略） |
+| `extracted[i].apply="start"` 但 `name` 不在参数白名单里 | 硬错，点名 name + 列出白名单 |
+| `extracted[i].apply` 既不是 `criteria` 也不是 `start` | 硬错，说明只认这两个落点 |
+| `criteria` 那条既没 `weight` 也没 `target`（没有落点）；`start` 那条没 `value` | 硬错 |
+| `queries` 空数组（或没有这个字段）且没写 `note` | 硬错："没搜还不写为什么，'有没有调研'只能靠猜" |
+
 **警告（不是硬错）**：`notWanted` / `freeVsFixed` 字段缺失 → warn + 台帐 `degraded`；
 `howWeVerify` 缺失 → warn（"谁点头算过"没写进契约）；
 `confirm` 非空但已 `confirmed:true` → 允许通过，warn"还有 N 条待确认问题没答，已按当前判据开跑"。
@@ -290,6 +302,100 @@ v2 新增的六条硬错：
 - 不因为 criteria 为空就拒跑（复述本身也算消化了一半，只会在台帐里提醒）；
 - 不改 `extract` / `norm` —— 换归一化不只是"更看重它"，是换了一把尺，那要改 adapter；
 - **不因为写了锚就改变搜索**：锚目前只进台帐与报告，**不进距离、不进搜索建议**（见 §7 已知缺口第一条）。
+
+---
+
+## 2.5 调研节点（research，02 号）
+
+需求转译回答"你要什么被复述清楚了吗"；调研回答**"为了做到它，你去查了什么、查到的变成了什么"**。
+它排在 `01 intent` 之后、`03 target` 之前 —— 因为它会改判据与起点，而起点距离就在 target 那一步算出来。
+
+**放哪**：`<out>/research.json`（默认）或 `--research <file>`。**没有这个文件不拒跑**，只记一条 `skipped` + 一行 warn。
+
+### 2.5.1 结构（照抄下面这份，改内容）
+
+```json
+{
+  "queries": ["二次元火焰特效 参考", "崩坏星穹铁道 火焰 配色"],
+  "findings": [
+    { "kind": "image", "ref": "refs/ref-a.png", "why": "同类高评分火焰，边缘有描边" },
+    { "kind": "doc",   "ref": "https://example.com/article", "why": "配色链：白芯→黄→橙→暗红" }
+  ],
+  "extracted": [
+    { "apply": "criteria", "id": "cov", "weight": 0.25, "target": 0.02, "confidence": 0.7, "source": "ref-a.png 的亮核占比" },
+    { "apply": "start",    "name": "widthPx", "value": 28, "confidence": 0.5, "source": "参考图里光束更粗" }
+  ],
+  "note": "配色链：白芯→黄→橙→暗红；描边比现版更硬"
+}
+```
+
+| 字段 | 是什么 | 硬要求 |
+|---|---|---|
+| `queries[]` | 实际搜过的 query | 可以是空数组（说明没搜），但**此时必须写 `note`** 说明为什么没搜（离线 / 没资料 / 只是复验都算） |
+| `findings[].kind` | `image`（参考图/帧）或 `doc`（文章/文档/网页） | 只认这两个 |
+| `findings[].ref` | 参考物的位置 | `image`：**必须真实存在**（相对 research.json 所在目录或绝对路径），不存在 = 硬错；`doc`：非空 URL/路径即可 |
+| `findings[].why` | 这条参考为什么有用 | 建议写（进台帐与报告） |
+| `extracted[].apply` | 这条"提取"往哪落 | 只认 `criteria`（改某条指标的 weight/target）与 `start`（改某个参数的起点值） |
+| `extracted[].id` | `apply:"criteria"` 时必填 | 必须是 adapter 里真实存在的指标 id（写错硬错） |
+| `extracted[].name` | `apply:"start"` 时必填 | 必须在参数白名单里（写错硬错） |
+| `extracted[].weight` / `.target` / `.value` | 要覆盖成多少 | `criteria` 至少给 weight 或 target 之一（都给就都覆盖）；`start` 必须给 `value`（数） |
+| `extracted[].confidence` | 这条提取有多确定（0~1） | **只记录，不打折、不决定要不要用**（引擎不做加权融合） |
+| `extracted[].source` | 这个数是从哪看出来的（哪张图哪个部位 / 哪段文档） | 写清楚；它是"这条判据凭什么这么改"的唯一来路 |
+| `note` | 一句话总结调研结论 | `queries` 空时**必填** |
+
+**不要写 `changed`**：写了也会被忽略（引擎自己比出来才是真的）。台帐里会留一句"文件里自报的 changed 已忽略"。
+
+### 2.5.2 引擎做什么（三件事，不多做）
+
+1. **读与校验**（全中文硬错）：图在不在、id/name 认不认识、queries 空有没有 note；
+2. **应用**：`criteria` 覆盖权重/目标值，`start` 覆盖起点值。顺序固定 **adapter → intent → research**（research 最后压，
+   所以它会盖掉 intent 写过的同一个值）；报告与台帐都写清"谁覆盖了谁"；
+3. **算起效**：对比"应用 research 之前"与"之后"的判据与起点，逐项列 `changed`。
+
+### 2.5.3 三种状态（这就是这一节的判据）
+
+| 情况 | 台帐 | 终端 | `report.md` |
+|---|---|---|---|
+| 有产物且 `changed` 非空 | `done`（`artifacts` 里放 `research.summary.json`） | 逐条打印 `[research] 改动：criteria.cov.weight 0.35 → 0.25` | 「调研（research · done）」+ changed 清单 |
+| 有产物但 `changed` 为空 | **`degraded`**，reason「装饰性调研：搜了/给了产物，但没改变任何判据或起点」 | `[research][warn]` 一行 | 「调研（research · degraded）」+「装饰性调研」 |
+| 没有产物 | `skipped`，reason「没提供调研产物（--research <file>）」 | `[research][warn] 没提供调研产物…`（不拒跑） | 「调研（research · skipped）」 |
+
+**为什么 degraded 不是 done**：搜了一堆图、写了一份好看的文件，但判据和起点一个都没动 —— 那"调研"只是开场白，
+这一轮还是按原判据在调。**这也是为什么 changed 必须由引擎算**：让被检查的人自己填结论，等于没检查。
+
+### 2.5.4 报告里长什么样
+
+```
+**调研（research · done）**
+
+- **搜索**：2 条 query —— 二次元火焰特效 参考；崩坏星穹铁道 火焰 配色
+- **参考**：2 条 findings（image 1 / doc 1） —— `refs/ref-a.png`（同类高评分火焰，边缘有描边）、`https://example.com/article`（配色链…）
+- **应用**：2 项（criteria 1 / start 1，来自 2 条 extracted）；**真正改了 2 项**（引擎自己比出来的，不认文件自报）
+- **changed 清单**：
+  - `criteria.size.weight 0.5 → 0.25`（依据：ref-a.png 的色相圆均值；confidence 0.7）
+  - `start.alpha 2 → 2.28`（依据：参考图里光束更粗；confidence 0.5）
+- **结论**：配色链：白芯→黄→橙→暗红
+- **覆盖顺序**：adapter → intent → research（research 最后压）；判据与起点都会进 run 指纹
+```
+
+同一份内容也落成 `<out>/research.summary.json`（台帐 `02-research.json` 的 `artifacts` 指向它），
+`best.json` 里还有一份机器可读的 `research` 块（含 `changed` / `affectsDistance`）。
+
+### 2.5.5 指纹（为什么两次不同调研不会撞 hash）
+
+`research.json` 的**声明内容**（`queries` / `findings` / `extracted` / `note`）进 run 指纹。
+判据与起点本来也进指纹，所以内容一变 hash 必变 —— 但把内容本身也放进去，是为了
+"这两次结论为什么不一样"能落在一个不同的 hash 上，而不是被同一个 hash 糊成同一次。
+**没给调研产物**时指纹里是 `null`，跨目录重跑照旧同 hash。
+
+### 2.5.6 它不做的事（别指望它）
+
+- **不会自己从图里提数**：`extracted` 是人/agent 给的（从参考图量出色相、占比、粗细这件事在 agent 里做）；
+  引擎只判定"这个值有没有真的落到判据上"。这是这一层最大的缺口，见 §7；
+- **不按 `confidence` 打折**：0.3 的结论和 0.9 的结论一样生效（写清 `source` 是你自己的事）；
+- **不校验 query 真的搜过**：它只记录"你说你搜了什么"，没有联网证据；
+- **不改 `extract` / `norm` / 白名单 / 预算**：只改 weight / target / 起点值；
+- **截图链路（`iter.ps1`）暂未接入**：research 只在命令链路（`cmdloop.mjs`）生效，见 §3.5。
 
 ---
 
@@ -323,6 +429,15 @@ reason 写"criteria[].target 在截图链路不生效……已记账，未参与
 
 `adapter.metrics: ["cov","lapVar"]` 这种 v1 写法没有 weight 槽位。要用 intent 覆盖权重，
 把它写成 v2 对象 `{id:"cov", extract:"cov", weight:0.35, norm:{...}}` —— 引擎会硬错提示，不会偷偷改写形状。
+
+### 3.5 research 只在命令链路（截图链路暂未接入）
+
+`harness/research.mjs` 由 `cmdloop.mjs` 直接调用。截图链路（`iter.ps1` + `finalize.js`）**没有** research 节点：
+它跑一轮的判据来自 `metrics2.js` 量目标帧/候选帧，起点在 PS 侧算，接入要动那条已经跑通的产品资产（`iter.ps1`），
+风险大于收益。所以截图链路的台帐仍然是 `01-intent → 02-target → …`（6 条），命令链路是 7 条。
+
+**不假装**：截图链路的 `report.md` 里不会出现「调研（research · …）」那一段，台帐里也没有 `research` 记录 ——
+"这一轮没调研"在截图链路里目前只能从"没有 research.json"这件事本身看出来。见 §7 缺口。
 
 ---
 
@@ -365,7 +480,7 @@ reason 写"criteria[].target 在截图链路不生效……已记账，未参与
 
 | 字段 | 类型 | 语义 |
 |---|---|---|
-| `node` | string | 节点名，小写 + `-`：`intent` / `target` / `stability` / `precheck` / `search` / `finalize` |
+| `node` | string | 节点名，小写 + `-`：`intent` / `research` / `target` / `stability` / `precheck` / `search` / `finalize` |
 | `seq` | number | 1 起连续，**等于文件名前两位** |
 | `status` | enum | `done` / `skipped` / `degraded` / `failed` |
 | `producer` | enum | `agent`（agent 填的，如 intent）/ `engine`（引擎跑的）/ `host`（宿主侧动作） |
@@ -397,11 +512,15 @@ reason 写"criteria[].target 在截图链路不生效……已记账，未参与
 | 节点 | 命令链路（cmdloop） | 截图链路（iter.ps1） |
 |---|---|---|
 | `01 intent` | 闸自己写（`intent.mjs`） | 闸自己写（`iter.ps1` 转 `intent.mjs gate`） |
-| `02 target` | cmdloop 写（目标指标/目标参数 + 起点） | `finalize.js` 补（`_run.json` 里的目标与起始帧） |
-| `03 stability` | cmdloop 写（done / degraded） | `finalize.js` 补成 `skipped`（截图链路没有这道闸，等价物是 `freeze.verify`） |
-| `04 precheck` | cmdloop 写 | `finalize.js` 补 |
-| `05 search` | cmdloop 写（轮数/评估次数/胜出轨迹） | `finalize.js` 补 |
-| `06 finalize` | cmdloop 写（hash + cleanup） | `finalize.js` 写（hash + 镜像/本体 sha） |
+| `02 research` | `research.mjs` 写（done / degraded / skipped） | **没有这一步**（未接入，见 §3.5） |
+| `03 target` | cmdloop 写（目标指标/目标参数 + 起点） | `finalize.js` 补（`_run.json` 里的目标与起始帧）→ 截图链路是 `02` |
+| `04 stability` | cmdloop 写（done / degraded） | `finalize.js` 补成 `skipped`（截图链路没有这道闸，等价物是 `freeze.verify`）→ `03` |
+| `05 precheck` | cmdloop 写 | `finalize.js` 补 → `04` |
+| `06 search` | cmdloop 写（轮数/评估次数/胜出轨迹） | `finalize.js` 补 → `05` |
+| `07 finalize` | cmdloop 写（hash + cleanup） | `finalize.js` 写（hash + 镜像/本体 sha）→ `06` |
+
+> 序号是**自动连续编号**的（`ledger.add` 按写入顺序发号），所以两条链路的编号不同不是 bug：
+> 命令链路多了 research 这一条。要读某一条就按**节点名**找（`nodes/*-research.json`），别写死序号。
 
 截图链路为什么由 `finalize.js` 补：这些数据全在 `logs/_run.json` 里，收尾时一次落盘最省事，
 而且**不用动 `iter.ps1` 的搜索主流程**（那块是跑通的产品资产，改它风险大于收益）。
@@ -446,6 +565,16 @@ reason 写"criteria[].target 在截图链路不生效……已记账，未参与
 - v1 intent 会标成 `intent v1 · degraded`，并多一行"降级：缺锚、反例、自由度…"；
 - 两个入口口径一致：命令链路由 `cmdloop.mjs` 直接算，截图链路由 `finalize.js` 读同一个文件
   （`harness/intent-summary.js` 是唯一实现，防止两份漂）。
+
+### 6.1.1 紧跟着那一段：调研摘要（0.9.0，02 号节点）
+
+命令链路的 `report.md` 在 intent 摘要下面还有一段「调研（research · done/degraded/skipped）」：
+搜了几条 query、几条 findings（image/doc 各几）、应用了几项、**changed 清单**、note。
+格式见 §2.5.4，数据来自 `<out>/research.summary.json`。
+
+与 intent 摘要的区别要记住：**intent 那四样不参与距离，research 会**（它改的是 weight/target/起点）。
+所以 research 摘要里 `affectsDistance: true` 时，那份 changed 清单就是"这次调研到底改了什么"的答案；
+改成 `false` 且状态是 `degraded`，就是**装饰性调研**。
 
 ### 6.2 跑的时候怎么看（0.5.2 · `watch.mjs`）
 
@@ -529,11 +658,15 @@ Ctrl+C 退出 · 跑完自动显示 summary
 |---|---|---|
 | **锚还没进搜索**（v2 最大的缺口） | `anchors` / `notWanted` / `freeVsFixed` 只进台帐与报告；搜索仍然只认 `criteria` 的距离。也就是说：**写了锚也不会让搜索更"像那张图"**，它只是把"要什么"钉住了、让人有据可查 | 三条候选路（按代价从低到高）：① `notWanted` 做**拒收闸**（候选命中反例关键词/指标区间 → 直接判负，不进最优，成本≈一次字符串/区间比较）；② `criteria[].anchor` 指向 `kind:"image"` 时，把那条锚图当**第二目标帧**算出 `anchorDist`，进**独立列**但不进主距离（"锚距离"单独看，避免又变成加权平均）；③ 起步方向用锚做**初始化**（按锚图实测指标反推起点参数），省掉前两轮空转。共同纪律：锚只能**约束搜索**或**另立一列**，一旦混进主距离就又变成"指标替代审美" |
 | **不变量写错、事后来才发现** | **已补（0.8.0）**。原来门禁只在当下判，三种病都测不出来。现在各有出口：① **假门**（一条不变量一次没拦住候选）→ 终端 warn + 报告「本次」列标 `⚠ 本次未拦任何候选`（`--no-fake-gate-warn` 只关终端）；② **写死了**（连续 3 轮没有新候选过门）→ 早停并写 `stop=invariant-blocked`，明确区别于 `all-dead`/`no-alive-after-precheck`；③ **事后改了不变量** → `node harness/audit.mjs <run> --intent <intent.json>` 拿今天的标准逐点复算旧 run（§8） | 见 §1.7「门禁自己的三种病」与 §8。剩下的缺口只有一条：**贴阈值提醒只看目标那一点**（不回溯历史点），以及复算要求 `outputs/` 还在 |
-| **research 节点没有** | "开干之前有没有先去搜索调研"这件事**还没有节点**：`{findings[], extracted[], suggestedStart, changed[]}` 只有设计稿 | 下一个插槽，判据是 `changed.length`（搜了但没改任何判据/起点 → `degraded`，标"装饰性调研"） |
+| **research 从图里提数仍是人/agent 干的**（0.9.0 之后最大的一条） | 引擎只认 `extracted[]` 里的数字：从参考图量出色相/占比/粗细这件事在 agent 里做。也就是说 `changed` 能证明"提取出来的值落了地"，但证明不了"这个值是从图里量出来的"——`source` 只是自述 | 三条候选路（按代价从低到高）：① 要求 `source` 里出现 reference 的 `ref`（点得住那张图才有来路）；② 给 `kind:"image"` 的 finding 存一份**量出来的特征**（引擎出一份 `findings[].measured`，跟 extracted 的 `source` 比对）；③ 真接一次"从图里提数"的提取器（那是 metrics2.js 的活，得进浏览器链路） |
+| **research 只接了命令链路** | 截图链路（`iter.ps1`/`finalize.js`）没有 research 节点，那边的"开干前调研"仍然没有证据（§3.5） | 把 `<Out>\research.json` 的权重覆盖并进 `intent\adapter.effective.json`、起点覆盖并进 `_run.json`；代价是要动 PS 侧主流程 |
+| **`confidence` 不打折** | 0.3 和 0.9 一样生效，只做记录 | 要么按 confidence 给权重（那就成了另一套判据，容易又变成"指标替代审美"），要么只保留"低 confidence 必须写 source"这条弱检查 |
+| **query 没有联网证据** | 只记录"你说你搜了什么"，没验证真搜过 | 需要宿主侧工具配合（搜索 API 的调用日志），引擎本身不联网 |
+| **没有"反事实对比"** | 同一次 run 只留一条轨迹 | 同一套台帐跑两遍（有 research vs 无 research）逐节点比 —— 现在有了 `research.skipped` 这一条，对比成本已经很低 |
 | `anchors[].why` 不做语义检查 | 写"好看"也能过（只校验 has-text） | 需要人；或者要求 `why` 里出现锚的具体部位（"亮核/边缘/配色链"这类词表） |
 | 截图链路的 `ms` 是 `null` | 没逐节点计时（改 iter 主流程代价大） | 在 `_run.json` 里加分段计时 |
 | `intent` 只覆盖权重与目标 | 不改 `extract` / `norm` / 白名单 / 预算 | 按需扩（每条都要有对应的"改了什么"记账） |
-| 没有"反事实对比" | 同一次 run 只留一条轨迹 | 同一套台帐跑两遍（有调研 vs 没调研）逐节点比 |
+| 没有"反事实对比" | 同一次 run 只留一条轨迹 | 同一套台帐跑两遍（有调研 vs 没调研）逐节点比 —— 现在两边都会留下 `research` 节点的 done/degraded/skipped，对比成本很低 |
 | 台帐不做 schema 校验文件 | 字段契约写在本文 + `ledger.js` 里硬校验 | 将来定下来再出 JSON Schema（引擎和界面对它编程） |
 | `intent` 不做语义检查 | `restate` / `understood` 写得再敷衍也能过（只查长度） | 需要人；或者加一个"复述里必须出现指标名"的弱检查 |
 
@@ -588,8 +721,8 @@ node harness/audit.mjs <run目录> --intent <intent.json> [--json] [--strict]
 
 ```bash
 node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/r1 --budget 12 --no-intent
-ls runs/r1/nodes/            # 01-intent … 06-finalize
-head -14 runs/r1/report.md   # 汇总行 + 需求转译摘要段
+ls runs/r1/nodes/            # 01-intent / 02-research / 03-target … 07-finalize（没有 research.json 时 02 是 skipped）
+head -20 runs/r1/report.md   # 汇总行 + 需求转译摘要段 + 调研摘要段
 ```
 
 想验"闸真的会拦"：删掉 `runs/r2/intent.json` 再跑，应该拿到
@@ -611,7 +744,7 @@ head -14 runs/r1/report.md   # 汇总行 + 需求转译摘要段
 #    examples/command-echo.json 的目标 size=28 → 必须 exit 1，错误里有 id="size_floor"
 # ② 候选被拒 → 跑通，但报告里看得见
 grep -n "硬不变量" runs/r1/report.md
-grep -n "门禁拒绝" runs/r1/nodes/05-search.json
+grep -n "门禁拒绝" runs/r1/nodes/06-search.json
 # ③ 没写 invariants → 终端有那条默认 warn；报告里写"门禁没装"
 #    加 --no-invariants-warn 后终端安静，但报告仍如实记录
 ```
@@ -625,6 +758,20 @@ grep -n "未拦任何候选" runs/r1/report.md
 node -e "console.log(require('./runs/r1/best.json').stop)"   # { reason: 'invariant-blocked', detail: '…' }
 # ③ 贴阈值：目标观测贴着阈值 → 终端与报告各一条"阈值很近"
 grep -n "阈值很近" runs/r1/report.md
+```
+
+想验"调研真的改变了这次搜索"（0.9.0）：
+
+```bash
+# ① 给一份真改了东西的 research.json（<out>/research.json 或 --research <file>）
+#    criteria 改 weight + start 改起点 → 台帐 02-research 是 done，report 顶部有「调研（research · done）」
+grep -n "调研（research" runs/r1/report.md
+node -e "const r=require('./runs/r1/best.json').research; console.log(r.status, r.changed.map(c=>c.text))"
+# ② 装饰性调研：把 weight 写成 adapter 原值（应用了但等于没动）→ 02-research 是 degraded、reason 含"装饰性调研"
+# ③ 不给 research.json → 02-research 是 skipped，终端一行 [research][warn]（不拒跑）
+# ④ 参考图不存在 → exit 1（[调研] … 参考图不存在：…），02-research 是 failed，没有 best.json
+# ⑤ changed 不许信文件自报：在 research.json 里写 "changed": ["随便编两项"] —— 结论不变（引擎自己算）
+node test/research.test.mjs        # 10 条；⑨ 用变异体证明"⑤ 装饰性调研"这条断言真的有牙
 ```
 
 想验"复算历史结论"（0.8.0）：

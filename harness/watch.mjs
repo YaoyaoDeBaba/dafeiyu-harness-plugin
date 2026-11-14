@@ -23,6 +23,10 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const NODE_ORDER = ['intent', 'target', 'stability', 'precheck', 'search', 'finalize'];
+// 除了上面这 6 条，还有**按需出现**的节点（目前只有 research）：它排在 intent 之后（02 号），
+// 但没给调研产物时也要占一行（skipped），没有这条链路的 run 里则不占位 —— 所以不写进 NODE_ORDER，
+// 而是"有就插在它该在的位置"。插错位置的后果很具体：一个 02 号的节点画在 finalize 后面，人会读成最后一步。
+const EXTRA_NODE_AFTER = { research: 'intent' };
 const SYM = { done: '✔', running: '⏝', skipped: '–', degraded: '!', failed: '✗', pending: '·' };
 const GREEK = { alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', theta: 'θ', lambda: 'λ', mu: 'μ', sigma: 'σ', omega: 'ω' };
 const NO_LIVE_TEXT = '（没有实时评估流：这条链路只写节点台帐）';
@@ -186,6 +190,16 @@ function snapshot(outDir) {
   const byName = new Map();
   for (const n of nodes) byName.set(n.node, n);
   const names = NODE_ORDER.concat([...byName.keys()].filter((n) => !NODE_ORDER.includes(n)));
+  // 按需出现的节点插回它该在的位置（research 在 intent 之后）。
+  const extra = [...byName.keys()].filter((n) => !NODE_ORDER.includes(n));
+  for (const n of extra) {
+    const after = EXTRA_NODE_AFTER[n];
+    if (!after) continue;
+    const at = names.indexOf(after);
+    if (at < 0) continue;
+    names.splice(names.indexOf(n), 1);
+    names.splice(at + 1, 0, n);
+  }
 
   const view = names.map((name) => {
     const rec = byName.get(name);

@@ -115,6 +115,7 @@ node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --
 |---|---|---|---|
 | 给一份需求转译 | `--intent <file>` | `-Intent <file>` | 指定需求转译文件；**不给则读 `<out>/intent.json`** |
 | 显式跳过 | `--no-intent` | `-NoIntent` | 放行，但台帐里必须留一条 `intent` = `skipped`（跳过要有名字） |
+| 给一份调研产物 | `--research <file>` | 暂不支持（截图链路未接） | 调研节点：搜了哪些 query、参考了什么、从此提取的判据/起点；**changed 由引擎自己算，不信文件自报** |
 
 ```bash
 # 1) 先跑一次，让引擎把模板写出来（它会拒跑并给出中文说明 + <out>/intent.template.json）
@@ -272,11 +273,12 @@ static/server.mjs                静态服：node server.mjs <root> <port> [host
 skills/selfloop/                 技能：SKILL.md + references/（通用方法 + 宿主改造 + 命令观测 + domains-vfx.md）
 locale/{zh,en}.json              插件清单里的标题与描述（权臣 / Selfloop）
 CHANGELOG.md                     改动记录（随包分发，`files` 里有它）
-test/plugin.test.mjs             55 个用例（不进包）
+test/plugin.test.mjs             57 个用例（不进包）
 test/hue.test.mjs                12 个用例（色相判据，不进包）
 test/command.test.mjs            21 个用例（命令观测 + 弄坏能红 + 包体积预算示例，不进包）
 test/audit.test.mjs              10 个用例（历史证据包复算 + --dir 批量 + 不可判定/截断，不进包）
 test/crash.test.mjs              1 个用例（目标参数 == 起点参数的退化配置回归，不进包）
+test/research.test.mjs           10 个用例（调研节点：应用的项由引擎自己算 changed，装饰性调研记 degraded，不进包）
 ```
 
 `harness/` 里逐件的作用：
@@ -343,10 +345,11 @@ test/crash.test.mjs              1 个用例（目标参数 == 起点参数的�
 
 ```powershell
 cd <包目录>
-node test/plugin.test.mjs      # 55 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）、写护栏（段边界/大小写/junction/端到端拒写）
+node test/plugin.test.mjs      # 57 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）、写护栏（段边界/大小写/junction/端到端拒写）
 node test/invariants.test.mjs  # 13 个用例：硬不变量（目标/起点硬错、候选判废不进距离、默认 warn 与开关、文法错、字段取不到、两条变异体证明"弄坏能红"、截图链路 fail-closed）+ 0.8.0 三条门禁病（假门告警 / `stop=invariant-blocked` 早停 / 目标贴阈值）
 node test/audit.test.mjs       # 10 个用例：拿今天的标准复算旧 run（更严 → exit 1 + 新最优、更松 → exit 0、--strict、缺 outputs → exit 2、--json 字段齐、截图链路"暂不支持"）+ `--dir` 批量总表、全部不可判定 → exit 2、`capped` 截断点记 undecidable、两条变异体证明这两条断言有牙
 node test/crash.test.mjs       # 1 个用例：目标参数 == 起点参数（退化配置）不崩 —— [start] 正常打印、startDist 不是 null、输出被复用但距离补算、标 degraded、同 seed 两次 hash 一致
+node test/research.test.mjs    # 10 个用例：调研节点（完整调研 done / 装饰性调研 degraded / 没给产物 skipped + warn / 图 ref 不存在硬错 / 引擎自己算 changed 不信自报 / 两条变异体）
 ```
 
 `npm test` 一条命令跑完全部：55 + 12 + 21 + 19 + 6 + 6 + 13 + 10 + 1 = **143**。

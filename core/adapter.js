@@ -179,6 +179,23 @@ function normalizeMetrics(raw) {
   })
 }
 
+// 白名单里 `name=初值` 才给得出**起点值**（iter.ps1 §2 / harness/cmdlib.mjs 的 readWhitelist 同口径）。
+// 只写 `name` 的轴，起点要读基线参数文件才知道（文件可能不在、也可能是 %ENV% 模板），静态判不了；
+// 任一项看不懂 / 没有初值 → 返回 null（= 别猜，跳过这条检查）。
+function whitelistStartValues(list) {
+  if (!Array.isArray(list) || list.length === 0) return null
+  const out = {}
+  for (const rawItem of list) {
+    const item = String(rawItem ?? '').trim()
+    if (!item) return null
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(-?\d*\.?\d+(?:[eE][-+]?\d+)?)$/.exec(item)
+    if (!m) return null
+    if (m[1] in out) continue
+    out[m[1]] = Number(m[2])
+  }
+  return Object.keys(out).length ? out : null
+}
+
 function normalizePenalties(score) {
   return (score?.penalties ?? []).map((p) => ({
     id: String(p?.id ?? ''),
@@ -508,6 +525,30 @@ export function parseAdapter(file, harnessDir, opts = {}) {
     targetParams = raw && typeof raw === 'object' && !Array.isArray(raw) ? { ...raw } : {}
     if (Object.keys(targetParams).length === 0) {
       warnings.push('adapter.target.mode=params 但 target.params 为空：iter.ps1 §1 会报错（拒绝静默用默认目标）')
+    } else {
+      // 起点即目标（**静态**退化检查）：adapter 里 target.params 与白名单起点一模一样时，
+      // 搜索没有起点差异可用，降幅恒 n/a、best 只能等于起点 —— 0.8.1 之前这还会让起点读到
+      // 目标那条 dist=null 的缓存直接崩。跑一轮能发现（cmdloop 会标 degraded），但没必要等那么久。
+      // 判据与 cmdloop.mjs 的 targetEqualsStart 同口径：键集合相同 + 每根轴数值相等（1e-9）。
+      // 只比"静态可比"的那种：白名单 `name=初值` 才给得出起点值，只写 `name` 的轴要读基线文件，这里不猜。
+      // 对比不了的另一类退化（target.mode=metrics 的目标值恰好等于起点评估出来的值）也判不了 —— 只能跑起来才知道。
+      const startValues = whitelistStartValues(a.params?.list)
+      if (startValues) {
+        const startKeys = Object.keys(startValues)
+        const targetKeys = Object.keys(targetParams)
+        const sameKeys = startKeys.length === targetKeys.length && targetKeys.every((k) => k in startValues)
+        const sameValues =
+          sameKeys &&
+          startKeys.every((k) => {
+            const t = Number(targetParams[k])
+            return Number.isFinite(t) && Math.abs(startValues[k] - t) < 1e-9
+          })
+        if (sameValues) {
+          warnings.push(
+            'target.params 与白名单起点完全相同：搜索没有起点差异可用（降幅恒 n/a，best 只能等于起点）—— 要么改起点，要么改目标',
+          )
+        }
+      }
     }
   } else if (targetMode === 'metrics') {
     // 命令观测专用：直接给"目标数值"，不跑命令（浏览器链路没有这个模式）

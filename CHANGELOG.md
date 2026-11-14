@@ -3,6 +3,21 @@
 > 规矩：**改了 `harness/` 里的执行器就要在这里记一笔**，并注明"要不要回灌上游原件（案例 A，见 README「案例与来源」）"。
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
+## 0.9.0（未发布）· 调研节点 + 起点即目标的静态提示
+
+> 这一版把台帐里缺的那个节点补上：**开干之前到底有没有搜、搜到的东西有没有真的改变判据**。
+
+- **esearch 节点（命令链路）**：--research <file> 或 <out>/research.json，结构 {queries, findings[], extracted[], note}。
+  - indings[].kind=image 的 ef 必须真实存在；xtracted[].apply 只认 criteria/start，id/name 必须在 adapter 里存在；queries 为空时必须写 
+ote 说明为什么没搜。
+  - **changed 由引擎自己算**（对比应用前后），文件里自报的 changed 一律忽略并 warn；应用了但一项没变 → 节点记 degraded，理由「装饰性调研」。
+  - 没给产物 → skipped + 一行 warn（跑通，不拒跑）；research 内容进 run 指纹，两次不同调研不会撞 hash。
+  - 报告顶部多一段「调研（research · done/degraded/skipped）」，列出 query、findings、应用项、changed 清单与结论。
+- **起点即目标的静态提示**：selfloop_probe 解析 adapter 时，若 	arget.params 与白名单起点（
+ame=初值 写法）完全一致 → 一条 warning「搜索没有起点差异可用」，不用跑一轮才发现。白名单只写名字（给不出初值）或 	arget.mode=metrics 时判不了，代码注释里写明「只能跑起来才知道」。
+- 测试：plugin 55→57（T16c/T16d）、新增 research 10 条；
+pm test 合计 **155**。
+
 ## 0.8.0（未发布）· 门禁自己也要被验收：假门 / 写死了 / 贴阈值 + 拿今天的标准复算旧 run
 
 > 这一版动 `harness/`（`cmdloop.mjs` / `invariants.mjs` + 新文件 `audit.mjs`）、文档与测试。

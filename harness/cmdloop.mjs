@@ -12,9 +12,10 @@
 //        [--step-ratio 0.1] [--max-rounds 20] [--max-stagnant 2] [--strategy coordinate|random]
 //        [--params a,b,c]            # 覆盖 adapter.params.list（name 或 name=初值）
 //        [--intent <file>] [--no-intent]   # 需求转译闸（0.5.0）：默认读 <out>/intent.json
+//        [--research <file>]               # 调研节点：默认读 <out>/research.json（没有 = 台帐记 skipped，不拒跑）
 //        [--no-invariants-warn]            # 关掉"没写硬不变量"的默认 warn（0.7.0；门禁仍没装）
 //
-// 产出（--out 下）：curve.csv / best.json / report.md / params\ / outputs\ / **nodes\（节点台帐 0.5.0）**
+// 产出（--out 下）：curve.csv / best.json / report.md / params\ / outputs\ / research.summary.json / **nodes\（节点台帐 0.5.0）**
 'use strict';
 
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -40,6 +41,15 @@ import {
   stepOf,
 } from './cmdlib.mjs';
 import { INTENT_MUTANT, NO_INTENT_REASON, criteriaOverrides, intentNodeRecord, intentSummaryLines, intentSummaryOf, resolveIntent, writeIntentSummary } from './intent.mjs';
+import {
+  RESEARCH_FILE,
+  RESEARCH_SUMMARY_FILE,
+  researchNodeRecord,
+  researchReportLines,
+  researchSummaryOf,
+  resolveResearch,
+  writeResearchSummary,
+} from './research.mjs';
 import {
   INVARIANTS_MUTANT,
   assertInvariantPass,
@@ -72,6 +82,7 @@ const USAGE = `用法：
   --no-intent         显式跳过需求转译（放行的唯一姿势；台帐 nodes/01-intent.json 记 skipped 并写明原因）
   --no-invariants-warn  没写硬不变量时不再 warn（默认 warn：搜索会拿底线换分数）
   --no-fake-gate-warn   某条硬不变量一次都没拦住候选时不再 warn（0.8.0；报告里照写"本次未拦任何候选"）
+  --research <file>   调研产物（缺省读 <out>/research.json）；没有它 = 台帐记 skipped + warn 一行（不拒跑）
   --help              这份说明
 
 需求转译闸（0.5.0；intent v2 在 0.5.1，比活性预检更早，因为它会改判据）：
@@ -83,8 +94,17 @@ const USAGE = `用法：
   confirmed 不是 true = 硬错，并把 confirm[] 里待确认的问题原样列出来。
   确实不想走这一步就显式 --no-intent：放行，但台帐会记一条 skipped —— 跳过要有名字。
 
-观测稳定性闸（0.4.1）：搜索前先用起点参数把命令连跑 observe.stability.repeat 次（默认 3），
-任一指标相对离散度 (max-min)/max(|mean|,1e-9) 超过 maxSpread（默认 0.02）就中文硬错。
+调研节点（research，排在 intent 之后、target 之前）：
+  放一份 {queries, findings, extracted, note} 到 <out>/research.json（或 --research <file>）—— "开干之前去搜了什么"。
+  findings[].kind=image 的 ref 必须是**真实存在的文件**（图不在 = 没有参照物），doc 只需非空 URL/路径；
+  queries 可以为空数组，但那时必须有 note 说明为什么没搜。
+  extracted[] 只认 apply:"criteria"（改某条指标的 weight/target）与 apply:"start"（改某个参数的起点值）；
+  id 必须在 adapter 指标里、name 必须在参数白名单里，写错 = 中文硬错（绝不静默忽略）。
+  覆盖顺序 adapter → intent → research（research 最后压），三元组都进 run 指纹。
+  **起效由引擎自己算**：对比"应用 research 之前/之后"逐项列 changed（文件里自报的 changed 一律忽略）。
+  有产物但 changed 为空 = 装饰性调研 → 台帐记 degraded；没有产物 → 台帐记 skipped + 终端 warn 一行（不拒跑）。
+
+观测稳定性闸（0.4.1）：搜索前先用起点参数把命令连跑 observe.stability.repeat 次（默认 3），任一指标相对离散度 (max-min)/max(|mean|,1e-9) 超过 maxSpread（默认 0.02）就中文硬错。
 这几次是真实评估、记进预算（默认多花 2 次）；预算不够会硬错提示提高 --budget 或显式 repeat=1。
 
 硬不变量（0.7.0，默认行为不变）：
@@ -113,6 +133,7 @@ function parseArgs(argv) {
     strategy: 'coordinate',
     params: '',
     intent: '',
+    research: '',
     noIntent: false,
     noInvariantsWarn: false,
     noFakeGateWarn: false,
@@ -129,6 +150,7 @@ function parseArgs(argv) {
     '--strategy': 'strategy',
     '--params': 'params',
     '--intent': 'intent',
+    '--research': 'research',
   };
   for (let i = 0; i < argv.length; i += 1) {
     const k = argv[i];
@@ -515,9 +537,90 @@ function run(args) {
   if (targetOverrides.length) {
     log(`[target] intent 覆盖目标值：${targetOverrides.map((o) => `${o.id} ${num(o.from)} → ${num(o.to)}`).join('  ')}`);
   }
+  // ---------------------------------------------------------------- 调研节点（research，排在 intent 之后、target 之前）
+  // 位置：**所有评估之前**（起点那一次就在下面），因为它会改判据的权重/目标值与起点值 —— 顺序固定
+  // adapter → intent → research（research 最后压），所以这里吃的是**已经过 intent 覆盖**的那一份。
+  //
+  // 这一节点回答的是"开干之前有没有真的去搜、搜到的有没有改变开干的方式"。所以：
+  //   · 有产物且 changed 非空 → done（改动逐项写进台帐与报告）；
+  //   · 有产物但 changed 为空 → **degraded**（装饰性调研：搜了/写了文件，判据和起点一个没动）；
+  //   · 没有产物 → skipped + 终端 warn（不拒跑，但"没搜"这件事必须有名字）。
+  // changed **由引擎自己算**（对比应用之前/之后），文件里自报的 changed 一律忽略。
+  let researchSummary = null;
+  let researchFingerprint = null;
+  const researchTargetOverrides = [];
+  const researchStartOverrides = [];
+  {
+    const rt0 = Date.now();
+    RUN_PHASE = 'research';
+    const research = resolveResearch({
+      outDir,
+      researchPath: args.research,
+      metricIds: plan.observe.metricIds,
+      wl: plan.wl,
+      // 这三份都是"应用 research 之前"的真值（intent 已覆盖过），changed 就是拿它们比的
+      currentWeights: Object.fromEntries(plan.metrics.map((m) => [m.id, Number(m.weight)])),
+      currentStart: { ...plan.startParams },
+      currentTargets: { ...trow },
+    });
+    // ① 判据权重（research 最后压 → 直接再 plan 一次；不重算等于没改）
+    if (Object.keys(research.weights).length) {
+      applyMetricOverrides(plan, { weights: research.weights });
+      log(`[research] 判据被覆盖（在 intent 之后压）：${plan.scoreText}`);
+    }
+    // ② 起点值
+    for (const [k, v] of Object.entries(research.start)) {
+      researchStartOverrides.push({ name: k, from: Number.isFinite(Number(plan.startParams[k])) ? Number(plan.startParams[k]) : null, to: round6(v) });
+      plan.startParams[k] = round6(v);
+    }
+    // ③ 目标值：落在 trow 上（必须在算起点距离之前）
+    for (const [id, v] of Object.entries(research.targets)) {
+      const from = trow[id];
+      researchTargetOverrides.push({ id, from: from === undefined ? null : from, to: v });
+      trow[id] = v;
+    }
+    if (researchTargetOverrides.length) {
+      log(`[research] 覆盖目标值：${researchTargetOverrides.map((o) => `${o.id} ${num(o.from)} → ${num(o.to)}`).join('  ')}`);
+    }
+    // 摘要落盘只在**真有产物**时做：skipped 没有调研产物，再造一份"摘要"就成了"给没做的事记账"
+    const summaryFile = research.status === 'skipped' ? '' : writeResearchSummary(outDir, research);
+    researchSummary = researchSummaryOf(research);
+    // 进 run 指纹的**只有文件内容本身**（声明了什么），不是"算出来的 changed"（那是结果，不是决策配置）；
+    // 但内容一变，判据/起点必然跟着变，所以两次不同调研的 run 不会撞 hash。
+    researchFingerprint = research.path
+      ? {
+          queries: research.queries,
+          findings: research.findings.map((f) => ({ kind: f.kind, ref: f.ref, why: f.why })),
+          extracted: research.extracted.map((x) =>
+            x.apply === 'criteria'
+              ? { apply: x.apply, id: x.id, weight: x.weight, target: x.target, confidence: x.confidence, source: x.source }
+              : { apply: x.apply, name: x.name, value: x.value, confidence: x.confidence, source: x.source },
+          ),
+          note: research.note,
+        }
+      : null;
+    ledger.add(researchNodeRecord(research, { ms: Date.now() - rt0, summaryFile: summaryFile ? RESEARCH_SUMMARY_FILE : '' }));
+    RUN_PHASE = '';
+    if (research.status === 'skipped') {
+      log(`[research][warn] ${research.reason}：开干之前没有"搜索调研"的证据（判据与起点全部沿用 adapter + intent）—— 台帐记 skipped`);
+    } else {
+      log(
+        `[research] ${research.status === 'degraded' ? '装饰性调研（degraded）' : '过闸'}：queries ${research.queries.length} 条，` +
+          `findings ${research.findings.length} 条（image ${researchSummary.findings.image} / doc ${researchSummary.findings.doc}），` +
+          `应用 ${research.applied.length} 项，**真正改了 ${research.changed.length} 项**`,
+      );
+      for (const c of research.changed) log(`[research] 改动：${c.text}${c.origin ? '（' + c.origin + '）' : ''}`);
+      if (research.note) log(`[research] 结论：${research.note}`);
+      for (const w of research.warnings) log(`[research][warn] ${w}`);
+      if (research.status === 'degraded') log(`[research][warn] ${research.reason}`);
+    }
+    RUN_PHASE = 'target';
+  }
+
   // 指纹与报告都用**实际生效**的目标值（覆盖过就不是 adapter 原来那个了 —— 否则 hash 会和真实判据脱钩）
   targetInfo.effective = { ...trow };
   if (targetOverrides.length) targetInfo.intentOverrides = targetOverrides;
+  if (researchTargetOverrides.length) targetInfo.researchOverrides = researchTargetOverrides;
 
   // 硬不变量 · 目标也要过（0.7.0）：目标自己违规 = 判据/目标自相矛盾，拒绝开跑。
   // 两种目标来源都过：target.params 跑出来的那一次观测已由 runEval 过门（这里只判结论）；
@@ -528,10 +631,10 @@ function run(args) {
     const eff = invGate.check({ metrics: trow, fields: {} }, { seq: null, phase: 'target' });
     assertInvariantPass(eff, '目标（adapter.target.metrics 直接给的数值）');
   }
-  // intent 覆盖过目标值时，覆盖后的生效目标也要过（否则"必须无损"这类不变量会和被改过的目标打架）
-  if (targetOverrides.length) {
+  // intent / research 覆盖过目标值时，覆盖后的生效目标也要过（否则"必须无损"这类不变量会和被改过的目标打架）
+  if (targetOverrides.length || researchTargetOverrides.length) {
     const eff = invGate.check({ metrics: trow, fields: targetRec ? targetRec.fields : {} }, { seq: targetRec ? targetRec.seq : null, phase: 'target' });
-    assertInvariantPass(eff, '目标（intent 覆盖后的生效值）');
+    assertInvariantPass(eff, '目标（intent/research 覆盖后的生效值）');
   }
   // 目标贴阈值提醒（0.8.0）：目标**通过了**，但贴着边界 —— 今天合格，下一版判据微调就可能翻脸。
   // 用**实际生效**的目标观测（intent 覆盖过的值才是真判据），不是 adapter 原来那组。
@@ -576,7 +679,7 @@ function run(args) {
     status: degraded.length ? 'degraded' : 'done',
     producer: 'engine',
     ms: Date.now() - tTarget,
-    inputs: targetInfo.kind === 'metrics' ? ['adapter.target.metrics', 'intent.criteria[].target'] : ['adapter.target.params', 'adapter.config.path', 'intent.criteria[].target'],
+    inputs: targetInfo.kind === 'metrics' ? ['adapter.target.metrics', 'intent.criteria[].target', 'research.extracted[].target/start'] : ['adapter.target.params', 'adapter.config.path', 'intent.criteria[].target', 'research.extracted[].target/start'],
     decision: {
       why:
         targetInfo.kind === 'metrics'
@@ -585,6 +688,8 @@ function run(args) {
       basis: [
         `目标（生效值）：${plan.observe.metricIds.map((id) => id + '=' + num(trow[id])).join('  ')}`,
         ...targetOverrides.map((o) => `intent 覆盖 ${o.id}：${num(o.from)} → ${num(o.to)}`),
+        ...researchTargetOverrides.map((o) => `research 覆盖 ${o.id}：${num(o.from)} → ${num(o.to)}`),
+        ...researchStartOverrides.map((o) => `research 覆盖起点 ${o.name}：${num(o.from)} → ${num(o.to)}`),
         `起点距离 d=${d4(startDist)}`,
         `起点参数：${plan.wl.map((k) => k + '=' + num(baseParams[k])).join('  ')}`,
         invGate.declared
@@ -989,6 +1094,10 @@ function run(args) {
     // 硬不变量（0.7.0）：门禁**文法**进指纹（换不变量本来就该换 hash）；
     // 拒绝的**次数/样本**不进指纹 —— 那是观测结果，不是决策配置（换 out 目录重跑必须还是同一个 hash）。
     invariants: { mutant: INVARIANTS_MUTANT, items: invGate.items.map((it) => [it.id, it.text]) },
+    // 调研（research）：**文件内容本身**进指纹 —— 两次不同的调研 run 必须换 hash，
+    // 否则"这两次结论为什么不一样"会被同一个 hash 糊成同一个判据。
+    // 只放声明（queries / findings / extracted / note），不放算出来的 changed（那是结果，不是配置）。
+    research: researchFingerprint,
     whitelist: plan.wl.map((k) => k + ':' + r6(baseParams[k])),
     base: plan.baseSha256,
     metricsCfg: { metrics: JSON.stringify(plan.scoreCfg.metrics ?? plan.observe.metrics), score: JSON.stringify(plan.scoreCfg) },
@@ -1055,7 +1164,7 @@ function run(args) {
     schema: 'cmd-iter/1',
     hash,
     hashOf:
-      '决策指纹：目标锚点指标 / 指标与距离配置 / 命令与解析方式 / 种子与步长 / 白名单与起始值 / 基线参数文件 / 硬不变量文法 / 预检结果 / 每点参数与距离 / 终止原因。不含时间、路径、原始命令输出',
+      '决策指纹：目标锚点指标 / 指标与距离配置 / 命令与解析方式 / 种子与步长 / 白名单与起始值 / 基线参数文件 / 硬不变量文法 / 调研内容（queries/findings/extracted）/ 预检结果 / 每点参数与距离 / 终止原因。不含时间、路径、原始命令输出',
     metricIds: plan.observe.metricIds,
     metricsCfg: { metrics: plan.observe.metrics, score: plan.scoreCfg },
     target: targetInfo,
@@ -1098,6 +1207,9 @@ function run(args) {
     bestDist: r6(bestDist),
     dropAbs,
     dropPct,
+    // 调研（research，02 号节点）：搜了什么 / 参考了几条 / 应用了几项 / **引擎自己算出来的 changed**。
+    // status=skipped 表示这次没给调研产物；degraded 表示"装饰性调研"（给产物但没改动判据/起点）。
+    ...(researchSummary ? { research: researchSummary } : {}),
     stop: { reason: stopReason, detail: stopDetail },
     // 退化配置（起点即目标 / 起点已命中目标）：能跑完，但"调到目标了"这句话在它身上不成立 ——
     // 机器读这一条，别只看 dropPct（那种 run 的降幅恒为 n/a）。
@@ -1149,7 +1261,7 @@ function run(args) {
   writeFileSync(join(outDir, 'best.json'), JSON.stringify(bestJson, null, 2), 'utf8');
 
   // ---------------------------------------------------------------- report.md
-  writeFileSync(join(outDir, 'report.md'), buildReport({ plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams, dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outputs, outDir, startedAt, endedAt, stability, stabCfg, nodes: ledger.nodes, intentSummary, invSummary: invGate.summary(), invDeclared: invGate.declared, rejectedPrecheck, fakeGate, targetProximity, degraded, gateBlock: { rounds: gateBlockRounds, streak: gatedStreak } }), 'utf8');
+  writeFileSync(join(outDir, 'report.md'), buildReport({ plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams, dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outputs, outDir, startedAt, endedAt, stability, stabCfg, nodes: ledger.nodes, intentSummary, researchSummary, invSummary: invGate.summary(), invDeclared: invGate.declared, rejectedPrecheck, fakeGate, targetProximity, degraded, gateBlock: { rounds: gateBlockRounds, streak: gatedStreak } }), 'utf8');
 
   const summary = `HASH ${hash}\nstart=${r6(startDist)} best=${r6(bestDist)} drop=${dropPct === null ? 'n/a' : dropPct + '%'} stability=${stability ? (stability.checked ? 'ok' : 'off') : 'skipped'} invariants=${invGate.declared ? invGate.items.length + '条/拒' + invGate.summary().rejected : 'off'} stop=${stopReason} used=${usage.used}/${args.budget} elapsed=${elapsedSec}s nodes=${ledger.nodes.length}`;
   log(summary);
@@ -1172,6 +1284,8 @@ function reproduceCommand(args) {
   // 复现命令里必须带上这道闸的选择：不带的话重跑的判据来源和这次不一样（--no-intent 与 intent 是两种 run）
   if (args.noIntent) parts.push('--no-intent');
   else if (args.intent) parts.push(`--intent "${args.intent}"`);
+  // 调研产物同样是"判据从哪来"的一部分：不带上它，重跑就是另一套判据/起点
+  if (args.research) parts.push(`--research "${args.research}"`);
   // 门禁的 warn 开关也要带上：重跑时终端输出必须和这次一致（少一条 warn 就等于换了一套默认）
   if (args.noInvariantsWarn) parts.push('--no-invariants-warn');
   if (args.noFakeGateWarn) parts.push('--no-fake-gate-warn');
@@ -1183,7 +1297,7 @@ function buildReport(ctx) {
   const {
     plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams,
     dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outDir, startedAt, endedAt,
-    stability, nodes, intentSummary, invSummary, invDeclared, rejectedPrecheck,
+    stability, nodes, intentSummary, researchSummary, invSummary, invDeclared, rejectedPrecheck,
     fakeGate, targetProximity, gateBlock, degraded,
   } = ctx;
   const WL = plan.wl;
@@ -1300,6 +1414,14 @@ function buildReport(ctx) {
   const intentBlock = intentSummaryLines(intentSummary);
   if (intentBlock.length) {
     md.push(...intentBlock);
+  } else {
+    md.push('');
+  }
+  // 调研摘要（research，02 号节点）：搜了几条 / 几条参考 / 应用了几项 / changed 清单 / note。
+  // 与 intent 摘要的区别：**它会改判据与起点**（affectsDistance），所以 changed 必须由引擎自己算。
+  const researchBlock = researchReportLines(researchSummary);
+  if (researchBlock.length) {
+    md.push(...researchBlock);
   } else {
     md.push('');
   }
@@ -1424,6 +1546,9 @@ function buildReport(ctx) {
   md.push('|---|---|');
   md.push('| `curve.csv` | 每个评估点一行（' + evals.length + ' 行）：轮次 / 参数 / 距离 / 评估序号 / 指标与归一化分量 / 原始输出路径 |');
   md.push('| `best.json` | 最佳参数 + 距离 + 降幅 + `hash` + 全轨迹 + 预检 + 元信息 |');
+  if (researchSummary) {
+    md.push('| `' + RESEARCH_SUMMARY_FILE + '` | 调研摘要（queries / findings / 应用了哪几项 / **引擎算出来的 changed** / 覆盖顺序） |');
+  }
   md.push('| `outputs/` | 每次评估的**原始命令输出**（stdout / stderr / argv / 指标 / 距离），单份截断到 ' + OUTPUT_CAP_BYTES + ' 字节 |');
   md.push('| `params/` | 每次评估交给命令的参数文件（`{params}` 占位 / `SELFLOOP_PARAMS` 指向的就是它） |');
   md.push('| `report.md` | 本文件 |');

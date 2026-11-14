@@ -580,10 +580,10 @@ test('locale 双语 key 完全一致，title 是「权臣」/ Selfloop，描述�
   }
 })
 
-test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.8.1', () => {
+test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.9.0', () => {
   const pkg = readJson('package.json')
   assert.equal(pkg.name, 'dsh-selfloop')
-  assert.equal(pkg.version, '0.8.1')
+  assert.equal(pkg.version, '0.9.0')
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.main, 'lib/index.js')
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
@@ -829,6 +829,53 @@ test('T16 target.mode=params 但 params 为空：一条 warning，不抛', () =>
   // 正常那份要能把目标参数透出来
   const ok = parseAdapter(join(ADAPTER_DIR, 'fire-ray.json'), join(ROOT, 'harness'))
   assert.deepEqual(ok.target.params, { widthPx: 30, distM: 8 })
+})
+
+test('T16c 起点即目标：target.params 与白名单 `name=初值` 完全相同时，解析阶段就要报', () => {
+  // 弄坏能红：删掉 whitelistStartValues 那段比对 → 本条红
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-deg-'))
+  const src = readJson('domains/vfx-render/adapters/fire-ray.json')
+  src.clientRoot = dir
+  src.params = { mode: 'list', list: ['widthPx=30', 'distM=8'] }
+  src.target = { mode: 'params', params: { widthPx: 30, distM: 8 } }
+  const file = join(dir, 'same.json')
+  writeFileSync(file, JSON.stringify(src))
+  const a = parseAdapter(file, join(ROOT, 'harness'))
+  const hits = a.warnings.filter((w) => /起点/.test(w) && /target\.params/.test(w))
+  assert.equal(hits.length, 1, '起点即目标要恰好一条提示：' + a.warnings.join(' | '))
+  assert.match(hits[0], /搜索没有起点差异可用/)
+  assert.match(hits[0], /降幅恒 n\/a/)
+  assert.match(hits[0], /要么改起点，要么改目标/)
+})
+
+test('T16d 起点≠目标、或白名单给不出起点值时不许误报"起点即目标"', () => {
+  // 弄坏能红：把比对条件改成恒真（任何 adapter 都报）→ 本条红
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-deg2-'))
+  const src = readJson('domains/vfx-render/adapters/fire-ray.json')
+  src.clientRoot = dir
+  const write = (name, patch) => {
+    const p = join(dir, name)
+    writeFileSync(p, JSON.stringify({ ...src, ...patch }))
+    return p
+  }
+  const degenerate = (f) =>
+    parseAdapter(f, join(ROOT, 'harness')).warnings.filter((w) => /搜索没有起点差异可用/.test(w))
+  // ① 只有一根轴不同 → 不是起点即目标
+  const diff = write('diff.json', {
+    params: { mode: 'list', list: ['widthPx=30', 'distM=9'] },
+    target: { mode: 'params', params: { widthPx: 30, distM: 8 } },
+  })
+  assert.deepEqual(degenerate(diff), [], '值不同还报就是误报')
+  // ② 白名单只写名字（起点在基线参数文件里）：静态判不了 → 跳过，不瞎猜
+  const bare = write('bare.json', {
+    params: { mode: 'list', list: ['widthPx', 'distM'] },
+    target: { mode: 'params', params: { widthPx: 30, distM: 8 } },
+  })
+  assert.deepEqual(degenerate(bare), [], '白名单给不出初值时不许猜：' + JSON.stringify(bare))
+  // ③ 包里现有示例不该被误报
+  for (const f of ['chain-lightning.json', 'demo-url-time.json', 'fire-ray.json']) {
+    assert.deepEqual(degenerate(join(ADAPTER_DIR, f)), [], `${f} 被误报了`)
+  }
 })
 
 test('T16b probe 的 clientRoot 参数能盖掉环境变量（宿主继承不到 %VFX_LOOP_CLIENT%）', () => {

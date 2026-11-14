@@ -206,7 +206,7 @@ test('⑤ --no-intent → 跑通；01-intent 是 skipped 且 reason 含 --no-int
   assert.ok(node.decision.basis.some((s) => s.includes('--no-intent')), '台帐的依据里也要写清是哪一步被跳过')
   const m = REPORT_LINE.exec(readFileSync(join(out, 'report.md'), 'utf8'))
   assert.ok(m, 'report.md 要有汇总行')
-  assert.equal(Number(m[2]), 1, `汇总行的 skipped 要含这条 —— 实测 ${m[0]}`)
+  assert.equal(Number(m[2]), 2, `汇总行的 skipped 要含这条 + research（没给调研产物）—— 实测 ${m[0]}`)
 })
 
 // ---------------------------------------------------------------- ⑥ 台帐一致性
@@ -264,8 +264,10 @@ test('⑦-2 弄坏能红：不记跳过（SELFLOOP_INTENT_MUTANT=dropSkipRecord�
   assert.equal(r.status, 0, r.out.slice(-800))
   // ⑤ 断言"01-intent 是 skipped 且 reason 含 --no-intent"；记录被删掉之后这条必然红
   assert.ok(!existsSync(join(nodeDir(out), '01-intent.json')), '记录被删掉后不该有 01-intent.json')
-  const files = readdirSync(nodeDir(out)).filter((n) => n.endsWith('.json'))
-  assert.equal(files[0], '01-target.json', '跳过没留痕 → 台帐从 target 开始，"哪些被绕过"就查不到了')
+  const files = readdirSync(nodeDir(out)).filter((n) => n.endsWith('.json')).sort()
+  // 有 research 节点（0.9.0 起它排在 intent 之后）时，删掉 intent 的 01 号会被 research 顶上：
+  // 01 号不再是 intent —— 台帐里"演示需求转译"的那一条真的没了，这才是这条变异体要证明的东西。
+  assert.equal(files[0], '01-research.json', '跳过没留痕 → 01 号不再是 intent，"哪些被绕过"就查不到了')
 })
 
 // ---------------------------------------------------------------- ⑧ 截图链路的闸
