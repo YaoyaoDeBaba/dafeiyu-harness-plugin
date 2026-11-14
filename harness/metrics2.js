@@ -97,6 +97,7 @@ function makePx(img) {
     }
     const maskCache = new Map();
     const bboxCache = new Map();
+    const contentCache = new Map();
     function mask(thr) {
         const k = Number(thr);
         if (!maskCache.has(k)) {
@@ -123,14 +124,144 @@ function makePx(img) {
         }
         return bboxCache.get(k);
     }
+    // 前景掩膜（见 buildContentMask）：同 px 上同参数的掩膜只算一次。
+    function contentMask(o) {
+        const key = JSON.stringify(o || {});
+        if (!contentCache.has(key)) contentCache.set(key, buildContentMask({ w, h, n, lum }, o || {}));
+        return contentCache.get(key);
+    }
     return {
         w, h, n, ch, data, lum,
-        mask, bbox,
+        mask, bbox, contentMask,
         rgbAt(i) {
             const p = i * ch;
             return [data[p], ch >= 3 ? data[p + 1] : data[p], ch >= 3 ? data[p + 2] : data[p]];
         }
     };
+}
+
+// ---------------------------------------------------------------- 掩膜（masked stats）
+// 为什么要有它（两条实验的结论，不是拍脑袋）：
+//   ① 全帧统计被背景稀释——主体只占画面 3.8~6.4%，指标几乎量不到主体；
+//   ② 跨批次比较会因为"换题材 / 换占屏比"冒出假趋势（实测出现过 p=0.0034 的假相关）。
+// 所以提取器统一支持 opts.mask，**所有统计都在掩膜内算**：
+//
+//   "metrics": [ { "id":"cov", "extract":"cov", "opts": {
+//       "mask": { "mode":"content", "luma":40, "dilate":1, "minAreaPct":0.2 } } } ]
+//
+// mode:"content" = 按 luma>=luma 圈前景 → 取最大连通域 → 可选膨胀 dilate 像素。
+// minAreaPct 是**百分数**（0.2 = 0.2%）：掩膜面积低于它就退回全图，
+// 但**必须**由调用方在返回值里标 maskFallback:true —— "以为在量主体、其实在量整帧"
+// 正是这两条实验的原始病灶，不许静默。
+// 不写 opts.mask → 走全图，行为与升级前完全一致（历史 162 条测试钉的就是这个契约）。
+const MASK_DEFAULTS = { mode: 'content', luma: 40, dilate: 1, minAreaPct: 0.2 };
+
+// g = {w,h,n,lum}。返回值里的 m=null 表示"统计走全图"（没掩膜 / 已回退）。
+function buildContentMask(g, o) {
+    const { w, h, n, lum } = g;
+    const mode = String(o.mode == null ? MASK_DEFAULTS.mode : o.mode);
+    if (mode === 'none') {
+        return { m: null, count: n, areaPct: 100, largestPct: 100, maskFallback: false, mode, luma: null, dilate: 0, minAreaPct: null };
+    }
+    if (mode !== 'content') throw new Error('opts.mask.mode 只认 content / none（收到 ' + mode + '）');
+    const luma = Number.isFinite(Number(o.luma)) ? Number(o.luma) : MASK_DEFAULTS.luma;
+    const dilate = Math.max(0, Math.floor(Number.isFinite(Number(o.dilate)) ? Number(o.dilate) : MASK_DEFAULTS.dilate));
+    const minAreaPct = Number.isFinite(Number(o.minAreaPct)) ? Number(o.minAreaPct) : MASK_DEFAULTS.minAreaPct;
+    // ① 前景种子。注意这里是 **>=**：圈区域要含边界那一圈，否则火焰最暗的边缘会被吃掉。
+    const seed = new Uint8Array(n);
+    for (let i = 0; i < n; i++) seed[i] = lum[i] >= luma ? 1 : 0;
+    // ② 最大连通域。8 邻域：火焰/闪电这种细弱结构用 4 邻域会碎成几块，最大块就只剩芯。
+    const lbl = new Int32Array(n).fill(-1);
+    const stack = new Int32Array(n);
+    const neigh = new Int32Array(8);
+    let bestId = -1, bestSize = 0, id = 0;
+    for (let s = 0; s < n; s++) {
+        if (!seed[s] || lbl[s] >= 0) continue;
+        let sp = 0;
+        stack[sp++] = s; lbl[s] = id;
+        let size = 0;
+        while (sp > 0) {
+            const i = stack[--sp];
+            size++;
+            const x = i % w, y = (i - x) / w;
+            let k = 0;
+            for (let dy = -1; dy <= 1; dy++) {
+                const yy = y + dy;
+                if (yy < 0 || yy >= h) continue;
+                for (let dx = -1; dx <= 1; dx++) {
+                    if (!dx && !dy) continue;
+                    const xx = x + dx;
+                    if (xx < 0 || xx >= w) continue;
+                    neigh[k++] = yy * w + xx;
+                }
+            }
+            for (let j = 0; j < k; j++) {
+                const q = neigh[j];
+                if (!seed[q] || lbl[q] >= 0) continue;
+                lbl[q] = id; stack[sp++] = q;
+            }
+        }
+        if (size > bestSize) { bestSize = size; bestId = id; }
+        id++;
+    }
+    const largestPct = 100 * bestSize / n;
+    const m = new Uint8Array(n);
+    for (let i = 0; i < n; i++) if (bestId >= 0 && lbl[i] === bestId) m[i] = 1;
+    // ③ 可选膨胀：可分离的方形（切比雪夫）膨胀，半径 = dilate 像素。
+    //    目的是把主体外沿那一圈"半亮/半透"的像素也纳进来（否则 lapVar 只量到主体内核）。
+    if (dilate > 0 && bestId >= 0) {
+        const tmp = new Uint8Array(n);
+        for (let y = 0; y < h; y++) {
+            const row = y * w;
+            const pre = new Int32Array(w + 1);
+            for (let x = 0; x < w; x++) pre[x + 1] = pre[x] + m[row + x];
+            for (let x = 0; x < w; x++) {
+                const lo = x - dilate < 0 ? 0 : x - dilate;
+                const hi = x + dilate > w - 1 ? w - 1 : x + dilate;
+                tmp[row + x] = (pre[hi + 1] - pre[lo]) > 0 ? 1 : 0;
+            }
+        }
+        for (let x = 0; x < w; x++) {
+            const pre = new Int32Array(h + 1);
+            for (let y = 0; y < h; y++) pre[y + 1] = pre[y] + tmp[y * w + x];
+            for (let y = 0; y < h; y++) {
+                const lo = y - dilate < 0 ? 0 : y - dilate;
+                const hi = y + dilate > h - 1 ? h - 1 : y + dilate;
+                m[y * w + x] = (pre[hi + 1] - pre[lo]) > 0 ? 1 : 0;
+            }
+        }
+    }
+    let count = 0;
+    for (let i = 0; i < n; i++) count += m[i];
+    const areaPct = 100 * count / n;
+    if (areaPct < minAreaPct) {
+        // 掩膜太小 = 圈不到主体。退回全图，但**把这件事带出去**（maskFallback），不静默。
+        return { m: null, count: n, areaPct, largestPct, maskFallback: true, mode, luma, dilate, minAreaPct };
+    }
+    return { m, count, areaPct, largestPct, maskFallback: false, mode, luma, dilate, minAreaPct };
+}
+
+// 提取器拿统计范围的统一入口：返回 {m, count, maskFallback}，m=null 就是全图。
+// ctx 是可选的回执收集器（extractOne 用它把 maskFallback 标到该图的返回对象上）。
+function scopeOf(px, o, ctx) {
+    const mk = o && o.mask;
+    if (!mk || typeof mk !== 'object') return { m: null, count: px.n, maskFallback: false };
+    const r = px.contentMask(mk);
+    if (ctx) {
+        ctx.maskSeen = true;
+        ctx.maskInfo = { mode: r.mode, luma: r.luma, dilate: r.dilate, minAreaPct: r.minAreaPct, areaPct: +r.areaPct.toFixed(4), largestPct: +r.largestPct.toFixed(4), maskFallback: r.maskFallback };
+        if (r.maskFallback) ctx.maskFallback = true;
+    }
+    return { m: r.m, count: r.count, maskFallback: r.maskFallback };
+}
+
+// 掩膜内的像素占比（分母 = 掩膜内像素数；全图时等于「占全图比例」）
+function fracOf(px, o, ctx, pred) {
+    const s = scopeOf(px, o, ctx);
+    let c = 0;
+    if (!s.m) { for (let i = 0; i < px.n; i++) if (pred(i)) c++; }
+    else { for (let i = 0; i < px.n; i++) if (s.m[i] && pred(i)) c++; }
+    return s.count ? c / s.count : 0;
 }
 
 // ---------------------------------------------------------------- 色相（HSB）
@@ -157,13 +288,16 @@ function hueDeg(r, g, b, mx, mn) {
 // 一遍扫像素，同时攒三样东西：18 桶权重、总权重、圆均值用的 (Σw·cos, Σw·sin)。
 // 口径（与 warmFrac 对齐）：luma **>=** luma 才算数（暗部不进）；饱和度 < minSat 直接跳过；
 // 权重 = sat × val —— 这一条同时是"低饱和不计入"和"权重"的实现，删了它灰图就会开始计数。
-function hueAcc(px, o) {
+// opts.mask 给了就只扫掩膜内（见 buildContentMask）。
+function hueAcc(px, o, ctx) {
     const lumaMin = Number.isFinite(Number(o.luma)) ? Number(o.luma) : 40;
     const minSat = Number.isFinite(Number(o.minSat)) ? Number(o.minSat) : 0.15;
     const acc = new Float64Array(HUE_BINS);
     const { data, ch, lum, n } = px;
+    const s = scopeOf(px, o, ctx);
     let sumW = 0, cosSum = 0, sinSum = 0;
     for (let i = 0; i < n; i++) {
+        if (s.m && !s.m[i]) continue;
         if (lum[i] < lumaMin) continue;
         const p = i * ch;
         const r = data[p], g = ch >= 3 ? data[p + 1] : data[p], b = ch >= 3 ? data[p + 2] : data[p];
@@ -227,77 +361,80 @@ function circularL1(a, b) {
 // 所有"占比"一律输出 **0~1 的小数**（不是百分数），这样 range 归一化能写成 [0,1]/[0,0.3] 这种直觉区间。
 const EXTRACTORS = {
     mean: {
-        desc: '平均亮度（Rec709 luma，0~255）',
+        desc: '平均亮度（Rec709 luma，0~255；给了 opts.mask 就只算掩膜内）',
         defaults: {},
-        fn(px) {
-            let s = 0;
-            for (let i = 0; i < px.n; i++) s += px.lum[i];
-            return +(s / px.n).toFixed(4);
+        fn(px, o, ref, ctx) {
+            const s = scopeOf(px, o, ctx);
+            let sum = 0;
+            for (let i = 0; i < px.n; i++) if (!s.m || s.m[i]) sum += px.lum[i];
+            return s.count ? +(sum / s.count).toFixed(4) : 0;
         }
     },
     p160: {
-        desc: '高光面积：luma > thr 的像素占全图比例（0~1）',
+        desc: '高光面积：luma > thr 的像素占比（分母 = 掩膜内像素数；0~1）',
         defaults: { thr: 160 },
-        fn(px, o) {
-            const m = px.mask(o.thr);
-            let c = 0;
-            for (let i = 0; i < px.n; i++) if (m[i]) c++;
-            return +(c / px.n).toFixed(5);
+        fn(px, o, ref, ctx) {
+            const thr = o.thr;
+            return +fracOf(px, o, ctx, (i) => px.lum[i] > thr).toFixed(5);
         }
     },
     lapVar: {
-        desc: '细节能量：Laplacian 方差（只在 luma > luma 的内点上统计）',
+        desc: '细节能量：Laplacian 方差（只在 luma > luma 的内点上统计；给了 mask 就只算掩膜内内点）',
         defaults: { luma: 40 },
-        fn(px, o) {
+        fn(px, o, ref, ctx) {
             const L = px.lum, { w, h } = px;
-            let s = 0, s2 = 0, cnt = 0;
+            const s = scopeOf(px, o, ctx);
+            let sum = 0, sum2 = 0, cnt = 0;
             for (let y = 1; y < h - 1; y++) {
                 for (let x = 1; x < w - 1; x++) {
                     const i = y * w + x;
+                    if (s.m && !s.m[i]) continue;
                     if (L[i] <= o.luma) continue;
                     const lap = 4 * L[i] - L[i - 1] - L[i + 1] - L[i - w] - L[i + w];
-                    s += lap; s2 += lap * lap; cnt++;
+                    sum += lap; sum2 += lap * lap; cnt++;
                 }
             }
             if (!cnt) return 0;
-            const m = s / cnt;
-            return +(s2 / cnt - m * m).toFixed(2);
+            const m = sum / cnt;
+            return +(sum2 / cnt - m * m).toFixed(2);
         }
     },
     warmFrac: {
-        desc: '暖色占比：亮像素中 r>rMin 且 r>g*rg 且 g>=b*gb 的比例（0~1）',
+        desc: '暖色占比：掩膜内亮像素中 r>rMin 且 r>g*rg 且 g>=b*gb 的比例（0~1）',
         defaults: { luma: 80, rMin: 140, rg: 1.15, gb: 0.9 },
-        fn(px, o) {
-            let bright = 0, warm = 0;
+        fn(px, o, ref, ctx) {
             const L = px.lum;
+            const { rMin, rg, gb, luma } = o;
+            // 分母是"掩膜内的亮像素"，与升级前同口径（升级前 = 全图亮像素）
+            const s = scopeOf(px, o, ctx);
+            let bright = 0, warm = 0;
             for (let i = 0; i < px.n; i++) {
-                if (L[i] < o.luma) continue;
+                if (s.m && !s.m[i]) continue;
+                if (L[i] < luma) continue;
                 bright++;
                 const [r, g, b] = px.rgbAt(i);
-                if (r > o.rMin && r > g * o.rg && g >= b * o.gb) warm++;
+                if (r > rMin && r > g * rg && g >= b * gb) warm++;
             }
             return bright ? +(warm / bright).toFixed(4) : 0;
         }
     },
     coldFrac: {
-        desc: '冷色占比：全图中 luma>luma 且 b>r+delta 的像素比例（0~1）',
+        desc: '冷色占比：luma>luma 且 b>r+delta 的像素比例（分母 = 掩膜内像素数；0~1）',
         defaults: { luma: 20, delta: 8 },
-        fn(px, o) {
-            let c = 0;
-            const L = px.lum;
-            for (let i = 0; i < px.n; i++) {
-                if (L[i] <= o.luma) continue;
+        fn(px, o, ref, ctx) {
+            const delta = o.delta;
+            return +fracOf(px, o, ctx, (i) => {
+                if (px.lum[i] <= o.luma) return false;
                 const [r, , b] = px.rgbAt(i);
-                if (b > r + o.delta) c++;
-            }
-            return +(c / px.n).toFixed(5);
+                return b > r + delta;
+            }).toFixed(5);
         }
     },
     hueHist: {
         desc: '色相直方图：18 桶×20°，权重=饱和度×亮度（灰/黑/白不计入），输出和为 1 的数组；整张无彩色 → 18 个 0',
         defaults: { luma: 40, minSat: 0.15 },
-        fn(px, o) {
-            const s = hueAcc(px, o);
+        fn(px, o, ref, ctx) {
+            const s = hueAcc(px, o, ctx);
             const out = new Array(HUE_BINS).fill(0);
             if (!(s.sumW > 0)) return out;                 // 明确的空直方图（不是 NaN）
             let sum = 0;
@@ -315,8 +452,8 @@ const EXTRACTORS = {
     hueMean: {
         desc: '色相圆均值（0~360；同样按饱和度×亮度加权；整张无彩色 → 0）——给人看报告用的标量',
         defaults: { luma: 40, minSat: 0.15 },
-        fn(px, o) {
-            const s = hueAcc(px, o);
+        fn(px, o, ref, ctx) {
+            const s = hueAcc(px, o, ctx);
             if (!(s.sumW > 0)) return 0;
             let m = Math.atan2(s.sinSum, s.cosSum) * 180 / Math.PI;
             m = ((m % 360) + 360) % 360;
@@ -325,25 +462,28 @@ const EXTRACTORS = {
         }
     },
     cov: {
-        desc: '亮区面积：luma > luma 的像素占全图比例（0~1）',
+        desc: '亮区面积：luma > luma 的像素占比（0~1；掩膜内分母 = 掩膜内像素数）',
         defaults: { luma: 40 },
-        fn(px, o) {
-            const m = px.mask(o.luma);
-            let c = 0;
-            for (let i = 0; i < px.n; i++) if (m[i]) c++;
-            return +(c / px.n).toFixed(5);
+        fn(px, o, ref, ctx) {
+            const luma = o.luma;
+            return +fracOf(px, o, ctx, (i) => px.lum[i] > luma).toFixed(5);
         }
     },
     maskIoU: {
-        desc: '亮区掩码重叠率：|A∩B|/|A∪B|（luma>luma；A=候选，B=参考帧）',
+        desc: '亮区掩码重叠率：|A∩B|/|A∪B|（luma>luma；A=候选，B=参考帧；给了 mask 时 ROI = 两帧掩膜的并集）',
         defaults: { luma: 40 },
         needsRef: true,
-        fn(px, o, ref) {
+        fn(px, o, ref, ctx) {
             if (!ref) return null;
             if (ref.w !== px.w || ref.h !== px.h) throw new Error('maskIoU: 参考帧尺寸不一致 ' + px.w + 'x' + px.h + ' vs ' + ref.w + 'x' + ref.h);
             const a = px.mask(o.luma), b = ref.mask(o.luma);
+            const sa = scopeOf(px, o, ctx), sb = scopeOf(ref, o, ctx);
             let inter = 0, uni = 0;
             for (let i = 0; i < px.n; i++) {
+                // ROI 取两帧掩膜的并集：任一边认为"是内容"的像素都要进分母，
+                // 否则主体在候选帧里整块塌掉时 IoU 会被 ROI 自己漂白。
+                const inRoi = (sa.m ? sa.m[i] : 1) || (sb.m ? sb.m[i] : 1);
+                if (!inRoi) continue;
                 const x = a[i], y = b[i];
                 if (x && y) inter++;
                 if (x || y) uni++;
@@ -354,8 +494,24 @@ const EXTRACTORS = {
     bbox: {
         desc: '包围盒：亮区外接矩形的 w / h / area / aspect / fill，field 选一个（单值输出）',
         defaults: { luma: 40, field: 'w' },
-        fn(px, o) {
-            const bb = px.bbox(o.luma);
+        fn(px, o, ref, ctx) {
+            const s = scopeOf(px, o, ctx);
+            let bb;
+            if (!s.m) bb = px.bbox(o.luma);
+            else {
+                // 掩膜内重算（px.bbox 的缓存是"全图 + luma"口径，不能复用）
+                let x0 = px.w, y0 = px.h, x1 = -1, y1 = -1, cnt = 0;
+                for (let y = 0; y < px.h; y++) {
+                    for (let x = 0; x < px.w; x++) {
+                        const i = y * px.w + x;
+                        if (!s.m[i] || !(px.lum[i] > o.luma)) continue;
+                        cnt++;
+                        if (x < x0) x0 = x; if (x > x1) x1 = x;
+                        if (y < y0) y0 = y; if (y > y1) y1 = y;
+                    }
+                }
+                bb = { x0, y0, x1, y1, w: x1 >= 0 ? x1 - x0 + 1 : 0, h: y1 >= 0 ? y1 - y0 + 1 : 0, cnt };
+            }
             const f = o.field || 'w';
             if (f === 'w') return bb.w;
             if (f === 'h') return bb.h;
@@ -363,6 +519,74 @@ const EXTRACTORS = {
             if (f === 'aspect') return bb.h ? +(bb.w / bb.h).toFixed(4) : 0;
             if (f === 'fill') return (bb.w * bb.h) ? +(bb.cnt / (bb.w * bb.h)).toFixed(4) : 0;
             throw new Error('bbox: 不认识的 field=' + f + '（w/h/area/aspect/fill）');
+        }
+    },
+    // ------------------------------------------------------------ 0.11.0 新增：专测「剁档 / 噪点」
+    // 这两条是两条实验逼出来的：老的 posterize 类指标（posterizeRatio/hueBands/flatNoise）
+    // 对肉眼可见的硬切档只有噪声级反应，其中 flatNoise 甚至是零响应——它的"3×3 极差 <8"
+    // 门限把噪点／台阶边自己的像素排除掉了（结构性盲区）。下面两条各自换个打法：
+    //   stepRatio   → 看**亮度直方图的断崖**（台阶是直方图上的空档，跟像素位置无关）；
+    //   speckleFrac → 看**像素与自己 8 邻域中位数的差**（没有 3×3 门限，孤立点自己就是证据）。
+    stepRatio: {
+        desc: '阶跃边占比：256 桶 luma 直方图里「断崖」数 / 非空 bin 数（越高越像硬切档；0=连续渐变）',
+        // minBinPct 是**占比**（0.0005 = 0.05% 的像素数），dropRatio 是「下一桶掉到上一桶的这个比例以下」。
+        // 断崖判据 bin[i] > 0.05% 且 bin[i+1] < bin[i]×0.1 是实验里 P/R 正对照标定出来的量级。
+        defaults: { minBinPct: 0.0005, dropRatio: 0.1 },
+        fn(px, o, ref, ctx) {
+            const s = scopeOf(px, o, ctx);
+            const bins = new Float64Array(256);
+            let total = 0;
+            const L = px.lum;
+            if (!s.m) {
+                for (let i = 0; i < px.n; i++) { let v = Math.round(L[i]); if (v < 0) v = 0; else if (v > 255) v = 255; bins[v]++; total++; }
+            } else {
+                for (let i = 0; i < px.n; i++) { if (!s.m[i]) continue; let v = Math.round(L[i]); if (v < 0) v = 0; else if (v > 255) v = 255; bins[v]++; total++; }
+            }
+            if (!total) return 0;
+            const drop = Number.isFinite(Number(o.dropRatio)) ? Number(o.dropRatio) : 0.1;
+            const minCnt = (Number.isFinite(Number(o.minBinPct)) ? Number(o.minBinPct) : 0.0005) * total;
+            let nonEmpty = 0, cliffs = 0;
+            for (let i = 0; i < 256; i++) if (bins[i] > 0) nonEmpty++;
+            for (let i = 0; i < 255; i++) {
+                if (bins[i] > minCnt && bins[i + 1] < bins[i] * drop) cliffs++;
+            }
+            return nonEmpty ? +(cliffs / nonEmpty).toFixed(5) : 0;
+        }
+    },
+    speckleFrac: {
+        desc: '孤立点占比：掩膜内像素与其 8 邻域 luma 中位数之差 > speckleDelta 的比例（越高越像噪点）',
+        defaults: { speckleDelta: 24 },
+        fn(px, o, ref, ctx) {
+            const s = scopeOf(px, o, ctx);
+            const L = px.lum, { w, h } = px;
+            const d = Number.isFinite(Number(o.speckleDelta)) ? Number(o.speckleDelta) : 24;
+            const nb = new Float64Array(8);
+            let isol = 0, cnt = 0;
+            for (let y = 1; y < h - 1; y++) {
+                for (let x = 1; x < w - 1; x++) {
+                    const i = y * w + x;
+                    if (s.m && !s.m[i]) continue;
+                    cnt++;
+                    let k = 0;
+                    for (let dy = -1; dy <= 1; dy++) {
+                        for (let dx = -1; dx <= 1; dx++) {
+                            if (!dx && !dy) continue;
+                            nb[k++] = L[i + dy * w + dx];
+                        }
+                    }
+                    // 8 个邻居的中位数（偶数个 → 第 4、5 小取均值）：中位数对"自己是尖点"免疫，
+                    // 所以孤立点一定被推出来，而平坦区/连续渐变里差值恒≈0。
+                    for (let a = 1; a < 8; a++) {
+                        const v = nb[a];
+                        let b = a - 1;
+                        while (b >= 0 && nb[b] > v) { nb[b + 1] = nb[b]; b--; }
+                        nb[b + 1] = v;
+                    }
+                    const med = (nb[3] + nb[4]) / 2;
+                    if (Math.abs(L[i] - med) > d) isol++;
+                }
+            }
+            return cnt ? +(isol / cnt).toFixed(5) : 0;
         }
     }
 };
@@ -413,9 +637,16 @@ function extractOne(file, plan, refPx, withDiag) {
     const px = makePx(decodePng(fs.readFileSync(file)));
     const out = { file: path.basename(file), w: px.w, h: px.h };
     const used = {};
+    const ctx = {};                                   // 掩膜回执：哪个提取器退回了全图
     for (const p of plan) {
-        out[p.id] = EXTRACTORS[p.extract].fn(px, p.opts, refPx);
+        out[p.id] = EXTRACTORS[p.extract].fn(px, p.opts, refPx, ctx);
         used[p.id] = p.extract;
+    }
+    // 掩膜相关回执（0.11.0）：一旦某个带 mask 的提取器退回全图，就在**这张图的返回对象**上标出来。
+    // 不许静默——"以为在量主体、其实在量整帧"就是这两条实验最初的病灶。
+    if (ctx.maskSeen) {
+        out.maskInfo = ctx.maskInfo;
+        if (ctx.maskFallback) out.maskFallback = true;
     }
     if (withDiag) {
         const d = diagnostics(px, refPx);
@@ -463,4 +694,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { EXTRACTORS, resolvePlan, planText, extractOne, decodePng, makePx, diagnostics, circularL1, hueAcc, HUE_BINS, HUE_BIN_DEG };
+module.exports = { EXTRACTORS, resolvePlan, planText, extractOne, decodePng, makePx, diagnostics, circularL1, hueAcc, buildContentMask, scopeOf, MASK_DEFAULTS, HUE_BINS, HUE_BIN_DEG };

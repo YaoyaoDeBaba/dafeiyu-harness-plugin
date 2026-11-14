@@ -3,6 +3,43 @@
 > 规矩：**改了 `harness/` 里的执行器就要在这里记一笔**，并注明"要不要回灌上游原件（案例 A，见 README「案例与来源」）"。
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
+## 0.11.0（未发布）· 指标层：掩膜 + 剁档/噪点两个新量 + 正对照纪律
+
+> 这一版不是"加几个指标"，是**修指标为什么会瞎**。两条实验的结论都是同一件事：
+> **指标先瞎了，后面所有搜索都在优化一个错的函数。**
+> ① 现有 `posterizeRatio` / `hueBands` / `flatNoise`（实验侧临时实现，不在本仓库）对**肉眼明显可见**的
+> 人造 posterize（逐像素抖动 + 硬切 4 档）只有噪声级反应；`flatNoise` 甚至零响应——它的"3×3 极差 <8"
+> 门限把噪点/台阶边**自己的像素**排除掉了（结构性盲区，不是参数没调好）。
+> ② 全帧统计被背景稀释：火焰只占画面 3.8~6.4%，指标几乎量不到主体。
+> ③ 跨批次比较会因为换题材/换占屏比产生假趋势（实测出现过 `p=0.0034` 的假相关）。
+> 三条都指向同一个修法：**先圈对区域，再用"已知变坏"的图证明这个量真翻得动。**
+
+- **掩膜（masked stats）**：`harness/metrics2.js` 的提取器统一支持 `opts.mask`
+  （`{mode:"content", luma:40, dilate:1, minAreaPct:0.2}`）：按 `luma >= luma` 圈前景 → 取**最大连通域**
+  （8 邻域）→ 可选方形膨胀；`mean/p160/lapVar/warmFrac/coldFrac/hueHist/hueMean/cov/maskIoU/bbox`
+  的分母全部换成**掩膜内像素数**。面积占比 < `minAreaPct` 时退回全图，但 `extractOne` 会在该图的返回对象上
+  标 `maskFallback:true` 并给 `maskInfo`——**不许静默**（"以为在量主体、其实在量整帧"正是这次的原始病灶）。
+  不写 `opts.mask` → 与升级前逐字节一致（162 条老测试全绿即契约）。`diag` 保持全图口径，不动老证据包的可比性。
+- **两个真能测「剁档 / 噪点」的新提取器**（阈值取实验 P/R 正对照标定出来的量级）：
+  · `stepRatio`：256 桶 luma 直方图的**断崖占比**（`bin[i] > 0.05%` 且 `bin[i+1] < bin[i]×0.1` → 记一次；
+    除以非空 bin 数）。硬切档在直方图上是空档，与像素位置无关，所以不怕稀释也不怕位移。
+  · `speckleFrac`：像素与其 **8 邻域 luma 中位数**之差 > `speckleDelta`(24) 的占比。中位数对"自己是尖点"免疫，
+    所以孤立点一定被推出来——这正是老 `flatNoise` 做不到的（它数平坦像素，噪点把自己从统计里删掉了）。
+- **正对照纪律（这次最重要的产出）**：新增 `test/metrics.test.mjs`（9 条），用代码生成合成图（**不联网**）：
+  `smooth`（连续渐变）、`banded4`（硬切 4 档）、`speckled`（孤立点）、`small_subject`（主体占 5%）、
+  `subject_only`（主体纯图，当尺子）、`tiny_subject`（掩膜回退）。
+  实测：`stepRatio` 0 → **1.0**；`speckleFrac` 0 → **0.04032**；5% 主体下 `lapVar` 全帧 **427.21** vs 掩膜内
+  **7917.72**（主体纯图 6400），稀释 **18.5 倍**。
+  纪律本身也进了测试：`EXTRACTORS_WITH_POSITIVE_CONTROL` 清单 ↔ 真断言双边钉住，往注册表里塞一个没标定的
+  提取器会直接红（`checkLedger`）——**以后谁加指标不带标定，测试拦他。**
+  两条弄坏能红：`SELFLOOP_METRICS_MUTANT=stepAlwaysCliff`（断崖判据放宽到永真 → 剁档对照红）、
+  `SELFLOOP_METRICS_MUTANT=legacy3x3Speckle`（换回老的 3×3 门限 → 噪点对照红，实测 0.637 vs 1.0）。
+- 文档：`skills/selfloop/references/metrics.md` 新增 §8 掩膜、§9 两个新量 + 正对照纪律（含"怎么判断掩膜圈对了
+  主体"三条自查）；`harness/适配层-说明.md` §4.3 清单 10 → 12，新增 §4.3.2 / §4.3.3。
+- **待接线**：`test/metrics.test.mjs` 尚未写进 `package.json` 的 `test` 脚本（本版按约定不改 `package.json`），
+  接线方式：`... && node test/metrics.test.mjs`。因此 `npm test` 仍是 **162** 条，新测试单独跑是 **9** 条。
+- 回灌上游：`metrics2.js` 只**新增**了 `opts.mask` 与新提取器，老路径数值不变，可整文件回灌；
+  `score.js` / `iter.ps1` / `finalize.js` 未改。
 ## 0.10.0（未发布）· 判据必须带用户原话与量法 + 领域翻译器升级
 
 > 外部实跑两轮后的修正版吸收：最值钱的是「主观词 → 客观指标」十二组对照；
