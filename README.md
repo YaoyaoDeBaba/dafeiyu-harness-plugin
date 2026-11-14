@@ -135,6 +135,13 @@ node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --
   （指标负责"像不像"，不变量负责"是不是"：解压回不去、接口 500、越界写坏这类废方案，分数再高也不要）。
   目标/起点违规 = 硬错；字段取不到 = 硬错；没写 = 不拦但默认 warn「没写硬不变量：搜索会拿底线换分数」
   （`--no-invariants-warn` 关掉终端提醒）。文法与语义见 `skills/selfloop/references/intent-and-ledger.md` 的 §1.7。
+- **门禁自己的三种病**（0.8.0，跑完一定会说）：**假门**（某条一次都没拦住候选，评估 ≥10 次 → warn + 报告标
+  `⚠ 本次未拦任何候选`，`--no-fake-gate-warn` 只关终端）；**写死了**（连续 3 轮没有新候选过门禁 → 早停并写
+  `stop=invariant-blocked`，明确区别于"参数全 dead"）；**贴阈值**（目标离阈值 <1% / <1e-6 → 提示"下一版微调就可能翻脸"）。
+- **复算历史结论**（0.8.0）：`node harness/audit.mjs <run目录> --intent <intent.json> [--json] [--strict]` ——
+  拿**今天**的不变量对旧 run 的每个评估点重新判：多少点不合格 / 当时的 best 还算不算数 / 新的最优是哪个点
+  （按当时记录的距离，在"今天合格"的点里挑）。exit `0`=best 仍合格、`1`=今天不合格（`--strict` 时"有更优点"也算）、
+  `2`=跑不起来（缺 `outputs/`、截图链路、intent 文法错）。只对命令链路的 run 生效，截图链路报"暂不支持"。
 
 **台帐**：`<out>/nodes/NN-<node>.json`，字段固定 —— `node / seq / status(done|skipped|degraded|failed) / producer / ms / inputs[] / decision{why,basis[]} / artifacts[] / cost`，`skipped` 必须带 reason。
 初版覆盖 `intent` / `target` / `stability` / `precheck` / `search` / `finalize`（截图链路没有 stability 节点 → 记 `skipped` 并写明原因）。
@@ -328,8 +335,11 @@ test/command.test.mjs            21 个用例（命令观测 + 弄坏能红 + �
 ```powershell
 cd <包目录>
 node test/plugin.test.mjs      # 55 个用例：schema/返回值互验、harness 齐全、三层目录、adapter 可解析、domain 向后兼容、环境变量模板、静态服穿越拒绝、技能注册、清单与 locale、零绝对路径、孤儿守卫结构、三个平台守卫、**不导出插件级 inject**（0.3.1 pending 事故的护栏）、写护栏（段边界/大小写/junction/端到端拒写）
-node test/invariants.test.mjs  # 10 个用例：硬不变量（目标/起点硬错、候选判废不进距离、默认 warn 与开关、文法错、字段取不到、两条变异体证明"弄坏能红"、截图链路 fail-closed）
+node test/invariants.test.mjs  # 13 个用例：硬不变量（目标/起点硬错、候选判废不进距离、默认 warn 与开关、文法错、字段取不到、两条变异体证明"弄坏能红"、截图链路 fail-closed）+ 0.8.0 三条门禁病（假门告警 / `stop=invariant-blocked` 早停 / 目标贴阈值）
+node test/audit.test.mjs       # 5 个用例：拿今天的标准复算旧 run（更严 → exit 1 + 新最优、更松 → exit 0、--strict、缺 outputs → exit 2、--json 字段齐、截图链路"暂不支持"）
 ```
+
+`npm test` 一条命令跑完全部：55 + 12 + 21 + 19 + 6 + 6 + 13 + 5 = **137**。
 
 测试不起宿主、不装 profile、不开端口、不跑闭环。
 

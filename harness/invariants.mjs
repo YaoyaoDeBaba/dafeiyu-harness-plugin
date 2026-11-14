@@ -19,10 +19,12 @@
 //   field：observe.metrics 里的指标 id，或命令输出 JSON 里的扁平字段（允许 a.b 点路径）
 // 校验是**运行时硬错**：文法不认识 / 字段取不到 / 取到非数字 —— 绝不静默判过。
 //
-// 本文件只做三件事，互相独立、各自可测：
+// 本文件只做这些事，互相独立、各自可测：
 //   ① resolveInvariants —— 文法校验（结构不对就中文硬错，错误里列出支持的 op）
 //   ② createInvariantGate —— 过门禁 + 记账（每个 id 的通过/拒绝次数、最近一次拒绝的原始观测片段）
-//   ③ invariantSectionLines —— report.md 那一节的渲染（诊断信息全来自 gate.summary()）
+//   ③ fakeGateFindings —— 假门告警（0.8.0）：rejected==0 且评估够多 → 门可能写宽了（永远为真）
+//   ④ thresholdProximityFindings —— 目标贴阈值提醒（0.8.0）：这次过了，但下一次微调就可能翻脸
+//   ⑤ invariantSectionLines —— report.md 那一节的渲染（诊断信息全来自 gate.summary() + 上面两个）
 'use strict';
 
 export const COMPARE_OPS = ['==', '!=', '<', '<=', '>', '>='];
@@ -225,6 +227,107 @@ function valuesOf(fields, obs) {
   return out;
 }
 
+// ---------------------------------------------------------------- ③ 假门告警（0.8.0）
+// 一条不变量如果**一次都没拒绝过**，它要么写宽了（永远为真），要么这段参数空间根本不碰它。
+// 两种情况下它都没有在干活 —— 而"看起来装了门"比"明说没装"更危险：人会以为底线被守住了。
+// 阈值（≥10 次评估）是为了别在小 run 上狼来了：3 次评估没拦住什么都说明不了。
+export const FAKE_GATE_MIN_EVALS = 10;
+
+export function fakeGateFindings(summary, opts = {}) {
+  const min = Number.isFinite(opts.minEvals) ? opts.minEvals : FAKE_GATE_MIN_EVALS;
+  const items = (summary && Array.isArray(summary.items)) ? summary.items : [];
+  const out = [];
+  for (const it of items) {
+    const attempts = Number(it.passed || 0) + Number(it.rejected || 0);
+    if (Number(it.rejected || 0) !== 0) continue;
+    if (attempts < min) continue;
+    out.push({
+      id: it.id,
+      attempts,
+      text: it.text,
+      message:
+        `硬不变量 ${it.id} 本次一次都没拦住候选（评估 ${attempts} 次，报告里标「本次未拦任何候选」）——门可能是写宽的（永远为真），` +
+        `或者这段参数空间根本不碰它。假门比没门更危险，因为它让人以为底线被守住了。`,
+    });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- ④ 目标贴阈值提醒（0.8.0）
+// 目标观测**通过了**，但离边界只差一丁点：今天算合格，判据下一版微调（或者换个舍入/口径）就可能翻脸。
+// 只对不等式有"边界"可言：`==` / `!=` 的"通过"天然就贴在那个值上，报了等于每轮都报，等于没报。
+const BOUNDARY_OPS = ['<', '<=', '>', '>='];
+
+// 按数值类型选绝对/相对：整数对整数（体积 / 计数 / 0-1 标志）用绝对 1e-6 —— 1% 相对量对它们没意义；
+// 小数值（loss / 面积 / 延迟）用相对 1%（分母兜底 1e-12，免得 0 阈值除出 Infinity 之外的花样）。
+function nearBoundary(observed, op, threshold) {
+  if (!BOUNDARY_OPS.includes(op)) return null;
+  const margin = Math.abs(observed - threshold);
+  const useAbs = Number.isInteger(observed) && Number.isInteger(threshold);
+  const close = useAbs ? margin < 1e-6 : margin / Math.max(Math.abs(threshold), 1e-12) < 0.01;
+  if (!close) return null;
+  return { margin, mode: useAbs ? 'abs' : 'rel', observed, op, threshold };
+}
+
+// 走一遍 check 树，只留"这条叶子自己判过了"的比较节点。
+// 为什么不是全留：passing 的 any(...) 里失败的分支贴着阈值**不是**这次通过的原因；
+// 为什么跳过 not：not(x) 的"翻脸"是 x 从假变真，那段距离对不上"贴在阈值上"的直觉，宁可不说。
+function passingLeaves(node, obs, acc = []) {
+  if (Array.isArray(node.all)) {
+    for (const c of node.all) passingLeaves(c, obs, acc);
+    return acc;
+  }
+  if (Array.isArray(node.any)) {
+    for (const c of node.any) {
+      let ok = false;
+      try {
+        ok = evalNode(c, obs);
+      } catch {
+        ok = false;
+      }
+      if (ok) passingLeaves(c, obs, acc);
+    }
+    return acc;
+  }
+  if (isPlainObject(node.not)) return acc;
+  acc.push(node);
+  return acc;
+}
+
+// obs 通常是目标那一次的观测（{metrics, fields, stdout}）—— 判据引用到的字段在这里必须取得到，
+// 取不到就跳过这一条（gate.check 早就在目标阶段硬错过了，走到这里还取不到的只可能是短路分支）。
+export function thresholdProximityFindings(items, obs) {
+  const out = [];
+  for (const it of items || []) {
+    let best = null;
+    for (const leaf of passingLeaves(it.check, obs)) {
+      let v;
+      try {
+        v = lookupField(obs, leaf.field).value;
+      } catch {
+        continue;
+      }
+      const near = nearBoundary(v, leaf.op, leaf.value);
+      if (!near) continue;
+      if (best === null || near.margin < best.margin) best = { ...near, field: leaf.field };
+    }
+    if (!best) continue;
+    out.push({
+      id: it.id,
+      field: best.field,
+      op: best.op,
+      observed: best.observed,
+      threshold: best.threshold,
+      margin: best.margin,
+      mode: best.mode,
+      message:
+        `目标离不变量 ${it.id} 的阈值很近（观测 ${fmtValue(best.observed)} / 阈值 ${fmtValue(best.threshold)}）` +
+        `——判据下一版微调就可能翻脸`,
+    });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- ② 门禁 + 记账
 // 用法：
 //   const gate = createInvariantGate(intent.invariants)
@@ -314,7 +417,7 @@ export function assertInvariantPass(result, what) {
 // invariant 段的名字：截图链路暂不支持（见 report.md 已知限制与文档）。
 export const SCREENSHOT_LIMIT = '截图链路（`iter.ps1`）暂不支持门禁：它的观测是页面指标、判定在 PowerShell 里，且没有测试守着 PS 侧实现。「暂不支持」= 在截图链路的 intent 里写 invariants 会**硬错**（宁可拒跑，也不假装装了门禁）。';
 
-// ---------------------------------------------------------------- ③ report.md 渲染
+// ---------------------------------------------------------------- ⑤ report.md 渲染
 export function invariantSectionLines(summary, opts = {}) {
   const s = summary || { declared: false, items: [], rejected: 0, passed: 0 };
   const md = [];
@@ -333,23 +436,46 @@ export function invariantSectionLines(summary, opts = {}) {
     md.push('');
     return md;
   }
+  // 假门（0.8.0）：本次一次都没拦住候选的那几条 —— 报告里**永远**照写，终端开关只关终端。
+  const fakeGate = fakeGateFindings(s);
+  const fakeById = new Map(fakeGate.map((f) => [f.id, f]));
+  const proximity = Array.isArray(opts.nearThreshold) ? opts.nearThreshold : [];
   md.push(
     '硬不变量不是"扣一点分"，是"合格/不合格"：任一候选违反就当废案 —— **不进距离比较、不能成为 best、也不会被缓存成「更优」**。指标负责"像不像"，不变量负责"是不是"。',
   );
   md.push('');
-  md.push('| id | 判据 | 为什么 | 通过 | 拒绝 | 最近一次拒绝 |');
-  md.push('|---|---|---|---|---|---|');
+  md.push('| id | 判据 | 为什么 | 通过 | 拒绝 | 本次 | 最近一次拒绝 |');
+  md.push('|---|---|---|---|---|---|---|');
   for (const it of s.items) {
     const last = it.lastReject
       ? `seq=${it.lastReject.seq === null ? '—' : it.lastReject.seq}${it.lastReject.phase ? '（' + it.lastReject.phase + '）' : ''} \`${JSON.stringify(it.lastReject.values)}\``
       : '—';
     // 表格单元格里的 `|` 会把列切坏（any(...) 的判据文本带竖线）—— 渲染时转义，原始文本不动
     const text = String(it.text).replace(/\|/g, '\\|');
-    md.push(`| \`${it.id}\` | \`${text}\` | ${it.why} | ${it.passed} | ${it.rejected} | ${last} |`);
+    const gateCell = fakeById.has(it.id) ? '⚠ 本次未拦任何候选' : '—';
+    md.push(`| \`${it.id}\` | \`${text}\` | ${it.why} | ${it.passed} | ${it.rejected} | ${gateCell} | ${last} |`);
   }
   md.push('');
   md.push(`**门禁拒绝 ${s.rejected} 个候选**（共过门禁 ${s.passed + s.rejected} 次判定：每次评估都过；\`target.mode=metrics\` 的目标取值也过一次，不占评估预算）。`);
   md.push('');
+  if (fakeGate.length) {
+    md.push(
+      '**假门告警**' +
+        (opts.fakeGateWarnSuppressed ? '（`--no-fake-gate-warn` 关掉了终端提醒，但报告照写 —— 开关不改事实）' : '') +
+        '：',
+    );
+    md.push('');
+    for (const f of fakeGate) md.push(`- \`${f.id}\`：${f.message}`);
+    md.push('');
+    md.push('> 假门比没门更危险：它让人以为底线被守住了，实际每个候选都直接过。改法只有两种 —— 把判据写回真正能失败的样子，或者删掉它（删掉至少诚实）。');
+    md.push('');
+  }
+  if (proximity.length) {
+    md.push('**目标贴阈值**（这次合格，但离边界太近）：');
+    md.push('');
+    for (const p of proximity) md.push(`- ${p.message}`);
+    md.push('');
+  }
   const lastRejects = s.items.filter((it) => it.lastReject);
   if (lastRejects.length) {
     md.push('最近一次拒绝的原始观测片段（每个 id 一条，只摘判据引用到的字段）：');

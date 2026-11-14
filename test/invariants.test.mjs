@@ -13,6 +13,11 @@
 //   ⑨ 文法边界：duplicate id / 空 all / 缺 why / 截图链路写 invariants（fail-closed）
 //   ⑩ 空数组 invariants = 不拦（等价于没写，会 warn）
 //
+// 0.8.0 新增（门禁自身的三条"病"）：
+//   ⑪ «6» 假门：永远为真的不变量 + 评估 ≥10 次 → 终端与报告都写「未拦任何候选」；--no-fake-gate-warn 只关终端
+//   ⑫ «7» 写死了：连续 3 轮新候选全被门禁拒绝 → stop=invariant-blocked（点名 id、与"参数全 dead"区分、早停）
+//   ⑬ «8» 贴阈值：目标过了但贴着阈值 → 终端与报告各写一次「阈值很近」
+//
 // 变异开关（只给测试用，见 harness/invariants.mjs 的 INVARIANTS_MUTANT）：
 //   SELFLOOP_INVARIANTS_MUTANT=alwaysPass|noTargetGate node test/invariants.test.mjs
 // 不设时行为完全正常。
@@ -116,6 +121,91 @@ const DEAD_BAND = {
   id: 'no_dead_band',
   check: { any: [{ field: 'guard', op: '==', value: 1 }] },
   why: 'guard=0 的解虽然更近，但不可用（解压回不去那类）',
+}
+
+// 「写死了」现场（0.8.0）：guard 只在起点（alpha=1）与预检点（alpha=1.1）为 1，
+// 其余参数空间全不合格。预检能扫到活轴（alpha+1 步 = 1.1 过门）→ **不是**"参数全 dead"，
+// 而是随机搜索的每个新候选都被门禁拒绝 —— 归因必须落在 invariant-blocked 上。
+function makeBlockedSite(tag) {
+  const dir = tmp(tag)
+  writeFileSync(join(dir, 'base.json'), JSON.stringify({ params: { alpha: 1 } }), 'utf8')
+  writeFileSync(
+    join(dir, 'probe.mjs'),
+    [
+      "import { readFileSync } from 'node:fs'",
+      'const doc = JSON.parse(readFileSync(process.env.SELFLOOP_PARAMS, "utf8"))',
+      'const p = doc.params && typeof doc.params === "object" ? doc.params : doc',
+      'const alpha = Number(p.alpha)',
+      'const guard = alpha === 1 || alpha === 1.1 || alpha === 1.25 ? 1 : 0',
+      'const loss = Number(Math.abs(alpha - 2).toFixed(6))',
+      'process.stdout.write(JSON.stringify({ loss, guard, alpha }) + "\\n")',
+    ].join('\n') + '\n',
+    'utf8',
+  )
+  const adapter = {
+    schema: 'closed-loop-adapter/3',
+    domain: 'command',
+    name: `test-blocked-${tag}`,
+    config: { path: 'base.json', format: 'flat-params' },
+    observe: {
+      type: 'command',
+      cmd: 'node ./probe.mjs',
+      timeoutMs: 30000,
+      parse: 'json',
+      metrics: [{ id: 'loss', field: 'loss', norm: { mode: 'abs', scale: 4 }, weight: 1 }],
+    },
+    target: { mode: 'params', params: { alpha: 1.25 } },
+    params: { mode: 'list', list: ['alpha'] },
+    score: { type: 'l1', penalties: [] },
+    guard: { protectPaths: [] },
+  }
+  const file = join(dir, 'adapter.json')
+  writeFileSync(file, JSON.stringify(adapter, null, 2), 'utf8')
+  return { dir, file }
+}
+
+// 「目标贴阈值」现场（0.8.0）：目标直接给数值 loss=0.4487，不变量 loss<=0.45 —— 过了，但只差 0.29%。
+// 起点 loss=0（合规），所以这不是目标/起点硬错，而是"这次合格、下一版微调就翻脸"。
+function makeNearSite(tag) {
+  const dir = tmp(tag)
+  writeFileSync(join(dir, 'base.json'), JSON.stringify({ params: { alpha: 1, beta: 1 } }), 'utf8')
+  writeFileSync(
+    join(dir, 'probe.mjs'),
+    [
+      "import { readFileSync } from 'node:fs'",
+      'const doc = JSON.parse(readFileSync(process.env.SELFLOOP_PARAMS, "utf8"))',
+      'const p = doc.params && typeof doc.params === "object" ? doc.params : doc',
+      'const alpha = Number(p.alpha)',
+      'const beta = Number(p.beta)',
+      'const loss = Number((Math.abs(alpha - 1) + 0.5 * Math.abs(beta - 1)).toFixed(6))',
+      'const size = Number((20 + 5 * alpha + 3 * beta).toFixed(6))',
+      'process.stdout.write(JSON.stringify({ loss, size, alpha, beta }) + "\\n")',
+    ].join('\n') + '\n',
+    'utf8',
+  )
+  const adapter = {
+    schema: 'closed-loop-adapter/3',
+    domain: 'command',
+    name: `test-near-${tag}`,
+    config: { path: 'base.json', format: 'flat-params' },
+    observe: {
+      type: 'command',
+      cmd: 'node ./probe.mjs',
+      timeoutMs: 30000,
+      parse: 'json',
+      metrics: [
+        { id: 'loss', field: 'loss', norm: { mode: 'abs', scale: 1 }, weight: 1 },
+        { id: 'size', field: 'size', norm: { mode: 'abs', scale: 24 }, weight: 0.5 },
+      ],
+    },
+    target: { mode: 'metrics', metrics: { loss: 0.4487, size: 28 } },
+    params: { mode: 'list', list: ['alpha', 'beta'] },
+    score: { type: 'l1', penalties: [] },
+    guard: { protectPaths: [] },
+  }
+  const file = join(dir, 'adapter.json')
+  writeFileSync(file, JSON.stringify(adapter, null, 2), 'utf8')
+  return { dir, file }
 }
 
 // 一次"门禁该拦住东西"的 run：③⑦ 共用（省一次 1 秒的跑，也保证两条断言看的是同一份证据）
@@ -293,6 +383,97 @@ test('⑨ 文法边界：重复 id / 空组合 / 缺 why 都硬错；截图链�
   assert.match(r.stderr + r.stdout, /no_dead_band/)
 })
 
+// ---------------------------------------------------------------- ⑪ 假门告警（0.8.0）
+// 关键设计：**同一轮里既有会拒绝的，也有永远为真的**。
+// 如果"rejected==0"这条检查被删掉，永远为真的那条还没事，但**会拒绝的那条也会被当成假门**报出来 ——
+// ⑪ 断言 "假门只能有一条、且是 loss_nonneg" 就会红（只放一条恒真的不变量，删了检查也不会红）。
+test('⑪ 假门告警（«6»）：永远为真的不变量 + 评估 ≥10 次 → 终端与报告都写「未拦任何候选」', () => {
+  const site = makeGuardSite('fakegate')
+  const out = tmp('fakegate-run')
+  const intent = writeIntent(out, [
+    DEAD_BAND, // 会拒绝：门在干活，**不该**被报成假门
+    { id: 'loss_nonneg', check: { field: 'loss', op: '>=', value: 0 }, why: 'loss 不该为负（本条永远为真，专门用来验假门告警）' },
+  ])
+  const r = runCli(['--adapter', site.file, '--out', join(out, 'run'), '--budget', '40', '--intent', intent])
+  assert.equal(r.status, 0, r.out.slice(-2000))
+  // 终端：只点名永远不会拒绝的那条
+  assert.match(r.out, /未拦任何候选/, '终端要有假门告警')
+  assert.match(r.out, /硬不变量 loss_nonneg 本次一次都没拦住候选/, '要点名是哪条不变量')
+  assert.match(r.out, /假门比没门更危险/, '要写清"为什么假门更危险"')
+  assert.match(r.out, /评估 \d+ 次，报告里标/, '告警里要带评估次数')
+  assert.doesNotMatch(r.out, /硬不变量 no_dead_band 本次一次都没拦住候选/, '真拦过候选的那条不能被报成假门')
+  // best.json（机器读的那一份）
+  const best = readJson(join(out, 'run', 'best.json'))
+  assert.ok(best.invariants.rejected >= 1, '这一轮必须真有候选被拒（否则"假门"这个词就没对照物）')
+  assert.ok(Array.isArray(best.invariants.fakeGate) && best.invariants.fakeGate.length === 1, `假门只能有一条（loss_nonneg）：${JSON.stringify(best.invariants.fakeGate)}`)
+  assert.equal(best.invariants.fakeGate[0].id, 'loss_nonneg')
+  assert.ok(best.invariants.fakeGate[0].attempts >= 10, '评估次数要 >= 10（这是告警的门槛）')
+  // 报告
+  const report = readFileSync(join(out, 'run', 'report.md'), 'utf8')
+  assert.match(report, /未拦任何候选/, '报告「硬不变量」那一节要标出来')
+  assert.match(report, /假门告警/)
+  // --no-fake-gate-warn 只关终端，报告照写（开关不改事实）
+  const out2 = tmp('fakegate-quiet')
+  const intent2 = writeIntent(out2, [
+    DEAD_BAND,
+    { id: 'loss_nonneg', check: { field: 'loss', op: '>=', value: 0 }, why: 'loss 不该为负' },
+  ])
+  const r2 = runCli(['--adapter', site.file, '--out', join(out2, 'run'), '--budget', '40', '--intent', intent2, '--no-fake-gate-warn'])
+  assert.equal(r2.status, 0, r2.out.slice(-1200))
+  assert.doesNotMatch(r2.out, /未拦任何候选/, '--no-fake-gate-warn 之后终端要安静')
+  assert.match(readFileSync(join(out2, 'run', 'report.md'), 'utf8'), /未拦任何候选/, '报告里仍然要如实记（warn 开关不改事实）')
+})
+
+// ---------------------------------------------------------------- ⑦ 写死了 → invariant-blocked
+test('⑫ 写死了（«7»）：连续 3 轮新候选全被门禁拒绝 → stop=invariant-blocked（不是 stagnant、也不是参数死了）', () => {
+  const site = makeBlockedSite('blocked')
+  const out = tmp('blocked-run')
+  const intent = writeIntent(out, [
+    { id: 'only_start_ok', check: { field: 'guard', op: '==', value: 1 }, why: '只有起点附近合格：用来验"门禁挡死搜索"的归因' },
+  ])
+  // 随机策略 + 放大的 max-stagnant/max-rounds：要让"门禁挡路 3 轮"先于这两条停条件触发
+  const r = runCli([
+    '--adapter', site.file, '--out', join(out, 'run'),
+    '--budget', '30', '--strategy', 'random', '--max-stagnant', '8', '--max-rounds', '8',
+    '--intent', intent,
+  ])
+  assert.equal(r.status, 0, r.out.slice(-2000))
+  const run = join(out, 'run')
+  const best = readJson(join(run, 'best.json'))
+  assert.equal(best.stop.reason, 'invariant-blocked', `必须是专门的终止原因，实际 ${best.stop.reason}：${best.stop.detail}`)
+  assert.match(best.stop.detail, /门禁挡住了搜索，不是参数死了/, '要注明是门禁挡的')
+  assert.match(best.stop.detail, /only_start_ok/, '要点名被频繁拒绝的不变量 id')
+  assert.match(best.stop.detail, /参数全 dead/, '要与"参数全 dead"明确区分')
+  // 早停：门禁挡了 3 轮就停，没跑到 --max-rounds 8
+  assert.ok(best.rounds.length <= 3, `应在第 3 轮早停，实际跑了 ${best.rounds.length} 轮`)
+  // 报告里也是同一句（不是只在终端一闪而过）
+  const report = readFileSync(join(run, 'report.md'), 'utf8')
+  assert.match(report, /门禁挡住了搜索，不是参数死了/)
+  assert.match(report, /only_start_ok/)
+  assert.match(r.out, /invariant-blocked/)
+})
+
+// ---------------------------------------------------------------- ⑧ 贴阈值提醒（0.8.0）
+test('⑬ 贴阈值提醒（«8»）：目标过了但离阈值 <1% → 终端与报告各出现一次「阈值很近」', () => {
+  const site = makeNearSite('near')
+  const out = tmp('near-run')
+  const intent = writeIntent(out, [{ id: 'loss_ceiling', check: { field: 'loss', op: '<=', value: 0.45 }, why: 'loss 超过 0.45 就不能用' }])
+  const r = runCli(['--adapter', site.file, '--out', join(out, 'run'), '--budget', '12', '--intent', intent])
+  assert.equal(r.status, 0, r.out.slice(-1500))
+  const termHits = (r.out.match(/阈值很近/g) || []).length
+  assert.equal(termHits, 1, `终端要恰好提示一次（实际 ${termHits} 次）：\n${r.out.slice(-1200)}`)
+  assert.match(r.out, /loss_ceiling/)
+  assert.match(r.out, /观测 0\.4487 \/ 阈值 0.45/, '要带观测值与阈值')
+  const report = readFileSync(join(out, 'run', 'report.md'), 'utf8')
+  const repHits = (report.match(/阈值很近/g) || []).length
+  assert.equal(repHits, 1, `报告里也要恰好一次（实际 ${repHits} 次）`)
+  const best = readJson(join(out, 'run', 'best.json'))
+  assert.equal(best.invariants.nearThreshold.length, 1)
+  assert.equal(best.invariants.nearThreshold[0].id, 'loss_ceiling')
+  assert.equal(best.invariants.nearThreshold[0].observed, 0.4487)
+  assert.equal(best.invariants.nearThreshold[0].threshold, 0.45)
+})
+
 // ---------------------------------------------------------------- ⑩ 空数组 = 不拦
 test('⑩ invariants: [] → 不拦（等价于没写），warn 照打', () => {
   const out = tmp('empty')
@@ -304,3 +485,5 @@ test('⑩ invariants: [] → 不拦（等价于没写），warn 照打', () => {
   assert.equal(best.invariants.declared, false)
   assert.equal(best.invariants.rejected, 0)
 })
+
+

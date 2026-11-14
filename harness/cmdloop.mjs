@@ -43,7 +43,9 @@ import {
   INVARIANTS_MUTANT,
   assertInvariantPass,
   createInvariantGate,
+  fakeGateFindings,
   invariantSectionLines,
+  thresholdProximityFindings,
 } from './invariants.mjs';
 
 // ledger.js 是 CommonJS（截图链路的 finalize.js 也 require 它），这里用 createRequire 拉。
@@ -68,6 +70,7 @@ const USAGE = `用法：
   --intent <file>     需求转译文件（缺省读 <out>/intent.json）；没有它 = 硬错（会写出 intent.template.json）
   --no-intent         显式跳过需求转译（放行的唯一姿势；台帐 nodes/01-intent.json 记 skipped 并写明原因）
   --no-invariants-warn  没写硬不变量时不再 warn（默认 warn：搜索会拿底线换分数）
+  --no-fake-gate-warn   某条硬不变量一次都没拦住候选时不再 warn（0.8.0；报告里照写"本次未拦任何候选"）
   --help              这份说明
 
 需求转译闸（0.5.0；intent v2 在 0.5.1，比活性预检更早，因为它会改判据）：
@@ -87,7 +90,15 @@ const USAGE = `用法：
   intent.invariants 里写 [{id, check, why}]，每次评估拿到观测后先过门禁：任一 fail → 该候选判废
   （不进距离比较、不能成为 best）；目标/起点过不了 = 硬错（判据/目标自相矛盾）。
   没写 invariants → 不拦，但默认 warn「没写硬不变量：搜索会拿底线换分数」，--no-invariants-warn 可关。
-  截图链路（iter.ps1）暂不支持门禁：在截图链路的 intent 里写 invariants 会硬错（宁可拒跑，也不假装装了门禁）。`;
+  截图链路（iter.ps1）暂不支持门禁：在截图链路的 intent 里写 invariants 会硬错（宁可拒跑，也不假装装了门禁）。
+
+门禁自身的三种"病"（0.8.0，都是 warn/新增 stop reason，不改判据）：
+  · 假门：某条不变量 rejected==0 且本次评估 ≥10 次 → warn「本次一次都没拦住候选」+ 报告「本次」列标 ⚠
+    （--no-fake-gate-warn 只关终端，报告照写 —— 假门比没门更危险：它让人以为底线被守住了）。
+  · 写死了：连续 3 轮没有任何新候选过门禁 → 早停并写 stop=invariant-blocked（点名被频繁拒绝的 id + 最近观测），
+    与「参数全 dead」（预检每根轴改一档距离一点不动）明确区分 —— 两者都是跑不动，但原因不同。
+  · 贴阈值：目标过了但离阈值 <1%（小数）或 <1e-6（整数）→ warn「判据下一版微调就可能翻脸」+ 报告标出来。
+  拿今天的标准复算旧 run：node harness/audit.mjs <run目录> --intent <intent.json>（见 harness/audit.mjs）。`;
 
 function parseArgs(argv) {
   const a = {
@@ -103,6 +114,7 @@ function parseArgs(argv) {
     intent: '',
     noIntent: false,
     noInvariantsWarn: false,
+    noFakeGateWarn: false,
     help: false,
   };
   const takes = {
@@ -129,6 +141,10 @@ function parseArgs(argv) {
     }
     if (k === '--no-invariants-warn') {
       a.noInvariantsWarn = true;
+      continue;
+    }
+    if (k === '--no-fake-gate-warn') {
+      a.noFakeGateWarn = true;
       continue;
     }
     const key = takes[k];
@@ -490,6 +506,11 @@ function run(args) {
     const eff = invGate.check({ metrics: trow, fields: targetRec ? targetRec.fields : {} }, { seq: targetRec ? targetRec.seq : null, phase: 'target' });
     assertInvariantPass(eff, '目标（intent 覆盖后的生效值）');
   }
+  // 目标贴阈值提醒（0.8.0）：目标**通过了**，但贴着边界 —— 今天合格，下一版判据微调就可能翻脸。
+  // 用**实际生效**的目标观测（intent 覆盖过的值才是真判据），不是 adapter 原来那组。
+  const targetProximity = invGate.declared
+    ? thresholdProximityFindings(invGate.items, { metrics: trow, fields: targetRec ? targetRec.fields : {} })
+    : [];
 
   // ---------------------------------------------------------------- 起点
   const startGot = evaluateCached(plan.startParams, { id: 'e001', round: 0, note: 'start', phase: 'start' });
@@ -722,6 +743,26 @@ function run(args) {
   const roundLog = [];
   let roundNo = 0;
   let stagnant = 0;
+  // 门禁挡路（0.8.0）：连续几轮"没有任何新候选过门"。它跟"参数死了"是两回事，所以要分开记。
+  let gatedStreak = 0;
+  let gateBlockRounds = 0;
+  const GATE_BLOCK_ROUNDS = 3;
+  // 停下来的原因如果是门禁，提示必须点名是它、并带上被频繁拒绝的 id + 最近一次观测。
+  const gateBlockDetail = (rounds) => {
+    const s = invGate.summary();
+    const hot = s.items
+      .filter((it) => it.rejected > 0)
+      .sort((a, b) => b.rejected - a.rejected)
+      .slice(0, 3);
+    const hotTxt = hot.length
+      ? hot.map((it) => `${it.id}（拒绝 ${it.rejected} 次；最近一次观测 ${JSON.stringify(it.lastReject ? it.lastReject.values : {})}）`).join('；')
+      : '（没有一条不变量真正拒绝过：那问题不在门禁，见报告里的假门告警）';
+    return (
+      `连续 ${rounds} 轮没有任何新候选通过硬不变量 —— **是门禁挡住了搜索，不是参数死了**` +
+      `（"参数全 dead"是另一回事：那是预检阶段每个参数改一档、距离一点不动；这次预检有 ${alive.length} 个活轴）。` +
+      `被频繁拒绝的：${hotTxt}`
+    );
+  };
   const rng = args.strategy === 'random' ? mulberry32(args.seed) : null;
 
   while (!stopReason && roundNo < args.maxRounds) {
@@ -769,21 +810,33 @@ function run(args) {
 
     let pick = null;
     let roundRejected = 0;
+    let newCands = 0;
+    let newRejected = 0;
     for (const h of hit) {
       const rec = evals[h.seq - 1];
       // 候选级门禁（0.7.0）：违反硬不变量的候选判废 —— 不进距离比较、不能成为 best。
       // 注意 `none` 是当前最优（它当初就过过门），所以正常情况下这一轮总有可用候选。
       if (!rec.inv || !rec.inv.ok) {
         roundRejected += 1;
+        if (h.note !== 'none') newRejected += 1;
+        if (h.note !== 'none') newCands += 1;
         continue;
       }
+      if (h.note !== 'none') newCands += 1;
       if (pick === null || rec.dist < pick.dist) pick = { seq: h.seq, dist: rec.dist, note: h.note, vec: h.vec };
     }
+    // 这一轮"门禁挡路"的判据：所有**新**候选都被拒（none 是当前最优、当初就过过门，不算新候选），
+    // 或者极端情况下连 none 都没过门（某一轮 0 个候选能过门）。
+    const roundGateBlocked = pick === null || (newCands > 0 && newRejected === newCands);
+    if (roundGateBlocked) {
+      gatedStreak += 1;
+      gateBlockRounds += 1;
+    } else gatedStreak = 0;
     if (!pick) {
-      // 极端情况：连 none 都没过门（说明 best 本身被门禁否掉了，不该发生）—— 记一轮、停，不假装有改进
+      // 极端情况：连 none 都没过门（说明 best 本身被门禁否掉了）—— 记一轮、停，不假装有改进
       roundLog.push({ round: roundNo, cands: hit.map((h) => ({ note: h.note, seq: h.seq })), winner: null, rejected: roundRejected });
-      stopReason = 'invariants-gate';
-      stopDetail = `第 ${roundNo} 轮所有候选（含当前最优）都被硬不变量拒绝：${hit.map((h) => h.note).join(', ')}`;
+      stopReason = 'invariant-blocked';
+      stopDetail = `第 ${roundNo} 轮 0 个候选能过门（连当前最优都被拒）：${hit.map((h) => h.note).join(', ')}。` + gateBlockDetail(gatedStreak);
       break;
     }
 
@@ -800,10 +853,22 @@ function run(args) {
       stagnant = 0;
     } else stagnant += 1;
 
+    // 写死了（0.8.0）：连续 3 轮每轮新候选全被门禁拒绝 → 早停，并说清是门禁挡的。
+    // 放在 stagnant 之前：同样"走不动"，门禁挡路比"参数没救"更具体，别让它冒充后者。
+    if (!stopReason && gatedStreak >= GATE_BLOCK_ROUNDS) {
+      stopReason = 'invariant-blocked';
+      stopDetail = gateBlockDetail(gatedStreak);
+    }
     if (!stopReason && stagnant >= args.maxStagnant) {
       stopReason = 'stagnant';
       stopDetail = `连续 ${stagnant} 轮没有改进（每轮 ±${args.stepRatio * 100}% 都变差）`;
     }
+  }
+  // 停是停了，但原因是门禁：所有没改进的轮次里都没有任何新候选过门（--max-stagnant 默认 2，会先到）。
+  // 这只是把**已经发生的停机**归因归对，不是多跑一轮：用户看到的必须是"门禁挡住了搜索"，不是"参数死了"。
+  if (stopReason === 'stagnant' && gatedStreak >= 2 && stagnant === gatedStreak) {
+    stopReason = 'invariant-blocked';
+    stopDetail = gateBlockDetail(gatedStreak);
   }
   if (!stopReason) {
     stopReason = 'max-rounds';
@@ -814,6 +879,14 @@ function run(args) {
     `[budget] 已用 ${usage.used} 次评估 / 上限 ${args.budget}（目标 ${usage.target} + 起点 ${usage.start} + 稳定性 ${usage.stability} + 预检 ${usage.precheck} + 搜索 ${usage.search}，缓存命中 ${usage.cache}）`,
   );
   log(`[stop] ${stopReason}  ${stopDetail}`);
+
+  // 门禁自身的两种"病"（0.8.0）：跑完才看得出来 —— 所以放在 stop 之后说。
+  // 两个 warn 都只关终端；report.md 与 best.json 里照写（开关不改事实）。
+  const fakeGate = invGate.declared ? fakeGateFindings(invGate.summary()) : [];
+  if (fakeGate.length && !args.noFakeGateWarn) {
+    for (const f of fakeGate) log(`[invariants][warn] ${f.message}`);
+  }
+  for (const p of targetProximity) log(`[invariants][warn] ${p.message}`);
 
   // 台帐 · search（整个搜索循环）：轮数 / 评估次数 / 胜出轨迹摘要。
   // "一次都没跑"必须是 skipped 并且说清为什么（all-dead 是预检的功劳，不是搜索的失败）。
@@ -954,6 +1027,11 @@ function run(args) {
       items: invGate.summary().items,
       mutant: INVARIANTS_MUTANT,
       warnSuppressed: Boolean(args.noInvariantsWarn),
+      // 门禁自身的三种"病"（0.8.0）：假门 / 写死了 / 贴阈值 —— 机器读的那一份
+      fakeGate,
+      fakeGateWarnSuppressed: Boolean(args.noFakeGateWarn),
+      nearThreshold: targetProximity,
+      gateBlock: { rounds: gateBlockRounds, streak: gatedStreak, stop: stopReason === 'invariant-blocked' },
     },
     seed: args.seed,
     stepRatio: args.stepRatio,
@@ -1018,7 +1096,7 @@ function run(args) {
   writeFileSync(join(outDir, 'best.json'), JSON.stringify(bestJson, null, 2), 'utf8');
 
   // ---------------------------------------------------------------- report.md
-  writeFileSync(join(outDir, 'report.md'), buildReport({ plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams, dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outputs, outDir, startedAt, endedAt, stability, stabCfg, nodes: ledger.nodes, intentSummary, invSummary: invGate.summary(), invDeclared: invGate.declared, rejectedPrecheck }), 'utf8');
+  writeFileSync(join(outDir, 'report.md'), buildReport({ plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams, dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outputs, outDir, startedAt, endedAt, stability, stabCfg, nodes: ledger.nodes, intentSummary, invSummary: invGate.summary(), invDeclared: invGate.declared, rejectedPrecheck, fakeGate, targetProximity, gateBlock: { rounds: gateBlockRounds, streak: gatedStreak } }), 'utf8');
 
   const summary = `HASH ${hash}\nstart=${r6(startDist)} best=${r6(bestDist)} drop=${dropPct === null ? 'n/a' : dropPct + '%'} stability=${stability ? (stability.checked ? 'ok' : 'off') : 'skipped'} invariants=${invGate.declared ? invGate.items.length + '条/拒' + invGate.summary().rejected : 'off'} stop=${stopReason} used=${usage.used}/${args.budget} elapsed=${elapsedSec}s nodes=${ledger.nodes.length}`;
   log(summary);
@@ -1043,6 +1121,7 @@ function reproduceCommand(args) {
   else if (args.intent) parts.push(`--intent "${args.intent}"`);
   // 门禁的 warn 开关也要带上：重跑时终端输出必须和这次一致（少一条 warn 就等于换了一套默认）
   if (args.noInvariantsWarn) parts.push('--no-invariants-warn');
+  if (args.noFakeGateWarn) parts.push('--no-fake-gate-warn');
   return parts.join(' ');
 }
 
@@ -1052,6 +1131,7 @@ function buildReport(ctx) {
     plan, args, evals, precheckRows, alive, dead, roundLog, startDist, bestDist, bestVec, baseParams,
     dropPct, dropAbs, usage, stopReason, stopDetail, hash, trow, targetInfo, elapsedSec, msPerEval, outDir, startedAt, endedAt,
     stability, nodes, intentSummary, invSummary, invDeclared, rejectedPrecheck,
+    fakeGate, targetProximity, gateBlock,
   } = ctx;
   const WL = plan.wl;
   const MID = plan.observe.metricIds;
@@ -1085,6 +1165,23 @@ function buildReport(ctx) {
       return `白名单 ${WL.length} 个参数**全部 dead**（改一档距离一点不动），预检阶段就终止，一次搜索都没跑 —— 「在空轴上转到底」被挡住。`;
     }
     if (stopReason === 'no-alive-after-precheck') return '白名单没有一个活参数，预检后终止。';
+    // 写死了（0.8.0）：跟"参数全 dead"必须分清 —— 都是跑不动，但一个怪门禁、一个怪参数。
+    if (stopReason === 'invariant-blocked') {
+      const hotTxt = (invSummary.items || [])
+        .filter((it) => it.rejected > 0)
+        .sort((a, b) => b.rejected - a.rejected)
+        .slice(0, 3)
+        .map((it) => '`' + it.id + '`（拒 ' + it.rejected + ' 次）')
+        .join('、');
+      return (
+        '**门禁挡住了搜索，不是参数死了**：连续 ' +
+        (gateBlock && gateBlock.streak ? gateBlock.streak : '?') +
+        ' 轮没有任何新候选通过硬不变量（被拒最多的是 ' + (hotTxt || '（无：见假门告警）') + '）。' +
+        '参数本身是活的（预检判了 ' + alive.length + ' 个活轴）—— 「参数全 dead」是**预检阶段**每个参数改一档、距离一点不动，' +
+        '那是另一回事：那种情况说明白名单里没有能动的轴，而这次是**每个新候选都被判废**。' +
+        '往下走只有两条路：先确认那条不变量写对了（放宽它 / 改 `check` 的阈值），或者承认这段参数空间里没有合格解。'
+      );
+    }
     const deadTxt = deadRows.length ? `其中 ${deadRows.length} 个标 dead 已跳过` : '白名单全活';
     return `距离 **${d4(startDist)} → ${d4(bestDist)}**（降 **${dropPct === null ? 'n/a' : dropPct + '%'}**），${roundRows.length} 轮 / ${usage.used} 次评估，终止原因 \`${stopReason}\`；${deadTxt}。`;
   })();
@@ -1186,7 +1283,14 @@ function buildReport(ctx) {
   md.push('');
   md.push(...stabBlock);
   // 硬不变量门禁的明细节：每条 id 的通过/拒绝次数 + 最近一次拒绝的原始观测片段。
-  md.push(...invariantSectionLines(invSummary, { warnSuppressed: Boolean(args.noInvariantsWarn) }));
+  // 0.8.0 起这一节还带上"假门告警"（本次未拦任何候选）与"目标贴阈值"—— 报告里永远照写。
+  md.push(
+    ...invariantSectionLines(invSummary, {
+      warnSuppressed: Boolean(args.noInvariantsWarn),
+      fakeGateWarnSuppressed: Boolean(args.noFakeGateWarn),
+      nearThreshold: Array.isArray(targetProximity) ? targetProximity : [],
+    }),
+  );
   md.push('## 1. 参数活性预检');
   md.push('');
   md.push('口径与 `iter.ps1` §5.3 一致：对每个参数在起始点基础上 +1 步，与起点比 `Δd`。`Δd==0` → `dead`（`输出同` 列说明是"命令输出逐字节相同"还是"输出变了但判据没动"）。被硬不变量拒绝的预检点单列为 `rejected`：不算活轴、也不算 dead（轴可能是好的，只是这一点不合格）。');
@@ -1284,6 +1388,7 @@ function buildReport(ctx) {
   md.push('- **只认标量指标**：命令输出里取到的必须是数（数组型指标要 metrics2.js 的提取器，那是浏览器链路）。');
   md.push('- **判据只做粗筛**：它能把候选排序、把坏掉的报警；"这个数好不好"不能问它。');
   md.push('- **硬不变量只在命令链路**（0.7.0）：`iter.ps1`（截图链路）暂不支持门禁 —— 它的观测是页面指标、判定在 PowerShell 里，没有测试守着 PS 侧实现；在截图链路的 intent 里写 invariants 会**硬错**（宁可拒跑，也不假装装了门禁）。');
+  md.push('- **门禁语义会漂**（0.8.0）：不变量是"今天的"判据，改了阈值之后这份证据包里的"最优"就未必还算数 —— 拿今天的标准复算一遍：`node harness/audit.mjs "' + outDir + '" --intent <今天的 intent.json>`（exit 0 = best 仍合格，1 = 今天不合格，2 = 跑不起来）。');
   md.push('- **命令必须是确定性的**：同一个参数跑两次给不同的数，那就不是观测、是噪声。0.4.1 起**先验一遍再搜**（观测稳定性闸：起点参数连跑 `observe.stability.repeat` 次，任一指标相对离散度 > `maxSpread` 就硬错），比"跑完再解释为什么结果怪"省事得多。');
   md.push('- **稳定性闸只看"同一个参数重复跑"**：它证明观测可重复，不证明**判据**本身有意义；而且相对离散度在指标接近 0 时会放大（分母兜底 1e-9），0 附近的指标请自己看一眼 spread 的绝对值。');
   md.push('- **本次统计**：' + evals.length + ' 个评估点，`outputs/` ' + ctx.outputs.size + ' 份原始输出。');
