@@ -29,6 +29,34 @@ export function getBudget(dir) {
 }
 
 const checks = {
+  draft1(dir) {
+    const d = readJson(j(dir, 'intent.draft1.json'))
+    if (!d) return ['缺 intent.draft1.json（初轮转译没有产出）']
+    const out = []
+    if (!d.restate || !String(d.restate).trim()) out.push('restate 为空')
+    if (!Array.isArray(d.openQuestions) || d.openQuestions.length === 0) out.push('openQuestions 为空（那调查员就没有线索）')
+    return out
+  },
+  draft2(dir) {
+    const d = readJson(j(dir, 'intent.draft2.json'))
+    if (!d) return ['缺 intent.draft2.json（第二轮转译没有产出）']
+    const out = []
+    if (!Array.isArray(d.criteria) || d.criteria.length === 0) out.push('criteria 为空')
+    const noMeas = (d.criteria || []).filter((c) => !(c && (c.userWords || c.howMeasured)))
+    if (noMeas.length) out.push(noMeas.length + ' 条 criteria 既没 userWords 也没 howMeasured')
+    return out
+  },
+  confirm(dir) {
+    const c = readJson(j(dir, 'intent.confirm.json'))
+    if (!c) return ['缺 intent.confirm.json（没有整理待确认问题）']
+    const out = []
+    const q = Array.isArray(c.questions) ? c.questions : []
+    const a = Array.isArray(c.autoConfirmed) ? c.autoConfirmed : []
+    if (q.length === 0 && a.length === 0) out.push('questions 与 autoConfirmed 都是空的（等于没做这一步）')
+    const noRec = q.filter((x) => !x || !x.recommend)
+    if (noRec.length) out.push(noRec.length + ' 个问题没给建议答案（把选择题原样丢给用户）')
+    return out
+  },
   measured(dir) {
     const r = readJson(j(dir, 'research.json'))
     if (!r) return ['缺 research.json —— 先跑 node harness/preflight.mjs --run ' + dir + ' --ref <参考素材>']
@@ -161,14 +189,14 @@ export function phase1Nodes(budget) {
   const t = TIER[budget.research] ?? 2
   const n = []
   n.push({ id: '1.1-preflight', kind: 'program', title: '量参考 / 建骨架', check: 'measured' })
-  n.push({ id: '1.2-translate1', kind: 'manager', title: '初轮需求转译（只看需求+实测）' })
+  n.push({ id: '1.2-translate1', kind: 'manager', title: '初轮需求转译（只看需求+实测）', check: 'draft1' })
   pushIf(n, t >= 1, { id: '1.3-research-env', kind: 'worker', title: '调查员c：环境/工具/指南' })
   pushIf(n, t >= 2, { id: '1.4-research-doc', kind: 'worker', title: '调查员a：技术文献（GitHub/论文/算法）' })
   pushIf(n, t >= 3, { id: '1.5-research-ref', kind: 'worker', title: '调查员b：参考图/参考产品/现实知识' })
   n.push({ id: '1.6-gate', kind: 'program', title: '调研闸：按预算档位核调研完整性', check: 'researchTier' })
   n.push({ id: '1.7-absorb', kind: 'manager', title: '吸收调查结果', check: 'absorbed' })
-  n.push({ id: '1.8-translate2', kind: 'manager', title: '第二轮转译（吸收后）' })
-  n.push({ id: '1.9-confirm', kind: 'manager', title: '向用户确认意向' })
+  n.push({ id: '1.8-translate2', kind: 'manager', title: '第二轮转译（吸收后）', check: 'draft2' })
+  n.push({ id: '1.9-confirm', kind: 'manager', title: '向用户确认意向', check: 'confirm' })
   n.push({ id: '1.10-translate3', kind: 'manager', title: '第三轮转译（定稿判据）', check: 'intent' })
   return n
 }
@@ -229,7 +257,7 @@ export function currentNode(dir) {
 
 function writeSignal(dir, stage, st, extra) {
   mkdirSync(j(dir, STAGE_DIR), { recursive: true })
-  writeFileSync(j(dir, STAGE_DIR, stage + '.json'), JSON.stringify(Object.assign({ stage, status: st, at: new Date().toISOString() }, extra || {}), null, 2), 'utf8')
+  writeFileSync(j(dir, STAGE_DIR, stage + '.json'), JSON.stringify(Object.assign({ stage, status: st, by: 'pipeline', at: new Date().toISOString() }, extra || {}), null, 2), 'utf8')
 }
 
 function status(dir) {
@@ -283,6 +311,12 @@ function done(dir, stageId) {
   const { nodes } = allNodes(dir)
   const node = nodes.find((x) => x.id === stageId)
   if (!node) { console.log('未知节点：' + stageId); return 2 }
+  // 顺序闸：只能交「当前节点」，不许提前交活（2026-11-16 实测：1.1 没跑就能交 1.2）
+  const cur = currentNode(dir).node
+  if (!cur || cur.id !== stageId) {
+    console.log('顺序不对：当前节点是 ' + (cur ? cur.id : '(已完成)') + '，不是 ' + stageId + '。上游信号没到，不许提前交活。')
+    return 3
+  }
   const fn = checks[node.check]
   const problems = fn ? fn(dir, node) : []
   if (problems.length) { writeSignal(dir, stageId, 'failed', { problems }); console.log(stageId + ' 产物不合格，卡住：\n  ' + problems.join('\n  ')); return 1 }

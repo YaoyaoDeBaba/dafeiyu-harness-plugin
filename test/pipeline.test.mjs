@@ -92,3 +92,27 @@ test('⑦ decide stop → 后续轮次被跳过，直接进交付阶段', () => 
   assert.match(r.stdout, /当前节点：3\.1-summarize/, '应直接进交付：' + r.stdout.slice(-200))
   assert.match(r.stdout, /\[--\] 2\.1-plan-r2/, '第 2 轮节点应标成跳过')
 })
+
+test('⑧ 顺序闸：上游没跑就交下游 → 拒绝（exit 3）', () => {
+  const dir = makeRun()
+  const r = run('done', '--run', dir, '--stage', '1.2-translate1')
+  assert.equal(r.status, 3, r.stdout)
+  assert.match(r.stdout, /顺序不对/)
+})
+
+test('⑨ manager 节点不再裸奔：没写 draft1 就交活 → 卡住', () => {
+  const dir = makeRun()
+  run('step', '--run', dir)            // 1.1 程序节点自动过，停在 1.2
+  const r = run('done', '--run', dir, '--stage', '1.2-translate1')
+  assert.equal(r.status, 1, r.stdout)
+  assert.match(r.stdout, /intent\.draft1\.json/)
+})
+
+test('⑩ 写了 draft1 但 openQuestions 为空 → 仍卡（调查员会没线索）', () => {
+  const dir = makeRun()
+  run('step', '--run', dir)
+  writeFileSync(join(dir, 'intent.draft1.json'), JSON.stringify({ restate: '复述', openQuestions: [], assumed: [] }))
+  const r = run('done', '--run', dir, '--stage', '1.2-translate1')
+  assert.equal(r.status, 1)
+  assert.match(r.stdout, /openQuestions/)
+})
