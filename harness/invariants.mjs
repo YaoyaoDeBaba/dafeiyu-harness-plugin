@@ -430,7 +430,7 @@ export function invariantSectionLines(summary, opts = {}) {
         ' —— 这次的"最优"只在指标意义上更近，不保证任何底线：解压回不去、接口 500、越界写坏这类**废方案依然可能被选中**。',
     );
     md.push('');
-    md.push('改法：`intent.invariants` 里加一条 `{ id, check, why }`（见 `skills/selfloop/references/intent-and-ledger.md` 的「硬不变量」一节）。');
+    md.push('改法：`intent.invariants` 里加一条 `{ id, check, why }`（见 `skills/selfloop/references/invariants.md` 的「硬不变量」一节）。');
     md.push('');
     md.push('> ' + SCREENSHOT_LIMIT);
     md.push('');

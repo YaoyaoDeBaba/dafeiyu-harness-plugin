@@ -3,7 +3,7 @@
 // 它模拟任何"跑一下就有数"的东西：一次构建的耗时、一个接口的延迟、一份日志里的错误数、
 // 一次数值求解的残差……这里故意用最简单的算术，好处是**结果可以手算核对**，坏处是它不好看。
 //
-// 观测入口约定（cmdloop.mjs 写死的那一条，见 skills/selfloop/references/command-observe.md）：
+// 观测入口约定（cmdloop.mjs 写死的那一条，见 skills/selfloop/references/observe-command.md）：
 //   ① 参数从 SELFLOOP_PARAMS 指向的文件读（也可 argv[2] 显式给），文件形如 {"params":{...}}；
 //   ② 结果打到 stdout，一行 JSON；cmdloop 按 observe.parse=json 取字段；
 //   ③ **无随机、无外部依赖**：同一组参数 → 逐字节相同的输出。

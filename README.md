@@ -108,7 +108,7 @@ node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --
 
 跑的时候另开一个终端 `node harness/watch.mjs runs/cmd1`：一屏看轮次 / 节点状态 / 最近 3 个评估点 / 产物**绝对路径**，跑完自动退（截图链路也能看，只是没有实时评估流）。`--once` 只画一帧、`--json` 吐一屏数据给面板读、`--timeout` 到点自动退。
 
-要调的不是画面而是"一串数"（构建耗时 / 接口延迟 / 日志里的错误数 / 求解残差）时走这条：adapter 里加一节 `observe`（`type: command` + `cmd` + `parse` + `metrics`），执行器跑命令、从 stdout 取数、用**同一份 `score.js`** 算距离、出同构证据包（`curve.csv` / `best.json` / `report.md` + `outputs/` + `nodes/` 台帐）。怎么给非图形目标写 adapter、常见坑，见 `skills/selfloop/references/command-observe.md`；字段表见 `harness/适配层-说明.md` 第六节。
+要调的不是画面而是"一串数"（构建耗时 / 接口延迟 / 日志里的错误数 / 求解残差）时走这条：adapter 里加一节 `observe`（`type: command` + `cmd` + `parse` + `metrics`），执行器跑命令、从 stdout 取数、用**同一份 `score.js`** 算距离、出同构证据包（`curve.csv` / `best.json` / `report.md` + `outputs/` + `nodes/` 台帐）。怎么给非图形目标写 adapter、常见坑，见 `skills/selfloop/references/observe-command.md`；字段表见 `harness/适配层-说明.md` 第六节。
 缺 `observe` 节的 adapter 行为完全不变（还是截图链路）。
 
 ### 需求转译闸与节点台帐（0.5.0；intent v2 在 0.5.1）
@@ -140,7 +140,7 @@ node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --
 - **硬不变量**（0.7.0）：`intent.invariants` 里写 `[{id, check, why}]` —— **不合格直接判废，不进距离**
   （指标负责"像不像"，不变量负责"是不是"：解压回不去、接口 500、越界写坏这类废方案，分数再高也不要）。
   目标/起点违规 = 硬错；字段取不到 = 硬错；没写 = 不拦但默认 warn「没写硬不变量：搜索会拿底线换分数」
-  （`--no-invariants-warn` 关掉终端提醒）。文法与语义见 `skills/selfloop/references/intent-and-ledger.md` 的 §1.7。
+  （`--no-invariants-warn` 关掉终端提醒）。文法与语义见 `skills/selfloop/references/invariants.md` 的 §1.7。
 - **门禁自己的三种病**（0.8.0，跑完一定会说）：**假门**（某条一次都没拦住候选，评估 ≥10 次 → warn + 报告标
   `⚠ 本次未拦任何候选`，`--no-fake-gate-warn` 只关终端）；**写死了**（连续 3 轮没有新候选过门禁 → 早停并写
   `stop=invariant-blocked`，明确区别于"参数全 dead"）；**贴阈值**（目标离阈值 <1% / <1e-6 → 提示"下一版微调就可能翻脸"）。
@@ -159,7 +159,7 @@ node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --
 初版覆盖 `intent` / `target` / `stability` / `precheck` / `search` / `finalize`（截图链路没有 stability 节点 → 记 `skipped` 并写明原因）。
 `report.md` 顶部 = 汇总行 + **intent 摘要段**（restate 一行 / 锚几条 / 反例与自由度 / 谁验收 / 是否 v1 degraded），摘要另存 `<out>/intent.summary.json`；
 这四样**不参与距离计算**，只做记录与呈现。
-怎么填 intent、硬闸语义、`--no-intent` 的代价、台帐字段表与已知缺口：**`skills/selfloop/references/intent-and-ledger.md`**。
+怎么填 intent：**`skills/selfloop/references/intent.md`**；硬闸错误原文：**`intent-errors.md`**；台帐与报告：**`ledger-and-report.md`**；链路差别与已知缺口：**`chains-and-gaps.md`**。
 
 ## 安装
 

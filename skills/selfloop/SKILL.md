@@ -98,7 +98,7 @@ pwsh -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\vfx-render\
 **跑之前要先过需求转译闸（0.5.0；intent v2 在 0.5.1）**：默认读 `<Out>\intent.json`，没有就拒跑并写出 `intent.template.json`；确认后 `criteria` 会按 id 覆盖判据（权重 / 目标值）。
 **v2 要锚**：`anchors` 至少 1 条具体参照物（参考图 / 具体游戏名 / 前作，`kind:"image"` 的 `ref` 必须真实存在），另有 `restate` / `notWanted` / `freeVsFixed` / `howWeVerify`；
 只有"指标+权重+目标"的 v1 写法仍能跑，但会 warn 且台帐记 `degraded`。这些只进台帐与 `report.md` 顶部摘要，**不参与距离**。
-确实要跳过就显式 `-NoIntent`（台帐会记一条 `skipped intent`，跳过有名字）。怎么填、硬闸语义、台帐字段表见 `references/intent-and-ledger.md`。
+确实要跳过就显式 `-NoIntent`（台帐会记一条 `skipped intent`，跳过有名字）。怎么填见 `references/intent.md`，硬闸错误原文见 `references/intent-errors.md`，台帐与报告见 `references/ledger-and-report.md`。
 
 **纪律**：只改自己范围内的配置（**本体拒写由 adapter 的 `guard.protectPaths` 声明**，改参脚本会拒绝写进这些目录；前后交哈希）；浏览器用独立 `--user-data-dir`、按 PID 收尾；端口各 run 独占，别抢别人的；`capture.mjs` 自带父进程死亡看门狗，**判据是父进程没了，不是跑了多久**，别自己再加"超时杀"。
 
@@ -123,15 +123,23 @@ pwsh -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\vfx-render\
 
 第一次接**不是自己的页面**（第三方台、别人做的 demo、你只拿到 dist 的那种）：先做宿主改造，再看领域文档。改造清单在 `references/host-adaptation.md`（参数提前注入 / readyExpr 双标记 / 隐藏会变的 DOM / 冻完就退 rAF / 扁平回读接口），改造完的 adapter 形态看 `examples/third-party-3d.json`。
 
-references 一览：
+references 索引（按「我要干什么」查，别从头读）：
 
-- `references/workflow.md` —— 五步流程、活性扫描五分法、每步的判据与失败含义
-- `references/metrics.md` —— 指标定义、跨工具换算、底噪、档位表
-- `references/pitfalls.md` —— 按症状查坑（构建 / 参数 / 测量 / 传递）
-- `references/host-adaptation.md` —— 新宿主怎么接：五步改造、阈值实测、冻帧协议怎么选、反证要求
-- `references/command-observe.md` —— **观测是一条命令的输出**：给非图形目标（耗时/延迟/日志计数/残差）写 adapter、`observe` 字段表、**稳定性闸**（默认连跑 3 次、离散度 >0.02 就拒跑）、哪些口径是复用哪些是照抄、常见坑
-- `references/intent-and-ledger.md` —— **需求转译闸 + 节点台帐**：intent v2 字段表（锚/反例/自由度/验收方式）与一个填好的例子、**为什么要这四样**、硬闸规则与错误原文、`--no-intent` / `-NoIntent` 的代价、台帐字段表与 status 语义、两个入口各写哪些节点、`report.md` 的 intent 摘要段、已知缺口（**锚还没进搜索**）
-- `references/domains-vfx.md` —— vfx-render 领域：现场怎么接、三份 adapter、进程卫生、题目外的话
+| 我要…… | 读哪篇 |
+|---|---|
+| 写或改一份 `intent.json`（判据 / 锚 / 用户原话 / 量法） | `references/intent.md` |
+| 配硬不变量（不合格直接判废，不进距离） | `references/invariants.md` |
+| 看懂 `[需求转译闸]` 的报错原文与退出码 | `references/intent-errors.md` |
+| 跑 02 号调研节点（`research.json`） | `references/research-node.md` |
+| 跑完一轮，看不懂 `report.md` 那些行和 ⚠ | `references/ledger-and-report.md` |
+| 这条规则为什么在我这条链路上没生效 | `references/chains-and-gaps.md` |
+| 写一份命令观测（`observe.type=command`） | `references/observe-command.md` |
+| 判断「这次是不是真的更好了」 | `references/observe-stability.md` |
+| 五步流程、活性扫描五分法、每步的判据与失败含义 | `references/workflow.md` |
+| 指标定义、跨工具换算、底噪、档位表 | `references/metrics.md` |
+| 按症状查坑（构建 / 参数 / 测量 / 传递） | `references/pitfalls.md` |
+| 第一次接别人的页面，怎么改造宿主 | `references/host-adaptation.md` |
+| vfx-render 领域现场怎么接、三份 adapter | `references/domains-vfx.md` |
 
 ## 两条执行器（选一个）
 
@@ -145,4 +153,4 @@ references 一览：
 node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --budget 40
 ```
 
-判据在两条链路里是**同一份** `harness/score.js`；搜索的判据口径也一致（活性预检 + 坐标下降），所以"哪个参数是活的""这轮算不算变好"的结论读法不变。命令链路的细节见 `references/command-observe.md`。
+判据在两条链路里是**同一份** `harness/score.js`；搜索的判据口径也一致（活性预检 + 坐标下降），所以"哪个参数是活的""这轮算不算变好"的结论读法不变。命令链路怎么写观测见 `references/observe-command.md`，怎么判断结果可信见 `references/observe-stability.md`。

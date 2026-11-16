@@ -74,7 +74,7 @@ function buildCorpus() {
         status: pick([200, 200, 200, 201, 204, 400, 404, 429, 500, 502]),
         ms: Math.floor(rnd() * 900) + 1,
         // 高熵部分：这两个字段决定了语料不可能被压成 0（真实日志里也是它们撑住体积）。
-        // blob 的长度是按「让压缩率落在 37% 一带」实测调的（见 skills/selfloop/references/command-observe.md 第 8 节）：
+        // blob 的长度是按「让压缩率落在 37% 一带」实测调的（见 skills/selfloop/references/observe-stability.md 第 8 节）：
         // 短了语料太可压、目标一点就到；长了熵地板高于目标、怎么调都够不到。
         trace: hex(24),
         uid: hex(8) + '-' + hex(4),

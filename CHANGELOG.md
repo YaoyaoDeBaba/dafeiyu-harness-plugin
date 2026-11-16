@@ -3,6 +3,50 @@
 > 规矩：**改了 `harness/` 里的执行器就要在这里记一笔**，并注明"要不要回灌上游原件（案例 A，见 README「案例与来源」）"。
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
+## 0.13.1（未发布）· skill 按「读者在什么时刻需要它」拆篇（不改任何行为）
+
+> 触发：2026-11-15 插件大总管评审（`docs/评审-selfloop-skill体量-20261115.md`）。
+> 结论是"内容值这个体量，但不该由一个文件承担"：`intent-and-ledger.md` 37,316 字符 / 881 行，
+> 是六份东西粘在一起；`read` 一次给整篇、而且常常只给开头，**读到的顺序不对**比读得慢更伤。
+
+- **references 8 篇 → 13 篇，拆点按"读者在什么时刻需要它"切，不按章节顺序切**：
+  · `intent-and-ledger.md`（37,316 字符）→ `intent.md`（8,691）/ `invariants.md`（4,503）/
+    `intent-errors.md`（3,024）/ `research-node.md`（4,409）/ `chains-and-gaps.md`（6,825）/
+    `ledger-and-report.md`（11,394）
+  · `command-observe.md`（15,726）→ `observe-command.md`（7,088）/ `observe-stability.md`（9,303）
+  · **章节编号一律保留**（§1.7、§2.5.1、§6.3…），因为引擎的报错原文里点着这些号，改了就对不上。
+  · 拆分用脚本切片、逐行比对：原文 990 行非空行里只少了两个 H1 标题，其余一字不丢。
+- **每篇开头 20 行内回答三件事**：这份文件回答什么问题 / 什么时候读它 / 结论先说。
+  五篇老文件（workflow / metrics / pitfalls / host-adaptation / domains-vfx）补上了「什么时候读」一行。
+- **SKILL.md 索引改成「我要…… → 读哪篇」**（13 行表格），不再按"文件 → 内容"罗列。
+- **新增 `test/skill-split.test.mjs`（6 条）**：单篇 >12,000 字符红 / 开头 20 行必须有「什么时候读」/
+  SKILL.md 索引与 references 目录一一对应（点了名的不许缺、存在的不许没登记）/ 旧的两个大文件不许回来 /
+  包内文档与 SKILL.md 不许再引用旧文件名（CHANGELOG 豁免）/ **弄坏能红**：12,001 字符必红、12,000 不红。
+- **旧文件名的指针同步改掉**（共 10 处）：`README.md` 2 处、`harness/invariants.mjs` 报错文案、
+  `harness/适配层-说明.md` 2 处（其中 §6 稳定性闸那条改指 `observe-stability.md`）、
+  `examples/command-demo/probe.mjs`、`examples/command-compress/probe.mjs`。
+  → **`harness/invariants.mjs` 动了**：属于"改了执行器就要记一笔"的范围，但只改一句文档指路（无逻辑），
+  **不需要回灌上游原件**（案例 A）。
+- 未做的事：`SKILL.md` 6,217 字符 / 157 行，与评审建议的 6,000 字符 / 120 行还差一点；
+  再压就要删正文，留给下一版。
+
+## 0.13.0（未发布）· 掩膜哨兵：拦住"看起来很专业地量错"
+
+> 第二轮实验的真实死法：`luma:200` 的 content 掩膜只圈到枪口白芯（recall 0.09~0.38），
+> 三个参数不同、输出图 SHA 不同的候选，掩膜内指标**逐位相同**——指标层看不出来。
+
+- `metrics2`：`maskInfo` 加 `maskHash`（掩膜位图 FNV-1a，8 位 hex；回退全图/无掩膜为 null）。
+- `cmdlib`：新增 `observe.parse:"image"`（命令 stdout 只打印一张 PNG 路径，指标由 metrics2 的
+  extract/opts 算；同时算全帧口径作对照），返回 `pngSha` + `maskFp`。
+- `cmdloop`：评估循环维护跨候选哨兵——同一轮出现 ≥3 个"参数不同、观测 sha 不同，但 maskHash
+  相同且掩膜内指标向量逐位相同"的候选 → 硬错 `maskFrozen`，错误信息点名 maskHash / 掩膜口径 /
+  三个候选的 sha 与参数，并给改法（换 roi 或 diff）；2 个只 warn；`--no-mask-sentinel` 可关。
+- `intent.maskSentinel`：截图链路要求哨兵 → 硬错（与硬不变量同处理）。
+- 刻意偏离：`roi` 口径不参与硬错（固定矩形 maskHash 天然恒定，同组只说明"指标对参数不敏感"）。
+- 测试：`test/mask-sentinel.test.mjs` 7 条；`npm test` 182 → 189。
+- 已知漏点：指标本身对参数不敏感（需另一条"指标活性"闸）；掩膜漂移但一直圈错（低 recall 不冻住）无人管；
+  混合掩膜口径时 `maskInfo` 被最后一个提取器覆盖；FNV-32 理论上会碰撞。
+
 ## 0.12.0（未发布）· 掩膜扩到四种口径 + 正对照升级为**双向**（第二轮实验推翻了 0.11.0 的两处设计）
 
 > 这一版不是"再加几个指标"，是修**"看起来很专业地量错"**。两条实验证据把 0.11.0 的两处设计直接推翻了：
