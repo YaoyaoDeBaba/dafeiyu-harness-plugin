@@ -70,7 +70,8 @@ const { createLedger } = requireCjs('./ledger.js');
 const intentSummaryCjs = requireCjs('./intent-summary.js');
 
 export const INTENT_FILE = 'intent.json';
-export const TEMPLATE_FILE = 'intent.template.json';
+export const RESEARCH_FILE = 'research.json';
+const TEMPLATE_FILE = 'intent.template.json';
 export const NO_INTENT_REASON = '显式 --no-intent 跳过需求转译';
 // v2 的硬上限（全部来自"轻合规"：写越厚，花在做到上的预算越少）
 export const INTENT_VERSION = 2;
@@ -736,11 +737,15 @@ export function intentNodeRecord(res, extra = {}) {
 
 // ---------------------------------------------------------------- CLI（截图链路 iter.ps1 用：逻辑只有这一份，PS 只转发）
 function parseArgs(argv) {
-  const a = { cmd: '', out: '', adapter: '', intent: '', noIntent: false, chain: 'cmd', metricIds: '' };
+  const a = { cmd: '', out: '', adapter: '', intent: '', noIntent: false, noResearch: false, chain: 'cmd', metricIds: '' };
   for (let i = 0; i < argv.length; i += 1) {
     const k = argv[i];
     if (k === '--no-intent') {
       a.noIntent = true;
+      continue;
+    }
+    if (k === '--no-research') {
+      a.noResearch = true;
       continue;
     }
     const v = argv[i + 1];
@@ -749,7 +754,7 @@ function parseArgs(argv) {
     else if (k === '--intent') a.intent = v ?? '';
     else if (k === '--chain') a.chain = v ?? '';
     else if (k === '--metric-ids') a.metricIds = v ?? '';
-    else throw new Error(`不认识的参数 ${k}（gate 只认 --out/--adapter/--intent/--no-intent/--chain/--metric-ids）`);
+    else throw new Error(`不认识的参数 ${k}（gate 只认 --out/--adapter/--intent/--no-intent/--no-research/--chain/--metric-ids）`);
     i += 1;
   }
   return a;
@@ -786,6 +791,29 @@ function gateCli(argv) {
         .join('；');
     }
   }
+  // ── 调研闸（0.16.0）：有参考图却没量过 → 硬错 ────────────────────────────
+  // 2026-11-16 实战教训：agent 拿到参考图后**没量就拍阈值**，判据全错（云占 45% vs 实测 65%）。
+  // 用户一句"调查员没干活"才反应过来。规矩只有一条：**参考里有图，就必须先给出量过的数**。
+  if ((res.status === 'done' || res.status === 'degraded') && !a.noResearch) {
+    const imageAnchors = (res.anchors || []).filter((x) => x && x.kind === 'image');
+    if (imageAnchors.length > 0) {
+      let research = null;
+      try { research = JSON.parse(readFileSync(join(outDir, RESEARCH_FILE), 'utf8')); } catch { research = null; }
+      const extracted = Array.isArray(research?.extracted) ? research.extracted : [];
+      if (extracted.length === 0) {
+        throw new Error(
+          '[调研闸] 这份 intent 声明了 ' + imageAnchors.length + ' 个图片锚点，但没有量过参考：' +
+          '\n  ' + join(outDir, RESEARCH_FILE) + ' 不存在，或 extracted[] 为空。' +
+          '\n  先跑：node harness/ref-probe.mjs <参考图或帧目录> --json <out>/ref.extracted.json' +
+          '\n  再把结果并进 research.json 的 extracted[]（每条写清 what / value / source）。' +
+          '\n  criteria 的阈值必须来自这些数，不许凭感觉拍。' +
+          '\n  确实要跳过：加 --no-research（台帐会记一条 skipped research，跳过有名字）'
+        );
+      }
+      notes.push('调研闸：' + imageAnchors.length + ' 个图片锚点，参考实测 ' + extracted.length + ' 条');
+    }
+  }
+
   // 摘要落盘（v2 的四样：记录与呈现用，**不参与距离**）—— finalize.js 从 <out>/intent.summary.json 读它
   const summaryAbs = writeIntentSummary(outDir, res);
   const summaryRel = summaryAbs ? relativeTo(outDir, summaryAbs) : '';

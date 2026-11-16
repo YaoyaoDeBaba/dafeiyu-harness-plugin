@@ -310,7 +310,8 @@ test('⑧ 截图链路（intent.mjs gate --chain screenshot）：权重进派生
       },
     ],
   })
-  const r = spawnSync(process.execPath, [INTENT_CLI, 'gate', '--out', out, '--adapter', FIRE_RAY, '--chain', 'screenshot'], {
+  // 0.16.0：新增调研闸（有图片锚点必须先量参考）。这条测的是链路语义，不是调研纪律，显式跳过。
+  const r = spawnSync(process.execPath, [INTENT_CLI, 'gate', '--out', out, '--adapter', FIRE_RAY, '--chain', 'screenshot', '--no-research'], {
     cwd: ROOT,
     encoding: 'utf8',
   })
@@ -330,7 +331,7 @@ test('⑧ 截图链路（intent.mjs gate --chain screenshot）：权重进派生
   // 未知 id 同样硬错（截图链路没有另一套宽容规则）
   const out2 = tmp('shot-bad')
   writeIntent(out2, { criteria: [{ id: 'nope', weight: 1 }] })
-  const r2 = spawnSync(process.execPath, [INTENT_CLI, 'gate', '--out', out2, '--adapter', FIRE_RAY, '--chain', 'screenshot'], {
+  const r2 = spawnSync(process.execPath, [INTENT_CLI, 'gate', '--out', out2, '--adapter', FIRE_RAY, '--chain', 'screenshot', '--no-research'], {
     cwd: ROOT,
     encoding: 'utf8',
   })
