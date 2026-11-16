@@ -14,7 +14,7 @@
 //   - 文件缺失一律降级为空（老 run 没有 nodes/ 或 live.jsonl 也能看），不抛错。
 import http from 'node:http'
 import { createReadStream } from 'node:fs'
-import { appendFile, readFile, readdir, stat } from 'node:fs/promises'
+import { appendFile, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -214,6 +214,34 @@ export function createServer(runDir) {
     try {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
       const p = decodeURIComponent(url.pathname)
+      if (req.method === 'POST' && p === '/api/project') {
+        let body = ''
+        for await (const chunk of req) {
+          body += chunk
+          if (body.length > 262144) return send(res, 413, JSON.stringify({ ok: false, error: '请求体过大' }))
+        }
+        let payload = {}
+        try { payload = JSON.parse(body || '{}') } catch { return send(res, 400, JSON.stringify({ ok: false, error: '不是合法 JSON' })) }
+        const file = path.join(root, 'project.json')
+        const cur = (await safeJson(file)) || { schema: 'project/1' }
+        const next = { ...cur }
+        if (typeof payload.instruction === 'string') next.instruction = payload.instruction.slice(0, 4000)
+        if (payload.maxRounds != null) {
+          const n = Number(payload.maxRounds)
+          if (!Number.isFinite(n)) return send(res, 400, JSON.stringify({ ok: false, error: 'maxRounds 要是数字' }))
+          next.budget = { ...(cur.budget || {}), maxRounds: Math.max(1, Math.min(20, Math.round(n))) }
+        }
+        if (typeof payload.budgetNote === 'string') next.budget = { ...(next.budget || cur.budget || {}), note: payload.budgetNote.slice(0, 300) }
+        if (payload.roles && typeof payload.roles === 'object') {
+          next.roles = { ...(cur.roles || {}) }
+          for (const [k, v] of Object.entries(payload.roles)) {
+            if (typeof v !== 'string') continue
+            next.roles[k] = { ...(next.roles[k] || {}), model: v.slice(0, 120) }
+          }
+        }
+        try { await writeFile(file, JSON.stringify(next, null, 2), 'utf8') } catch (e) { return send(res, 500, JSON.stringify({ ok: false, error: '写不进 project.json：' + e.message })) }
+        return send(res, 200, JSON.stringify({ ok: true, project: next }))
+      }
       if (req.method === 'POST' && p === '/api/decision') {
         let body = ''
         for await (const chunk of req) {

@@ -67,6 +67,23 @@ const ACTION_LABEL = {
   revise: '这里不对', roles: '角色模型调整', note: '备注'
 };
 
+/** 存回 project.json（需求 / 轮数 / 角色模型）——这是页面上唯一"改配置"的写操作 */
+async function saveProject(patch, okMsg) {
+  try {
+    const r = await fetch('/api/project', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch || {})
+    });
+    const j = await r.json();
+    if (!j.ok) { renderToast('没存上：' + (j.error || '未知原因')); return; }
+    renderToast(okMsg || '已保存');
+    poll();
+  } catch (e) {
+    renderToast('没存上：' + (e && e.message ? e.message : e));
+  }
+}
+
 /** 把人在界面上的决定落到 <run>/decisions.jsonl（agent 侧读它执行）；失败就明说失败，不许假装成功 */
 async function decide(action, extra) {
   try {
@@ -176,7 +193,8 @@ function renderInput() {
   const nCrit = Array.isArray(intent.criteria) ? intent.criteria.length : null;
 
   let html = '<div class="i-card i-need"><div class="i-label">需求</div>'
-    + '<div class="need-text">' + esc(p.instruction || '（无指令）') + '</div>'
+    + '<textarea id="need-edit" class="need-edit" rows="3" placeholder="一句话说清你要什么（例：角色右手火焰长枪向前突刺，要脆、要有主次）">' + esc(p.instruction || '') + '</textarea>'
+    + '<div class="need-actions"><button type="button" class="btn btn-primary" id="need-save">保存需求</button><span class="need-hint">保存后 agent 会据此重做需求转译</span></div>'
     + '<div class="need-sub">这句话会被转译成 ' + (nCrit != null ? nCrit : '若干') + ' 条可测判据</div>'
     + '</div>';
 
@@ -202,7 +220,7 @@ function renderInput() {
   let dots = '';
   for (let i = 0; i < mr; i++) dots += '<span class="dot filled">●</span>';
   html += '<div class="i-card i-budget"><div class="i-label">预算</div>'
-    + '<div class="dots">' + (mr ? dots : '<span class="empty">未设上限</span>') + '</div>'
+    + '<div class="dots-row"><button type="button" class="step-btn" id="rounds-minus">−</button><div class="dots">' + (mr ? dots : '<span class="empty">未设上限</span>') + '</div><button type="button" class="step-btn" id="rounds-plus">+</button></div>'
     + '<div class="need-sub">' + esc(budget.note || '') + '</div>'
     + '</div>';
 
@@ -214,12 +232,23 @@ function renderInput() {
   root.innerHTML = html;
 
   root.querySelectorAll('.ref-card').forEach((c) => c.addEventListener('click', () => openLightbox(c.dataset.full)));
+  const needSave = $('need-save');
+  if (needSave) needSave.addEventListener('click', () => {
+    const ta = $('need-edit');
+    saveProject({ instruction: ta ? ta.value : '' }, '需求已保存');
+  });
+  const minus = $('rounds-minus');
+  const plus = $('rounds-plus');
+  if (minus) minus.addEventListener('click', () => saveProject({ maxRounds: Math.max(1, maxRounds() - 1) }, '轮数 → ' + Math.max(1, maxRounds() - 1)));
+  if (plus) plus.addEventListener('click', () => saveProject({ maxRounds: Math.min(20, maxRounds() + 1) }, '轮数 → ' + Math.min(20, maxRounds() + 1)));
   root.querySelectorAll('select.role-select').forEach((sel) => {
     sel.addEventListener('change', () => {
       const card = sel.closest('.role-card');
       if (card) card.querySelector('.role-model').textContent = sel.value;
-      const roleKey = card ? card.dataset.role : '';
-      decide('roles', { model: sel.value, note: roleKey ? ('角色 ' + roleKey + ' → ' + sel.value) : '' });
+      const roleKey = card ? (card.dataset.role || '') : '';
+      const patch = { roles: {} };
+      if (roleKey) patch.roles[roleKey] = sel.value;
+      saveProject(patch, roleKey ? ('角色 ' + roleKey + ' → ' + sel.value) : '已保存');
     });
   });
 }

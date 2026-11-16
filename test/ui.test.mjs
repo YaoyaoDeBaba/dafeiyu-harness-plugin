@@ -187,3 +187,34 @@ test('⑧ 决策接口：合法动作落盘、非法动作拒绝、state 能读�
     await new Promise((r) => server.close(r))
   }
 })
+
+test('⑨ 需求/轮数/角色可写回 project.json（含非法轮数拒绝）', async () => {
+  const dir = makeRun()
+  const server = createServer(dir)
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${server.address().port}`
+  const post = (body) => fetch(base + '/api/project', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+  try {
+    let res = await post({ instruction: '改成这句需求', maxRounds: 5, budgetNote: '到 5 轮交终版', roles: { observer: 'mimo-v2.6-flash' } })
+    assert.equal(res.status, 200)
+    const st = await (await fetch(base + '/api/state')).json()
+    assert.equal(st.project.instruction, '改成这句需求')
+    assert.equal(st.project.budget.maxRounds, 5)
+    assert.equal(st.project.budget.note, '到 5 轮交终版')
+    assert.equal(st.project.roles.observer.model, 'mimo-v2.6-flash')
+
+    res = await post({ maxRounds: 999 })
+    assert.equal(res.status, 200)
+    const st2 = await (await fetch(base + '/api/state')).json()
+    assert.equal(st2.project.budget.maxRounds, 20, '轮数要夹到 1~20')
+
+    res = await post({ maxRounds: 'abc' })
+    assert.equal(res.status, 400, '非数字必须拒')
+
+    res = await post({ instruction: '只改需求' })
+    const st3 = await (await fetch(base + '/api/state')).json()
+    assert.equal(st3.project.budget.maxRounds, 20, '只改需求不许把别的字段冲掉')
+  } finally {
+    await new Promise((r) => server.close(r))
+  }
+})

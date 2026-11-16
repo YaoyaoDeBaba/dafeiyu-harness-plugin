@@ -241,3 +241,13 @@ body{background:var(--bg);color:var(--text);font:14px/1.55 -apple-system,"Segoe 
 ::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-thumb{background:#2a3542;border-radius:6px}
 ::-webkit-scrollbar-track{background:transparent}
+
+/* ① 段可编辑：需求框 / 轮数加减 */
+.need-edit{width:100%;box-sizing:border-box;background:#0d141c;color:var(--fg,#e7eef7);border:1px solid var(--border);
+  border-radius:8px;padding:10px 12px;font:inherit;line-height:1.6;resize:vertical}
+.need-edit:focus{outline:none;border-color:var(--accent,#3fd0e0)}
+.need-actions{display:flex;align-items:center;gap:10px;margin-top:8px}
+.need-hint{font-size:11px;color:var(--muted,#7d8b9c)}
+.dots-row{display:flex;align-items:center;gap:8px}
+.step-btn{width:24px;height:24px;border-radius:6px;border:1px solid var(--border);background:transparent;color:inherit;cursor:pointer;font-size:14px;line-height:1}
+.step-btn:hover{border-color:var(--accent,#3fd0e0)}
