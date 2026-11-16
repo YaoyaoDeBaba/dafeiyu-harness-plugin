@@ -161,7 +161,7 @@ node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --
 这四样**不参与距离计算**，只做记录与呈现。
 怎么填 intent：**`skills/selfloop/references/intent.md`**；硬闸错误原文：**`intent-errors.md`**；台帐与报告：**`ledger-and-report.md`**；链路差别与已知缺口：**`chains-and-gaps.md`**。
 
-## 作业台：本地界面（0.15.0）
+## 作业台：本地界面
 
 跑完（或跑到一半）把目录丢给它，浏览器里出一份**人看的作业台**，四段流程一条线：
 

@@ -61,6 +61,8 @@ import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SCREENSHOT_LIMIT, formatCheck, resolveInvariants } from './invariants.mjs';
+// 调研闸（0.19.0 抽出来）：有参考图就必须先量过 + 做过有来源的外部调研
+import { checkResearchGate } from './research-gate.mjs';
 
 // ledger.js 是 CommonJS（截图链路的 finalize.js 也要 require 它），这里用 createRequire 拉进来 ——
 // 与 cmdlib.mjs 拉 score.js 同口径。
@@ -791,85 +793,9 @@ function gateCli(argv) {
         .join('；');
     }
   }
-  // ── 调研闸（0.16.0 起；0.17.0 加严）────────────────────────────────────
-  // 2026-11-16 实战教训：agent 拿到参考图后**没量就拍阈值**，判据全错；
-  // 更糟的是「调查员」这个角色根本没被派出去——只随手搜一下，连外部来源都没留下。
-  // 现在的规矩有三条，缺一条就硬错：
-  //   ① 有图片锚点，就必须有 research.json；
-  //   ② extracted[] 不能空（说明量过参考，不是凭感觉）；
-  //   ③ findings[] 至少 2 条、每条带 http(s) URL、且至少 1 条 used=true
-  //      ——「调研过」的证据是外部来源 + 真的改变了做法，不是自言自语。
-  if ((res.status === 'done' || res.status === 'degraded') && !a.noResearch) {
-    const imageAnchors = (res.anchors || []).filter((x) => x && x.kind === 'image');
-    if (imageAnchors.length > 0) {
-      let research = null;
-      const researchPath = join(outDir, RESEARCH_FILE);
-      try { research = JSON.parse(readFileSync(researchPath, 'utf8')); } catch { research = null; }
-      if (research == null) {
-        throw new Error(
-          '[调研闸] 这份 intent 声明了 ' + imageAnchors.length + ' 个图片锚点，但没有 research.json：' +
-          '\n  ' + researchPath +
-          '\n  先跑：node harness/ref-probe.mjs <参考图或帧目录> --json <out>/ref.extracted.json' +
-          '\n  再派调查员做外部调研（算法/开源实现/文献），把结果写进 findings[]。' +
-          '\n  确实要跳过：加 --no-research（台帐会记一条 skipped research）'
-        );
-      }
-      let extracted = Array.isArray(research.extracted) ? research.extracted : [];
-      // 复用上一轮调研是合理的（别逼人重复劳动），但必须显式登记 reusedFrom，
-      // 否则等于"这一轮没调研"。登记了就按被引用的那份一起判合格性。
-      if (typeof research.reusedFrom === 'string' && research.reusedFrom.trim() !== '') {
-        let reused = null;
-        try { reused = JSON.parse(readFileSync(resolve(outDir, research.reusedFrom), 'utf8')); } catch { reused = null; }
-        if (reused == null) {
-          throw new Error('[调研闸] research.reusedFrom 指向的文件读不到：' + research.reusedFrom + '（复用要能被核对）');
-        }
-        if (extracted.length === 0 && Array.isArray(reused.extracted)) extracted = reused.extracted;
-        research = {
-          ...research,
-          extracted,
-          findings: [...(Array.isArray(reused.findings) ? reused.findings : []), ...(Array.isArray(research.findings) ? research.findings : [])]
-        };
-        notes.push('调研闸：复用 ' + research.reusedFrom + ' 的 findings');
-      }
-      if (extracted.length === 0) {
-        throw new Error(
-          '[调研闸] research.extracted[] 是空的：说明参考图没被量过，判据阈值就是凭感觉拍的。' +
-          '\n  先跑：node harness/ref-probe.mjs <参考图或帧目录> --json <out>/ref.extracted.json' +
-          '\n  再把结果并进 ' + researchPath + ' 的 extracted[]（每条写清 what / value / source）'
-        );
-      }
-      const findings = Array.isArray(research.findings) ? research.findings : [];
-      const withUrl = findings.filter((f) => f && typeof f.url === 'string' && /^https?:\/\//i.test(f.url));
-      const used = findings.filter((f) => f && f.used === true);
-      // used=true 不能是空宣称：必须写清「它改了什么」（判据 / 做法），否则等于没落地
-      const usedWithoutWhy = used.filter((f) => !(typeof f.usedFor === 'string' && f.usedFor.trim() !== ''));
-      if (usedWithoutWhy.length > 0) {
-        throw new Error(
-          '[调研闸] 有 ' + usedWithoutWhy.length + ' 条 findings 标了 used=true，但没写 usedFor（它改了哪条判据 / 哪项做法）。' +
-          '\n  used 不是"我看过了"的标记，是"这条调研改变了做法"的证据：每条都要写清改了什么。'
-        );
-      }
-      if (withUrl.length < 2 || used.length < 1) {
-        throw new Error(
-          '[调研闸] 调研不算做完：findings 里带 http(s) 来源的只有 ' + withUrl.length + ' 条、used=true 的 ' + used.length + ' 条。' +
-          '\n  要求：至少 2 条外部来源（开源实现 / 文章 / 论文，给真 URL），且至少 1 条 marked used=true —— ' +
-          '用来证明「调研真的改变了做法」，不是自言自语。' +
-          '\n  做法：派一个调查员子代理去查（别自己随手搜一下就算），把它的产出写进 findings[]。' +
-          '\n  确实要跳过：--no-research'
-        );
-      }
-
-      // 证据等级：至少要有一条「读得到实现」的来源（开源代码或论文），不接受全是博客二手转述
-      const verified = withUrl.filter((f) => ['opensource', 'paper'].includes(String(f.kind || '')));
-      if (verified.length < 1) {
-        throw new Error(
-          '[调研闸] 外部来源里没有一条能核到原型：带 URL 的 ' + withUrl.length + ' 条中，kind 为 opensource/paper 的 0 条。' +
-          '\n  二手博客容易抄错（这次就有人把「中点位移不分叉」写成「能分叉」）。' +
-          '\n  要求：至少 1 条 kind="opensource"（能读代码）或 "paper"（有正文）。'
-        );
-      }
-      notes.push('调研闸：锚点 ' + imageAnchors.length + ' 个 / 实测 ' + extracted.length + ' 条 / 外部来源 ' + withUrl.length + ' 条（可核 ' + verified.length + '）/ 采用 ' + used.length + ' 条');
-    }
+  // ── 调研闸（0.16.0 起；0.19.0 抽成独立模块 harness/research-gate.mjs）
+  if (res.status === 'done' || res.status === 'degraded') {
+    checkResearchGate({ outDir, anchors: res.anchors, noResearch: a.noResearch, notes });
   }
 
   // 摘要落盘（v2 的四样：记录与呈现用，**不参与距离**）—— finalize.js 从 <out>/intent.summary.json 读它
