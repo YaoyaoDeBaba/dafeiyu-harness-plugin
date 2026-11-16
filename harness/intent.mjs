@@ -814,7 +814,23 @@ function gateCli(argv) {
           '\n  确实要跳过：加 --no-research（台帐会记一条 skipped research）'
         );
       }
-      const extracted = Array.isArray(research.extracted) ? research.extracted : [];
+      let extracted = Array.isArray(research.extracted) ? research.extracted : [];
+      // 复用上一轮调研是合理的（别逼人重复劳动），但必须显式登记 reusedFrom，
+      // 否则等于"这一轮没调研"。登记了就按被引用的那份一起判合格性。
+      if (typeof research.reusedFrom === 'string' && research.reusedFrom.trim() !== '') {
+        let reused = null;
+        try { reused = JSON.parse(readFileSync(resolve(outDir, research.reusedFrom), 'utf8')); } catch { reused = null; }
+        if (reused == null) {
+          throw new Error('[调研闸] research.reusedFrom 指向的文件读不到：' + research.reusedFrom + '（复用要能被核对）');
+        }
+        if (extracted.length === 0 && Array.isArray(reused.extracted)) extracted = reused.extracted;
+        research = {
+          ...research,
+          extracted,
+          findings: [...(Array.isArray(reused.findings) ? reused.findings : []), ...(Array.isArray(research.findings) ? research.findings : [])]
+        };
+        notes.push('调研闸：复用 ' + research.reusedFrom + ' 的 findings');
+      }
       if (extracted.length === 0) {
         throw new Error(
           '[调研闸] research.extracted[] 是空的：说明参考图没被量过，判据阈值就是凭感觉拍的。' +

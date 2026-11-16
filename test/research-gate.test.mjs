@@ -10,7 +10,7 @@
 //   ④ 没有图片锚点 → 不拦（纯数值目标不需要量参考）
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, copyFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, copyFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -132,4 +132,28 @@ test('④ 没有图片锚点（纯数值目标）→ 不拦', () => {
   const dir = makeRun({ anchorKind: 'text' })
   const r = runGate(dir)
   assert.equal(r.status, 0, r.stderr || r.stdout)
+})
+
+test('⑤ 复用上一轮调研：写 reusedFrom 指向它 → 放行（复用要能被核对）', () => {
+  const prev = makeRun({
+    research: {
+      findings: [
+        { title: 'A', url: 'https://github.com/a/b', kind: 'opensource', used: true, usedFor: '改了阈值' },
+        { title: 'B', url: 'https://example.com/b', kind: 'article', used: false }
+      ],
+      extracted: [{ what: 'mean', value: 0.3, source: 'ref.png' }]
+    }
+  })
+  const cur = makeRun()
+  writeFileSync(join(cur, 'research.json'), JSON.stringify({ reusedFrom: join(prev, 'research.json'), findings: [], extracted: [], changed: [] }))
+  const r = runGate(cur)
+  assert.equal(r.status, 0, r.stderr || r.stdout)
+})
+
+test('⑥ reusedFrom 指向不存在的文件 → 硬错（不许假复用）', () => {
+  const cur = makeRun()
+  writeFileSync(join(cur, 'research.json'), JSON.stringify({ reusedFrom: join(cur, 'nope.json'), findings: [], extracted: [] }))
+  const r = runGate(cur)
+  assert.equal(r.status, 1)
+  assert.match(r.stderr, /复用要能被核对/)
 })

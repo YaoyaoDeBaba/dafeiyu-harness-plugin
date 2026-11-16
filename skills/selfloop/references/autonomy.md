@@ -54,3 +54,34 @@
 - 每轮结束就往 `rounds/NN.json` 写（截图 + 评审 + 改了什么）——人随时能看，但不需要他先点头；
 - 只有撞到 A/B/C 时才等 `decisions.jsonl` 里的动作；
 - 人点了「停在这里」→ 立刻停（这是 C 类），别问"确定吗"。
+
+## 六、开工跑道：第一个动作是 preflight，不是读代码
+
+2026-11-16 受控实验：派了一个上下文干净的执行代理，8 分钟里它读了全套规范、读了三个源码文件、
+确认了 MCP 通道——但**一行产出都没有**，因为它不知道该从哪一步"开始做"。
+工具没给跑道，代理只能在原地侦查。
+
+所以：**接手任何带参考素材的需求，第一个动作固定是**
+
+```bash
+node harness/preflight.mjs --run <run目录> --ref <参考图或帧目录>
+```
+
+它会建骨架、把参考量出来的特征写进 `research.json.extracted[]`、生成 intent 空壳，
+并打印"还差哪几步"，没到条件时以非零码退出。**preflight 没过，不许改工程文件。**
+
+### 复用上一轮调研是允许的，但必须登记
+
+不要为了"守规矩"重复调研；但也别把"上一轮查过"当成本轮的调研。正确做法：
+
+```jsonc
+// <本轮 run>/research.json
+{ "reusedFrom": "../上一轮/research.json", "findings": [], "extracted": [], "changed": [] }
+```
+
+登记了，闸会去核对被引用那份的 findings 是否合格（能核、有 used、有 usedFor）；
+指向不存在的文件直接硬错——**假复用不给过**。
+
+### 什么时候算"可以动手改代码"
+
+三个条件同时满足：preflight 退出码 0、`intent.confirmed === true`、criteria 每条都有 userWords 或 howMeasured。
