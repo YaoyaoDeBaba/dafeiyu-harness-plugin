@@ -91,6 +91,14 @@ const ROUND = {
     '不合格就写不合格。',
     doneLine(dir, id)
   ].join('\n'),
+  merge: (dir, r, id) => [
+    '你是**主Agent**。把观察员的评审（review.json）与用户的意见（user-review.json）合并，写 ' + j(dir, 'review.merged.json') + '。',
+    '格式：{ fromCritic:[{id,pass,evidence}], fromUser:[{point,severity,impact}], conflicts:[{about, critic, user, resolved, why}],',
+    '        nextRoundOrders:[{id, task, done_when}] }。',
+    '硬约束：冲突不许和稀泥——要么按用户、要么按观察员，必须写理由；nextRoundOrders 就是下一轮的工单来源。',
+    '会填 ' + j(dir, 'forms', id + '.json') + ' 的表。',
+    doneLine(dir, id)
+  ].join('\n'),
   decide: (dir, r, id) => [
     '你是**主Agent**。第 ' + r + ' 轮结束：判断要不要再来一轮，写 ' + j(dir, 'decide.json') + '。',
     '依据三样：判据还差几条（review.json）、预算还剩几轮（budget.json）、改动是否还在收敛（前几轮 round 的 metrics）。',
@@ -99,7 +107,17 @@ const ROUND = {
   ].join('\n')
 }
 
+const USER_REVIEW = (dir, r, id) => [
+  '【这一步不是给 agent 的，是给用户的】',
+  '把本轮产物交给用户看（截图/可运行入口），收集他的评审意见，写进 ' + j(dir, 'user-review.json') + '：',
+  '{ by: "用户", shot: "他看的是哪张图", comments: [{ point, evidence, severity }], verdict: "合格|不合格|部分合格" }',
+  '注意：用户说"没意见"也要写一条 comment 说明，不能留空。',
+  '写完后：node harness/pipeline.mjs done --run ' + dir + ' --stage ' + id
+].join('\n')
+
 export function ticketFor(dir, node) {
+  const um = String(node.id).match(/^2\.4b-userreview-r(\d+)$/)
+  if (um) return USER_REVIEW(dir, um[1], node.id)
   const id = String(node.id)
   if (PHASE1[id]) return PHASE1[id](dir, id)
   const m = id.match(/^2\.(\d)-(\w+)-r(\d+)$/)

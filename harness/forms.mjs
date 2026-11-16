@@ -75,6 +75,15 @@ const FORMS = {
       { id: 'notVerified', label: '没验的部分 + 为什么', type: 'list' }
     ]
   },
+  '2.4c-merge': {
+    title: '合并观察员与用户的评审意见',
+    fields: [
+      { id: 'fromCritic', label: '观察员的结论（逐条：判据 / 过没过 / 证据）', type: 'list', minItems: 1 },
+      { id: 'fromUser', label: '用户的意见（逐条：说了什么 / 严重度 / 影响哪一部分）', type: 'list', minItems: 1 },
+      { id: 'conflicts', label: '两者冲突的地方：各说什么、你按谁、为什么（不许和稀泥）', type: 'list' },
+      { id: 'nextRoundOrders', label: '合并后得出的下一轮工单（任务 / 完成判据）', type: 'list', minItems: 1 }
+    ]
+  },
   '2.5-decide': {
     title: '评估：要不要再来一轮',
     fields: [

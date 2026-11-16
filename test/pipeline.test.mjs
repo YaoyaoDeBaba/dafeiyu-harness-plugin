@@ -142,3 +142,41 @@ test('⑫ 主Agent 表单填全 → 放行', () => {
   assert.equal(r.status, 0, r.stdout)
   assert.match(r.stdout, /通过程序核对/)
 })
+
+test('⑬ userReview 开关打开 → 评审后多出「用户评审(human)」与「合并(manager)」两个节点', () => {
+  const list = ids(makeRun({ research: 'low', maxRounds: 1, useCritic: true, userReview: true }))
+  assert.ok(list.includes('2.4b-userreview-r1'), '缺用户评审节点')
+  assert.ok(list.includes('2.4c-merge-r1'), '缺合并节点')
+})
+
+test('⑭ userReview 关（默认）→ 不出现这两个节点', () => {
+  const list = ids(makeRun({ research: 'low', maxRounds: 1, useCritic: true }))
+  assert.ok(!list.includes('2.4b-userreview-r1'))
+  assert.ok(!list.includes('2.4c-merge-r1'))
+})
+
+test('⑮ 用户评审节点：step 返回 11（等人），没意见文件不放行', () => {
+  const dir = makeRun({ research: 'low', maxRounds: 1, useCritic: true, userReview: true })
+  mkdirSync(join(dir, 'stages'), { recursive: true })
+  const done = (id) => writeFileSync(join(dir, 'stages', id + '.json'), JSON.stringify({ stage: id, status: 'done', by: 'pipeline' }))
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1', '2.2-exec-r1', '2.3-verify-r1', '2.4-critique-r1']) done(id)
+  const r = run('step', '--run', dir)
+  assert.equal(r.status, 11, r.stdout)
+  assert.match(r.stdout, /等待用户/)
+  const d = run('done', '--run', dir, '--stage', '2.4b-userreview-r1')
+  assert.equal(d.status, 1)
+  assert.match(d.stdout, /user-review\.json/)
+})
+
+test('⑯ 合并节点：缺 conflicts / nextRoundOrders 不放行', () => {
+  const dir = makeRun({ research: 'low', maxRounds: 1, useCritic: true, userReview: true })
+  mkdirSync(join(dir, 'stages'), { recursive: true })
+  const done = (id) => writeFileSync(join(dir, 'stages', id + '.json'), JSON.stringify({ stage: id, status: 'done', by: 'pipeline' }))
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1', '2.2-exec-r1', '2.3-verify-r1', '2.4-critique-r1']) done(id)
+  writeFileSync(join(dir, 'user-review.json'), JSON.stringify({ by: '用户', shot: 'shots/a.png', comments: [{ point: '云是矩形', severity: 'high' }], verdict: '不合格' }))
+  done('2.4b-userreview-r1')
+  writeFileSync(join(dir, 'review.merged.json'), JSON.stringify({ fromCritic: [{ id: 'C1', pass: false }], fromUser: [{ point: '云是矩形' }] }))
+  const r = run('done', '--run', dir, '--stage', '2.4c-merge-r1')
+  assert.equal(r.status, 1, r.stdout)
+  assert.match(r.stdout, /conflicts|nextRoundOrders/)
+})

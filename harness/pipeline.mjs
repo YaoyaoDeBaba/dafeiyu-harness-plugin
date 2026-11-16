@@ -15,7 +15,7 @@ import { hasForm, writeBlankForm, checkForm } from './forms.mjs'
 
 const STAGE_DIR = 'stages'
 const TICKET_DIR = 'tickets'
-const DEFAULT_BUDGET = { research: 'high', maxRounds: 1, useCritic: true }
+const DEFAULT_BUDGET = { research: 'high', maxRounds: 1, useCritic: true, userReview: false }
 const TIER = { low: 0, mid: 1, high: 2, max: 3 }
 const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')) } catch { return null } }
 const j = (...a) => join(...a)
@@ -26,10 +26,31 @@ export function getBudget(dir) {
   const mr = Number(b.maxRounds)
   const maxRounds = Number.isFinite(mr) && mr > 0 ? Math.min(20, Math.round(mr)) : DEFAULT_BUDGET.maxRounds
   const useCritic = b.useCritic === undefined ? DEFAULT_BUDGET.useCritic : Boolean(b.useCritic)
-  return { research, maxRounds, useCritic }
+  const userReview = b.userReview === undefined ? DEFAULT_BUDGET.userReview : Boolean(b.userReview)
+  return { research, maxRounds, useCritic, userReview }
 }
 
 const checks = {
+  userReview(dir) {
+    const u = readJson(j(dir, 'user-review.json'))
+    if (!u) return ['缺 user-review.json（用户参与评审，但没收到意见）']
+    const out = []
+    const c = Array.isArray(u.comments) ? u.comments : []
+    if (c.length === 0) out.push('comments 为空（用户没留意见也要明确写"无意见"）')
+    if (!u.by) out.push('缺 by（谁给的评审：用户本人？）')
+    if (!u.shot || !String(u.shot).trim()) out.push('缺 shot（用户评审时看的是哪张图/哪个入口）')
+    return out
+  },
+  merged(dir) {
+    const m = readJson(j(dir, 'review.merged.json'))
+    if (!m) return ['缺 review.merged.json（没把观察员与用户的意见合并）']
+    const out = []
+    if (!Array.isArray(m.fromCritic) || m.fromCritic.length === 0) out.push('fromCritic 为空（观察员的结论没并进来）')
+    if (!Array.isArray(m.fromUser) || m.fromUser.length === 0) out.push('fromUser 为空（用户的意见没并进来）')
+    if (!Array.isArray(m.conflicts)) out.push('缺 conflicts（观察员与用户冲突时怎么取舍要写清）')
+    if (!Array.isArray(m.nextRoundOrders) || m.nextRoundOrders.length === 0) out.push('nextRoundOrders 为空（合并结果要变成下一轮工单）')
+    return out
+  },
   draft1(dir) {
     const d = readJson(j(dir, 'intent.draft1.json'))
     if (!d) return ['缺 intent.draft1.json（初轮转译没有产出）']
@@ -209,6 +230,9 @@ export function roundNodes(r, budget) {
     { id: '2.3-verify-r' + r, kind: 'manager', title: '验收：能跑 / 能看', check: 'verified' }
   ]
   pushIf(n, budget.useCritic, { id: '2.4-critique-r' + r, kind: 'worker', title: '观察员：逐条对判据评审', check: 'critiqued' })
+  // 用户参与评审（开关）：观察员评完 → 用户看 → 主Agent 吸收合并，再进决策
+  pushIf(n, budget.userReview, { id: '2.4b-userreview-r' + r, kind: 'human', title: '用户参与评审（等人给意见）', check: 'userReview' })
+  pushIf(n, budget.userReview, { id: '2.4c-merge-r' + r, kind: 'manager', title: '主Agent：吸收合并观察员与用户的意见', check: 'merged' })
   n.push({ id: '2.5-decide-r' + r, kind: 'manager', title: '评估是否派下一轮', check: 'decided' })
   return n
 }
@@ -276,8 +300,8 @@ function status(dir) {
     const rm = String(n.id).match(/-r(\d+)$/)
     const skippedByStop = rm && stopAt > 0 && Number(rm[1]) > stopAt
     const mark = skippedByStop ? '--' : !s ? '..' : s.status === 'done' ? 'OK' : 'NO'
-    const owner = n.kind === 'manager' ? '[主Agent]' : n.kind === 'worker' ? '[子代理]' : '[程序]  '
-    console.log('  [' + mark + '] ' + n.id.padEnd(18) + owner + ' ' + n.title)
+    const owner = n.kind === 'manager' ? '[主Agent]' : n.kind === 'worker' ? '[子代理]' : n.kind === 'human' ? '[用户]  ' : '[程序]  '
+    console.log('  [' + mark + '] ' + n.id.padEnd(20) + ' ' + owner + ' ' + n.title)
     if (s && s.problems && s.problems.length) s.problems.forEach((p) => console.log('        - ' + p))
   }
   console.log(r.node ? '\n当前节点：' + r.node.id + '（' + r.node.kind + '）' : '\n全部节点已完成')
@@ -303,6 +327,11 @@ function step(dir) {
     if (node.kind === 'manager' && hasForm(node.id)) {
       const formPath = writeBlankForm(dir, node.id)
       console.log('表单：' + formPath + '（必办事项，填不完不放行）')
+    }
+    if (node.kind === 'human') {
+      console.log('等待用户：' + node.id + '（把用户的评审意见写进 user-review.json 后调 done）')
+      console.log('  票：' + p)
+      return 11
     }
     console.log('需要执行节点：' + node.id + '（' + (node.kind === 'manager' ? '主Agent 自己做' : '派子代理') + '）')
     console.log('  票：' + p)
