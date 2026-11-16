@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Selfloop · 闭环查看器</title>
+<link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Selfloop <span>· 闭环查看器</span></div>
+  <div class="runmeta" id="runmeta"></div>
+  <div class="clock" id="clock">—</div>
+</header>
+
+<div class="layout">
+  <main class="main">
+    <section class="kpis" id="kpis"></section>
+
+    <section class="card">
+      <div class="compare-head">
+        <div class="compare-title">主对比</div>
+        <div class="compare-controls">
+          <div class="seg" id="mode-seg">
+            <button type="button" data-mode="side" class="active">并排</button>
+            <button type="button" data-mode="overlay">叠加</button>
+          </div>
+          <label class="toggle"><input type="checkbox" id="blink-toggle"><span>A/B 闪烁</span></label>
+        </div>
+      </div>
+      <div class="compare-body" id="compare-body"></div>
+      <div class="compare-foot" id="compare-foot"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-title">距离曲线 <span class="hint">越小越好 · y 轴反向</span></div>
+      <div class="curve-wrap" id="curve"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-title">胶片带</div>
+      <div class="filmstrip" id="filmstrip"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-title">节点台帐</div>
+      <div id="ledger"></div>
+    </section>
+  </main>
+
+  <aside class="sidebar">
+    <details class="side-sec" open>
+      <summary>意图与调研</summary>
+      <div class="inner" id="intent-box"></div>
+    </details>
+    <details class="side-sec" open>
+      <summary>报告 report.md</summary>
+      <div class="inner" id="report-box"></div>
+    </details>
+    <details class="side-sec">
+      <summary>实时事件 live.jsonl</summary>
+      <div class="inner" id="live-box"></div>
+    </details>
+  </aside>
+</div>
+
+<div class="tooltip" id="tooltip" hidden></div>
+<div class="toast" id="toast"></div>
+
+<script type="module" src="/ui/app.js"></script>
+</body>
+</html>

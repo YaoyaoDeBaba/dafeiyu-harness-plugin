@@ -161,6 +161,28 @@ node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --
 这四样**不参与距离计算**，只做记录与呈现。
 怎么填 intent：**`skills/selfloop/references/intent.md`**；硬闸错误原文：**`intent-errors.md`**；台帐与报告：**`ledger-and-report.md`**；链路差别与已知缺口：**`chains-and-gaps.md`**。
 
+## 看得见：本地查看器（0.14.0）
+
+跑完（或跑到一半）把目录丢给它，浏览器里出一份可交互的证据包——不用翻 `curve.csv`、不用在 `shots\\` 里猜哪张是最好的一帧：
+
+```bash
+node harness/ui.mjs <run 目录> --port 7788 --open
+# 或 npm run ui -- <run 目录>
+```
+
+页面上有：
+
+| 区块 | 看什么 |
+|---|---|
+| 顶部 KPI | 距离 `起点 → 最优` + 降幅、评估 `已用/预算`、终止原因、seed / 绝对时刻 / 画质档 / 白名单 / 决策指纹 |
+| 主对比区 | `REF` 与任意一帧**并排 / 可拖动分割线叠加 / 400ms 闪烁**三种对照 |
+| 曲线 | 距离随评估序号（y 轴反向，"往下走=变好"），悬停看该点参数，点一下主区就切到那一帧 |
+| 胶片带 | 全部帧缩略图，横滑挑帧 |
+| 节点台帐 | 每节点的 done / degraded / skipped / failed，点开看 `decision.why`；老 run 没有台帐会明说 |
+| 报告与实时 | `report.md` 原文；`live.jsonl`（命令链路）边跑边刷新，页面每 2 秒按 mtime 自动更新 |
+
+**只读**：它不写 run 目录一个字节，也不改配置；`/run/` 路由做了目录穿越防护。老 run（没有 `nodes/` `live.jsonl`）照样能看。
+
 ## 安装
 
 产物是一个 npm 包（`npm pack` 出的 tgz）或一个目录。两条正路：

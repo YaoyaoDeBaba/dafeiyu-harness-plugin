@@ -3,6 +3,25 @@
 > 规矩：**改了 `harness/` 里的执行器就要在这里记一笔**，并注明"要不要回灌上游原件（案例 A，见 README「案例与来源」）"。
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
+## 0.14.0（未发布）· 可视化查看器：run 目录直接丢给浏览器
+
+> 触发：用户 2026-11-13 提的「工具要具象化、要有可交互界面，不只是命令行 + 证据包」，2026-11-16 拍板
+> **直接推进到可视化版本**（他要在案例 A 上跑实战）。此前的"看得见"只到 `report.md` + `watch.mjs` 终端输出，
+> 复盘里那条"0 支画面"警报的本质是**证据包没人愿意翻**。
+
+- **新增 `harness/ui.mjs`（零依赖本地服务，只读）**：
+  · `buildState(runDir)` 把一次 run 聚合成一份 JSON——`summary`（距离/降幅/预算/终止原因/seed/绝对时刻/画质档/白名单/决策指纹）、
+    `curve`（`curve.csv` 全量点）、`shots`、`nodes`（台帐）、`intent`/`research`、`report` 原文、`live`（`live.jsonl` 末 300 条）；
+  · 路由：`GET /api/state`、`GET /`（ui/index.html）、`GET /ui/*`、`GET /run/*`（run 目录静态文件，**带目录穿越防护**）；
+  · **更新信号取 max(mtime)**（best.json / curve.csv / report.md / live.jsonl / shots / nodes）——跑的过程中 `best.json` 往往最后才写，
+    只盯它会看不到进度；另给 `progress {curveRows, shots, nodes, live}`。
+  · 老 run（无 `nodes/`、无 `live.jsonl`）一律降级为空，不抛错；run 之外的绝对路径（如 best.json 里指向别处）**清空**，不泄露本机路径。
+- **新增 `ui/`（原生 HTML/CSS/JS，无框架、无 CDN、无构建）**：顶部 KPI 条 / 主对比区（`REF` 与任意帧：并排、可拖动分割线叠加、400ms 闪烁）/
+  SVG 距离曲线（y 轴反向，悬停看该点参数，点选切帧）/ 胶片带 / 节点台帐时间线 / 报告折叠区 / 每 2 秒按 mtime 自动刷新。
+- **用法**：`node harness/ui.mjs <run 目录> --port 7788 --open`（或 `npm run ui -- <run 目录>`）；`package.json` 的 `files` 加入 `ui`（正名单 12 → 13）。
+- **新增 `test/ui.test.mjs`（7 条）**：CSV 解析 / 正常 run 的字段映射与图片相对路径 / 空目录降级 / live 只取末 300 条 / 本地服三个路由与目录穿越拒绝 / **弄坏能红**（把 run 外路径塞进 `bestPng` 必须被清空）/ `normRunPath` 归一（`curve.csv` 里写绝对路径也转成 run 相对路径，前端 `/run/` 才不会 403）。
+- 实测（真 run `iter3`）：`GET /` 200 / `GET /ui/app.js` 200 / `GET /api/state` 200（curve 59 点、shots 59 张、bestDist 0.08039）/ `GET /run/shots/e001.png` 200 image/png。
+
 ## 0.13.3（未发布）· SKILL.md 收成索引：4,122 字符 / 115 行（评审目标 6,000 / 120）
 
 > 0.13.1 拆完 references 后 SKILL.md 还剩 6,217 字符 / 157 行，比评审建议的 6,000 / 120 超一截。

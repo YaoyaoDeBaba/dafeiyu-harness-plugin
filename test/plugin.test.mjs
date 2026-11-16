@@ -598,7 +598,7 @@ test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只�
   }
   assert.ok(!pkg.files.includes('adapters'), 'adapters 已搬进 domains/，根目录不该再列')
   const positives = pkg.files.filter((f) => !f.startsWith('!'))
-  assert.equal(positives.length, 12, 'files 正名单恰好 12 项，不该有多余项')
+  assert.equal(positives.length, 13, 'files 正名单恰好 13 项（0.14.0 加入 ui/ 查看器），不该有多余项')
   // 评审 §4.2：日志文件不许随包分发 —— 显式排除一条，别指望"忘了把文件挪进来"
   assert.ok(pkg.files.includes('!**/*.log'), 'files 要显式排除 *.log')
   // 白名单里的每一项都真有东西（带 * 的按"目录里至少命中一个"判）
