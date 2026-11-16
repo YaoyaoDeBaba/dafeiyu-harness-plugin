@@ -58,7 +58,7 @@ test('② 量过了（research.extracted 非空）→ 放行', () => {
   const dir = makeRun({
     research: {
       findings: [
-        { title: 'A', url: 'https://example.com/a', what: 'x', how: 'y', used: true },
+        { title: 'A', url: 'https://example.com/a', what: 'x', how: 'y', used: true, usedFor: '把阈值从 0.9 改成 0.7' },
         { title: 'B', url: 'https://example.com/b', what: 'x', how: 'y', used: false }
       ],
       extracted: [{ what: 'mean', value: 0.3, source: 'ref.png' }],
@@ -90,6 +90,21 @@ test('②c 有 URL 但没有一条 used=true → 硬错（调研没落地）', (
   const r = runGate(dir)
   assert.equal(r.status, 1)
   assert.match(r.stderr, /used/)
+})
+
+test('②d used=true 但没写 usedFor → 硬错（空宣称）', () => {
+  const dir = makeRun({
+    research: {
+      findings: [
+        { title: 'A', url: 'https://example.com/a', used: true },
+        { title: 'B', url: 'https://example.com/b', used: false }
+      ],
+      extracted: [{ what: 'mean', value: 0.3, source: 'ref.png' }]
+    }
+  })
+  const r = runGate(dir)
+  assert.equal(r.status, 1)
+  assert.match(r.stderr, /usedFor/)
 })
 
 test('③ 显式 --no-research → 放行（跳过有名字）', () => {

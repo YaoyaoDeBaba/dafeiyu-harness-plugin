@@ -825,6 +825,14 @@ function gateCli(argv) {
       const findings = Array.isArray(research.findings) ? research.findings : [];
       const withUrl = findings.filter((f) => f && typeof f.url === 'string' && /^https?:\/\//i.test(f.url));
       const used = findings.filter((f) => f && f.used === true);
+      // used=true 不能是空宣称：必须写清「它改了什么」（判据 / 做法），否则等于没落地
+      const usedWithoutWhy = used.filter((f) => !(typeof f.usedFor === 'string' && f.usedFor.trim() !== ''));
+      if (usedWithoutWhy.length > 0) {
+        throw new Error(
+          '[调研闸] 有 ' + usedWithoutWhy.length + ' 条 findings 标了 used=true，但没写 usedFor（它改了哪条判据 / 哪项做法）。' +
+          '\n  used 不是"我看过了"的标记，是"这条调研改变了做法"的证据：每条都要写清改了什么。'
+        );
+      }
       if (withUrl.length < 2 || used.length < 1) {
         throw new Error(
           '[调研闸] 调研不算做完：findings 里带 http(s) 来源的只有 ' + withUrl.length + ' 条、used=true 的 ' + used.length + ' 条。' +
