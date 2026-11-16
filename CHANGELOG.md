@@ -4,6 +4,23 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.20.0（未发布）· 流程由程序控制：pipeline 节点表 + 单职责子任务
+
+> 用户判断："不应该把流程写进 skill，约束太弱。**流程给程序控制，流程上每个节点的判断决策和执行才交给 agent**。"
+> 两次受控实验的数据支持这条：第一次代理读完规范零产出，第二次读了摘要就跳过闸门直接改代码——
+> **文档层面的约束挡不住人**。
+
+- **新增 `harness/pipeline.mjs`（流程的程序载体）**：
+  · 节点表：`preflight(程序) → research(agent) → intent(agent) → implement(agent) → review(agent) → deliver(程序)`；
+  · `status` 看当前节点；`step` 一路推进程序节点，遇到 agent 节点**出票并 exit 10**；
+    `done --stage <id>` 由 agent 交活后调用，**程序自己核对产物**（不看自述），不过就写 `failed` 信号卡住；
+  · 每个 agent 节点的票（`tickets/<stage>.json`）里带**单职责 prompt**：只做一件事 + 不许越界（不许改上游产物）+ 完成标志；
+  · 信号 `stages/<id>.json`：下游只认它，不认口头。
+- **checker 全部可执行**：research 走 `checkResearchGate`；intent 检查 restate/criteria/anchors/confirmed；
+  implement 检查 `rounds/NN.json` 有截图/入口和 changes；review 检查 `vsCriteria` 逐条；deliver 检查产物与建议。
+- **文档定位改写**：`working-discipline.md` 顶部写明"流程归程序、skill 只讲节点内判断"。
+- **测试 234 → 239**：`pipeline.test.mjs` 5 条（空目录拒绝 / 出票 / 调研不合格卡住 / 合格放行 / intent 未确认卡住）。
+
 ## 0.19.1（未发布）· 闸门与执行器解耦（`--check`）+ 开工三步提到 SKILL 顶部
 
 > 第二次受控实验（R3）的真实原因，不是执行代理不守纪律：
