@@ -9,7 +9,7 @@
 //   ⑥ 弄坏能红：把图片相对路径改成绝对路径 → 必须变空（不许把本机路径漏给前端）
 import assert from 'node:assert/strict'
 import { createServer as createHttpServer } from 'node:http'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -217,4 +217,70 @@ test('⑨ 需求/轮数/角色可写回 project.json（含非法轮数拒绝）'
   } finally {
     await new Promise((r) => server.close(r))
   }
+})
+
+test('⑩ 新建项目：/api/init 建骨架，state.exists 变 true', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'selfloop-ui-init-'))
+  const server = createServer(dir)
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${server.address().port}`
+  try {
+    const before = await (await fetch(base + '/api/state')).json()
+    assert.equal(before.exists, false, '空目录先是"没有项目"')
+    const res = await fetch(base + '/api/init', { method: 'POST' })
+    assert.equal(res.status, 200)
+    const after = await (await fetch(base + '/api/state')).json()
+    assert.equal(after.exists, true)
+    assert.equal(after.project.schema, 'project/1')
+    assert.equal(after.project.budget.maxRounds, 3)
+    assert.ok(after.project.roles.observer, '骨架里四角色要有')
+    for (const d of ['refs', 'rounds', 'shots']) {
+      assert.ok(existsSync(join(dir, d)), '要建出 ' + d + '/')
+    }
+  } finally {
+    await new Promise((r) => server.close(r))
+  }
+})
+
+test('⑪ 参考图上传：落 refs/、写进 project.refs[]、按扩展名判类型、同名覆盖', async () => {
+  const dir = makeRun()
+  const server = createServer(dir)
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${server.address().port}`
+  const put = (name, bytes) => fetch(base + '/api/refs', {
+    method: 'POST',
+    headers: { 'content-type': 'application/octet-stream', 'x-filename': encodeURIComponent(name), 'x-note': encodeURIComponent('测试参考') },
+    body: bytes
+  })
+  try {
+    let res = await put('ref-a.png', 'PNGDATA')
+    assert.equal(res.status, 200)
+    res = await put('ref-b.gif', 'GIFDATA')
+    assert.equal(res.status, 200)
+    const st = await (await fetch(base + '/api/state')).json()
+    assert.equal(st.project.refs.length, 2)
+    const byPath = Object.fromEntries(st.project.refs.map((r) => [r.path, r]))
+    assert.equal(byPath['refs/ref-a.png'].kind, 'image')
+    assert.equal(byPath['refs/ref-b.gif'].kind, 'gif')
+    assert.ok(existsSync(join(dir, 'refs', 'ref-a.png')), '文件要真落盘')
+
+    // 同名再传一次：不重复占位
+    res = await put('ref-a.png', 'PNGDATA2')
+    const st2 = await (await fetch(base + '/api/state')).json()
+    assert.equal(st2.project.refs.length, 2, '同名要覆盖不要叠加')
+
+    // 空文件拒绝
+    res = await fetch(base + '/api/refs', { method: 'POST', headers: { 'x-filename': encodeURIComponent('empty.png') }, body: '' })
+    assert.equal(res.status, 400)
+  } finally {
+    await new Promise((r) => server.close(r))
+  }
+})
+
+test('⑫ 执行日志：log.jsonl 读回 state.log，只留最后 300 条', async () => {
+  const dir = makeRun()
+  writeFileSync(join(dir, 'log.jsonl'), Array.from({ length: 305 }, (_, i) => JSON.stringify({ at: '2026-11-16T04:00:00.000Z', stage: 'executor', text: 'step ' + i })).join('\n') + '\n')
+  const st = await buildState(dir)
+  assert.equal(st.log.length, 300)
+  assert.equal(st.log.at(-1).text, 'step 304')
 })

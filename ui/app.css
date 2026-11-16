@@ -251,3 +251,19 @@ body{background:var(--bg);color:var(--text);font:14px/1.55 -apple-system,"Segoe 
 .dots-row{display:flex;align-items:center;gap:8px}
 .step-btn{width:24px;height:24px;border-radius:6px;border:1px solid var(--border);background:transparent;color:inherit;cursor:pointer;font-size:14px;line-height:1}
 .step-btn:hover{border-color:var(--accent,#3fd0e0)}
+
+/* ③ 段底部的执行日志（agent 侧写 <run>/log.jsonl，页面跟随） */
+.log-card{margin-top:12px;border:1px solid var(--border);border-radius:10px;background:var(--panel);overflow:hidden}
+.log-head{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)}
+.log-hint{font-size:11px;opacity:.7}
+.log-box{max-height:220px;overflow:auto;padding:8px 12px;font-size:12px;line-height:1.7;font-family:var(--mono,ui-monospace,Consolas,monospace)}
+.log-line{display:flex;gap:8px;white-space:pre-wrap;word-break:break-all}
+.log-time{color:var(--muted);flex:0 0 auto}
+.log-stage{color:var(--accent,#3fd0e0);flex:0 0 auto}
+.log-empty{color:var(--muted)}
+
+/* 参考图上传卡 */
+.ref-add{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:96px;
+  border:1px dashed var(--border);border-radius:10px;color:var(--muted);cursor:pointer;font-size:12px}
+.ref-add:hover{border-color:var(--accent,#3fd0e0);color:var(--accent,#3fd0e0)}
+.ref-drop{outline:2px dashed var(--accent,#3fd0e0);outline-offset:4px}

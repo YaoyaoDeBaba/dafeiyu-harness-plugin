@@ -13,8 +13,8 @@
 //   - 没有 skills/ 依赖、没有打包步骤；前端是原生 HTML/JS。
 //   - 文件缺失一律降级为空（老 run 没有 nodes/ 或 live.jsonl 也能看），不抛错。
 import http from 'node:http'
-import { createReadStream } from 'node:fs'
-import { appendFile, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { createReadStream, existsSync } from 'node:fs'
+import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -96,6 +96,15 @@ export async function buildState(runDir) {
   const intent = await safeJson(path.join(root, 'intent.json'))
   const research = await safeJson(path.join(root, 'research.json'))
   const liveText = await safeRead(path.join(root, 'live.jsonl'))
+  const logText = await safeRead(path.join(root, 'log.jsonl'))
+  const log = []
+  if (logText) {
+    for (const line of logText.split('\n')) {
+      const t = line.trim()
+      if (t === '') continue
+      try { log.push(JSON.parse(t)) } catch { /* 半行忽略 */ }
+    }
+  }
   const decisionsText = await safeRead(path.join(root, 'decisions.jsonl'))
   const decisions = []
   if (decisionsText) {
@@ -161,7 +170,7 @@ export async function buildState(runDir) {
 
   // 更新信号：跑的过程中 best.json 往往最后才写，真正会动的是 curve.csv / shots / nodes / live.jsonl
   let mtime = 0
-  for (const f of ['best.json', 'curve.csv', 'report.md', 'live.jsonl', 'shots', 'nodes', 'project.json', 'deliver.json', 'rounds']) {
+  for (const f of ['best.json', 'curve.csv', 'report.md', 'live.jsonl', 'log.jsonl', 'shots', 'nodes', 'project.json', 'deliver.json', 'rounds', 'refs']) {
     try { const st2 = await stat(path.join(root, f)); if (st2.mtimeMs > mtime) mtime = st2.mtimeMs } catch { /* 缺就跳过 */ }
   }
   const progress = { curveRows: curve.rows.length, shots: shots.length, nodes: nodes.length, live: live.length }
@@ -172,6 +181,8 @@ export async function buildState(runDir) {
 
   return {
     ok: true,
+    exists: Boolean(project || deliver || (rounds.length > 0) || best || intent),
+    log: log.slice(-300),
     decisions: decisions.slice(-200),
     project,
     rounds,
@@ -214,6 +225,56 @@ export function createServer(runDir) {
     try {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
       const p = decodeURIComponent(url.pathname)
+      if (req.method === 'POST' && p === '/api/init') {
+        try {
+          for (const d of ['refs', 'rounds', 'shots']) await mkdir(path.join(root, d), { recursive: true })
+          const file = path.join(root, 'project.json')
+          if (!existsSync(file)) {
+            const skeleton = {
+              schema: 'project/1',
+              instruction: '',
+              refs: [],
+              budget: { maxRounds: 3, note: '到 N 轮就交终版；中途可以叫停' },
+              roles: {
+                manager: { name: '项目经理', model: 'deepseek-v4-pro', duty: '派活、定判据、汇总交付' },
+                observer: { name: '观察员', model: 'mimo-v2.6-pro', duty: '看图/看视频，逐轮评审' },
+                researcher: { name: '调查员', model: 'deepseek-v4-pro', duty: '联网找参考与做法' },
+                executor: { name: '执行者', model: 'deepseek-v4-flash', duty: '改参数/改代码，跑闭环' }
+              },
+              createdAt: new Date().toISOString()
+            }
+            await writeFile(file, JSON.stringify(skeleton, null, 2), 'utf8')
+          }
+          return send(res, 200, JSON.stringify({ ok: true, dir: root }))
+        } catch (e) { return send(res, 500, JSON.stringify({ ok: false, error: '建不了：' + e.message })) }
+      }
+      if (req.method === 'POST' && p === '/api/refs') {
+        const rawName = decodeURIComponent(String(req.headers['x-filename'] ?? 'ref'))
+        const note = decodeURIComponent(String(req.headers['x-note'] ?? ''))
+        const safeName = rawName.replace(/[^A-Za-z0-9._\-\u4e00-\u9fa5]/g, '_').slice(-80) || 'ref'
+        const ext = (safeName.match(/\.[A-Za-z0-9]+$/) || [''])[0].toLowerCase()
+        const kind = ['.gif'].includes(ext) ? 'gif' : ['.mp4', '.webm', '.mov', '.m4v'].includes(ext) ? 'video' : 'image'
+        const chunks = []
+        let size = 0
+        for await (const chunk of req) {
+          size += chunk.length
+          if (size > 64 * 1024 * 1024) return send(res, 413, JSON.stringify({ ok: false, error: '文件太大（上限 64MB）' }))
+          chunks.push(chunk)
+        }
+        if (size === 0) return send(res, 400, JSON.stringify({ ok: false, error: '空文件' }))
+        try {
+          await mkdir(path.join(root, 'refs'), { recursive: true })
+          const rel = 'refs/' + safeName
+          await writeFile(path.join(root, rel), Buffer.concat(chunks))
+          const file = path.join(root, 'project.json')
+          const cur = (await safeJson(file)) || { schema: 'project/1', refs: [] }
+          const refs = Array.isArray(cur.refs) ? cur.refs.filter((r) => r && r.path !== rel) : []
+          refs.push({ path: rel, kind, note: note || '', bytes: size })
+          cur.refs = refs
+          await writeFile(file, JSON.stringify(cur, null, 2), 'utf8')
+          return send(res, 200, JSON.stringify({ ok: true, ref: { path: rel, kind, note, bytes: size } }))
+        } catch (e) { return send(res, 500, JSON.stringify({ ok: false, error: '存不了：' + e.message })) }
+      }
       if (req.method === 'POST' && p === '/api/project') {
         let body = ''
         for await (const chunk of req) {

@@ -84,6 +84,32 @@ async function saveProject(patch, okMsg) {
   }
 }
 
+/** 传参考图：原始字节 POST 到 /api/refs，服务端落 refs/ 并写进 project.json.refs[] */
+async function uploadRefs(files) {
+  if (!files || !files.length) return;
+  let ok = 0;
+  for (const file of files) {
+    try {
+      const buf = await file.arrayBuffer();
+      const r = await fetch('/api/refs', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/octet-stream',
+          'x-filename': encodeURIComponent(file.name),
+          'x-note': encodeURIComponent('')
+        },
+        body: buf
+      });
+      const j = await r.json();
+      if (j.ok) ok += 1; else renderToast('传不上去：' + (j.error || file.name));
+    } catch (e) {
+      renderToast('传不上去：' + (e && e.message ? e.message : file.name));
+    }
+  }
+  if (ok) renderToast('已加入 ' + ok + ' 份参考');
+  poll();
+}
+
 /** 把人在界面上的决定落到 <run>/decisions.jsonl（agent 侧读它执行）；失败就明说失败，不许假装成功 */
 async function decide(action, extra) {
   try {
@@ -156,15 +182,19 @@ function renderTopbar() {
   $('projname').textContent = hasProject ? (truncate(p.instruction, 20) || '（未命名项目）') : '（不是作业台）';
   $('roundcount').textContent = hasProject ? ('项目已跑 ' + rounds.length + '/' + (m || rounds.length) + ' 轮') : '';
   $('clock').textContent = '最后更新 ' + hhmm(d.run && d.run.mtime);
+  // 没有项目时：① 段留着（里面有「新建项目」），②③④ 收起来；有项目但格式不对才提示
+  const emptyDir = !hasProject && (d.exists === false || d.exists === undefined);
+  $('projname').textContent = hasProject ? (truncate(p.instruction, 20) || '（未命名项目）') : '（新项目）';
   const banner = $('missing-banner');
-  banner.hidden = hasProject;
-  if (!hasProject) banner.innerHTML = '<span>这个目录不是作业台格式（缺 project.json）</span>';
+  banner.hidden = hasProject || emptyDir;
+  if (!hasProject && !emptyDir) banner.innerHTML = '<span>这个目录不是作业台格式（缺 project.json）</span>';
   const secs = ['input', 'understand', 'rounds', 'deliver'];
   for (let i = 0; i < secs.length; i++) {
-    document.getElementById('sec-' + secs[i]).hidden = !hasProject;
+    const hide = i === 0 ? false : !hasProject;
+    document.getElementById('sec-' + secs[i]).hidden = hide;
   }
-  $('stepper').hidden = !hasProject;
-  if (!hasProject) $('tech-details').open = true;
+  $('stepper').hidden = false;
+  if (!hasProject) $('tech-details').open = false;
 }
 
 function roleCard(key, r) {
@@ -213,6 +243,7 @@ function renderInput() {
       + (r.note ? '<div class="ref-note">' + esc(r.note) + '</div>' : '')
       + '</div>';
   }
+  html += '<div class="ref-add" id="ref-add"><span>＋ 添加参考</span><span style="font-size:11px">拖进来或点选（图 / gif / 视频）</span></div>';
   html += '</div></div>';
 
   const budget = p.budget || {};
@@ -232,6 +263,23 @@ function renderInput() {
   root.innerHTML = html;
 
   root.querySelectorAll('.ref-card').forEach((c) => c.addEventListener('click', () => openLightbox(c.dataset.full)));
+  const refAdd = $('ref-add');
+  if (refAdd) {
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.multiple = true;
+    picker.accept = 'image/*,video/*';
+    picker.style.display = 'none';
+    document.body.appendChild(picker);
+    picker.addEventListener('change', () => { uploadRefs(picker.files); picker.value = ''; });
+    refAdd.addEventListener('click', () => picker.click());
+    const grid = refAdd.parentElement;
+    if (grid) {
+      ['dragenter', 'dragover'].forEach((ev) => grid.addEventListener(ev, (e) => { e.preventDefault(); grid.classList.add('ref-drop'); }));
+      ['dragleave', 'drop'].forEach((ev) => grid.addEventListener(ev, (e) => { e.preventDefault(); grid.classList.remove('ref-drop'); }));
+      grid.addEventListener('drop', (e) => { if (e.dataTransfer && e.dataTransfer.files) uploadRefs(e.dataTransfer.files); });
+    }
+  }
   const needSave = $('need-save');
   if (needSave) needSave.addEventListener('click', () => {
     const ta = $('need-edit');
@@ -728,10 +776,47 @@ function derive() {
   for (const r of rows) { const png = normalize(r && r.png); if (png) S.byPng.set(png, r); }
 }
 
+function renderInit() {
+  const root = $('input-root');
+  const dir = (S.data && S.data.run && S.data.run.dir) || '';
+  root.innerHTML = '<div class="i-card" style="grid-column:1/-1">'
+    + '<div class="i-label">这个目录还没有项目</div>'
+    + '<div class="need-sub mono">' + esc(dir) + '</div>'
+    + '<div class="need-actions"><button type="button" class="btn btn-primary" id="init-btn">新建项目</button>'
+    + '<span class="need-hint">会建 refs/ rounds/ shots/ 和一份 project.json 骨架</span></div></div>';
+  const b = $('init-btn');
+  if (b) b.addEventListener('click', async () => {
+    try {
+      const r = await fetch('/api/init', { method: 'POST' });
+      const j = await r.json();
+      renderToast(j.ok ? '项目已建好，填需求吧' : ('建不了：' + (j.error || '')));
+      poll();
+    } catch (e) { renderToast('建不了：' + (e && e.message ? e.message : e)); }
+  });
+  for (const id of ['understand-root', 'rounds-root', 'deliver-root']) { const el = $(id); if (el) el.innerHTML = ''; }
+}
+
+function renderLog() {
+  const box = $('log-box');
+  if (!box) return;
+  const log = Array.isArray(S.data && S.data.log) ? S.data.log : [];
+  if (!log.length) { box.innerHTML = '<div class="log-empty">还没有日志（agent 开始跑之后会往里写）</div>'; return; }
+  const nearBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  box.innerHTML = log.map((ev) => {
+    const t = (ev && ev.at) ? String(ev.at).slice(11, 19) : '';
+    const stage = (ev && ev.stage) ? String(ev.stage) : '';
+    const text = (ev && ev.text != null) ? String(ev.text) : JSON.stringify(ev);
+    return '<div class="log-line"><span class="log-time">' + esc(t) + '</span><span class="log-stage">' + esc(stage) + '</span><span>' + esc(text) + '</span></div>';
+  }).join('');
+  if (nearBottom) box.scrollTop = box.scrollHeight;
+}
+
 function renderAll() {
   renderTopbar();
   renderStepper();
-  const hasProject = !!(S.data && S.data.project);
+  const d = S.data || {};
+  if (d.exists === false) { renderInit(); renderLog(); return; }
+  const hasProject = !!d.project;
   if (hasProject) {
     renderInput();
     renderUnderstand();
@@ -739,6 +824,7 @@ function renderAll() {
     renderDeliver();
   }
   renderTechDetails();
+  renderLog();
 }
 
 async function poll() {
