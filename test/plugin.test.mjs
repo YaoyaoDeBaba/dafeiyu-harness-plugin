@@ -580,10 +580,13 @@ test('locale 双语 key 完全一致，title 是「权臣」/ Selfloop，描述�
   }
 })
 
-test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本 0.13.0', () => {
+test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只有下界、版本与 CHANGELOG 顶部一致', () => {
   const pkg = readJson('package.json')
   assert.equal(pkg.name, 'dsh-selfloop')
-  assert.equal(pkg.version, '0.13.0')
+  // 版本号不再写死：跟 CHANGELOG 顶部那条对齐，升版只改一处（写死会让每次升版都要改测试）
+  const topVersion = (readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8').match(/^## (\d+\.\d+\.\d+)/m) || [])[1]
+  assert.ok(topVersion, 'CHANGELOG 顶部要有 ## x.y.z 标题')
+  assert.equal(pkg.version, topVersion, 'package.json 版本要与 CHANGELOG 顶部一致')
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.main, 'lib/index.js')
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
