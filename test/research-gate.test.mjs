@@ -55,9 +55,41 @@ test('① 有图片锚点但没量参考 → 硬错并给出补救命令', () =>
 })
 
 test('② 量过了（research.extracted 非空）→ 放行', () => {
-  const dir = makeRun({ research: { findings: [], extracted: [{ what: 'mean', value: 0.3, source: 'ref.png' }], changed: [] } })
+  const dir = makeRun({
+    research: {
+      findings: [
+        { title: 'A', url: 'https://example.com/a', what: 'x', how: 'y', used: true },
+        { title: 'B', url: 'https://example.com/b', what: 'x', how: 'y', used: false }
+      ],
+      extracted: [{ what: 'mean', value: 0.3, source: 'ref.png' }],
+      changed: ['按实测调低了阈值']
+    }
+  })
   const r = runGate(dir)
   assert.equal(r.status, 0, r.stderr || r.stdout)
+})
+
+test('②b 只有实测、没有外部来源 → 仍然硬错（调研没做完）', () => {
+  const dir = makeRun({ research: { findings: [], extracted: [{ what: 'mean', value: 0.3, source: 'ref.png' }], changed: [] } })
+  const r = runGate(dir)
+  assert.equal(r.status, 1, '没外部来源不许开跑')
+  assert.match(r.stderr, /findings/)
+  assert.match(r.stderr, /用来证明「调研真的改变了做法」/)
+})
+
+test('②c 有 URL 但没有一条 used=true → 硬错（调研没落地）', () => {
+  const dir = makeRun({
+    research: {
+      findings: [
+        { title: 'A', url: 'https://example.com/a', used: false },
+        { title: 'B', url: 'https://example.com/b', used: false }
+      ],
+      extracted: [{ what: 'mean', value: 0.3, source: 'ref.png' }]
+    }
+  })
+  const r = runGate(dir)
+  assert.equal(r.status, 1)
+  assert.match(r.stderr, /used/)
 })
 
 test('③ 显式 --no-research → 放行（跳过有名字）', () => {

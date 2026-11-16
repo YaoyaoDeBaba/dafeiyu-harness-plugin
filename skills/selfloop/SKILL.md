@@ -107,6 +107,7 @@ references 索引（按「我要干什么」查，别从头读）：
 | 写一份命令观测（`observe.type=command`） | `references/observe-command.md` |
 | 判断「这次是不是真的更好了」 | `references/observe-stability.md` |
 | 真的跑一轮：命令 / 产物清单 / 报告必须写清什么 / 两条执行器怎么选 | `references/run-recipes.md` |
+| 怎么派调查员、调研怎么算做完 | `references/research-brief.md` |
 | 真心话：什么时候可以停下来找人 | `references/autonomy.md` |
 | 五步流程、活性扫描五分法、每步的判据与失败含义 | `references/workflow.md` |
 | 指标定义、跨工具换算、底噪、档位表 | `references/metrics.md` |

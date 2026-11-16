@@ -791,26 +791,50 @@ function gateCli(argv) {
         .join('；');
     }
   }
-  // ── 调研闸（0.16.0）：有参考图却没量过 → 硬错 ────────────────────────────
-  // 2026-11-16 实战教训：agent 拿到参考图后**没量就拍阈值**，判据全错（云占 45% vs 实测 65%）。
-  // 用户一句"调查员没干活"才反应过来。规矩只有一条：**参考里有图，就必须先给出量过的数**。
+  // ── 调研闸（0.16.0 起；0.17.0 加严）────────────────────────────────────
+  // 2026-11-16 实战教训：agent 拿到参考图后**没量就拍阈值**，判据全错；
+  // 更糟的是「调查员」这个角色根本没被派出去——只随手搜一下，连外部来源都没留下。
+  // 现在的规矩有三条，缺一条就硬错：
+  //   ① 有图片锚点，就必须有 research.json；
+  //   ② extracted[] 不能空（说明量过参考，不是凭感觉）；
+  //   ③ findings[] 至少 2 条、每条带 http(s) URL、且至少 1 条 used=true
+  //      ——「调研过」的证据是外部来源 + 真的改变了做法，不是自言自语。
   if ((res.status === 'done' || res.status === 'degraded') && !a.noResearch) {
     const imageAnchors = (res.anchors || []).filter((x) => x && x.kind === 'image');
     if (imageAnchors.length > 0) {
       let research = null;
-      try { research = JSON.parse(readFileSync(join(outDir, RESEARCH_FILE), 'utf8')); } catch { research = null; }
-      const extracted = Array.isArray(research?.extracted) ? research.extracted : [];
-      if (extracted.length === 0) {
+      const researchPath = join(outDir, RESEARCH_FILE);
+      try { research = JSON.parse(readFileSync(researchPath, 'utf8')); } catch { research = null; }
+      if (research == null) {
         throw new Error(
-          '[调研闸] 这份 intent 声明了 ' + imageAnchors.length + ' 个图片锚点，但没有量过参考：' +
-          '\n  ' + join(outDir, RESEARCH_FILE) + ' 不存在，或 extracted[] 为空。' +
+          '[调研闸] 这份 intent 声明了 ' + imageAnchors.length + ' 个图片锚点，但没有 research.json：' +
+          '\n  ' + researchPath +
           '\n  先跑：node harness/ref-probe.mjs <参考图或帧目录> --json <out>/ref.extracted.json' +
-          '\n  再把结果并进 research.json 的 extracted[]（每条写清 what / value / source）。' +
-          '\n  criteria 的阈值必须来自这些数，不许凭感觉拍。' +
-          '\n  确实要跳过：加 --no-research（台帐会记一条 skipped research，跳过有名字）'
+          '\n  再派调查员做外部调研（算法/开源实现/文献），把结果写进 findings[]。' +
+          '\n  确实要跳过：加 --no-research（台帐会记一条 skipped research）'
         );
       }
-      notes.push('调研闸：' + imageAnchors.length + ' 个图片锚点，参考实测 ' + extracted.length + ' 条');
+      const extracted = Array.isArray(research.extracted) ? research.extracted : [];
+      if (extracted.length === 0) {
+        throw new Error(
+          '[调研闸] research.extracted[] 是空的：说明参考图没被量过，判据阈值就是凭感觉拍的。' +
+          '\n  先跑：node harness/ref-probe.mjs <参考图或帧目录> --json <out>/ref.extracted.json' +
+          '\n  再把结果并进 ' + researchPath + ' 的 extracted[]（每条写清 what / value / source）'
+        );
+      }
+      const findings = Array.isArray(research.findings) ? research.findings : [];
+      const withUrl = findings.filter((f) => f && typeof f.url === 'string' && /^https?:\/\//i.test(f.url));
+      const used = findings.filter((f) => f && f.used === true);
+      if (withUrl.length < 2 || used.length < 1) {
+        throw new Error(
+          '[调研闸] 调研不算做完：findings 里带 http(s) 来源的只有 ' + withUrl.length + ' 条、used=true 的 ' + used.length + ' 条。' +
+          '\n  要求：至少 2 条外部来源（开源实现 / 文章 / 论文，给真 URL），且至少 1 条 marked used=true —— ' +
+          '用来证明「调研真的改变了做法」，不是自言自语。' +
+          '\n  做法：派一个调查员子代理去查（别自己随手搜一下就算），把它的产出写进 findings[]。' +
+          '\n  确实要跳过：--no-research'
+        );
+      }
+      notes.push('调研闸：锚点 ' + imageAnchors.length + ' 个 / 实测 ' + extracted.length + ' 条 / 外部来源 ' + withUrl.length + ' 条 / 采用 ' + used.length + ' 条');
     }
   }
 
