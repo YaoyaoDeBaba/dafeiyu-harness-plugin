@@ -148,3 +148,42 @@ test('⑦ 曲线里的图片路径也归一：绝对路径转相对、run 外清
   const st = await buildState(dir)
   assert.equal(st.curve[0].png, 'shots/e001.png')
 })
+
+test('⑧ 决策接口：合法动作落盘、非法动作拒绝、state 能读回', async () => {
+  const dir = makeRun()
+  const server = createServer(dir)
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${server.address().port}`
+  try {
+    const okRes = await fetch(base + '/api/decision', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'stop', round: 2, note: '命中点不够狠' })
+    })
+    assert.equal(okRes.status, 200)
+    const okBody = await okRes.json()
+    assert.equal(okBody.ok, true)
+    assert.equal(okBody.recorded.action, 'stop')
+    assert.equal(okBody.recorded.round, 2)
+
+    const badRes = await fetch(base + '/api/decision', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'hack' })
+    })
+    assert.equal(badRes.status, 400, '不在白名单的动作必须 400')
+
+    const badJson = await fetch(base + '/api/decision', { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'not json' })
+    assert.equal(badJson.status, 400)
+
+    const st = await (await fetch(base + '/api/state')).json()
+    assert.equal(st.decisions.length, 1)
+    assert.equal(st.decisions[0].action, 'stop')
+    assert.equal(st.decisions[0].note, '命中点不够狠')
+
+    const raw = readFileSync(join(dir, 'decisions.jsonl'), 'utf8').trim().split('\n')
+    assert.equal(raw.length, 1, '非法动作不该落盘')
+  } finally {
+    await new Promise((r) => server.close(r))
+  }
+})

@@ -62,6 +62,28 @@ async function fetchState() {
 }
 
 let toastTimer = null;
+const ACTION_LABEL = {
+  confirm: '确认，开干', reject: '打回，重定判据', stop: '停下来', accept: '收下交付',
+  revise: '这里不对', roles: '角色模型调整', note: '备注'
+};
+
+/** 把人在界面上的决定落到 <run>/decisions.jsonl（agent 侧读它执行）；失败就明说失败，不许假装成功 */
+async function decide(action, extra) {
+  try {
+    const r = await fetch('/api/decision', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(Object.assign({ action }, extra || {}))
+    });
+    const j = await r.json();
+    if (!j.ok) { renderToast('没记上：' + (j.error || '未知原因')); return; }
+    renderToast('已记下「' + (ACTION_LABEL[action] || action) + '」，agent 侧会执行');
+    poll();
+  } catch (e) {
+    renderToast('没记上：' + (e && e.message ? e.message : e));
+  }
+}
+
 function renderToast(msg) {
   const t = $('toast');
   t.textContent = msg;
@@ -196,7 +218,8 @@ function renderInput() {
     sel.addEventListener('change', () => {
       const card = sel.closest('.role-card');
       if (card) card.querySelector('.role-model').textContent = sel.value;
-      renderToast('只读模式：角色模型由 agent 侧写入，这里仅预览');
+      const roleKey = card ? card.dataset.role : '';
+      decide('roles', { model: sel.value, note: roleKey ? ('角色 ' + roleKey + ' → ' + sel.value) : '' });
     });
   });
 }
@@ -291,7 +314,10 @@ function renderUnderstand() {
   root.innerHTML = html;
   root.querySelectorAll('[data-act]').forEach((b) => {
     b.addEventListener('click', () => {
-      renderToast(b.dataset.act === 'confirm' ? '只读模式：确认开干由 agent 侧执行' : '只读模式：这条反馈需要 agent 侧接收');
+      const act = b.dataset.act === 'confirm' ? 'confirm' : 'revise';
+      const note = act === 'revise' ? (window.prompt('哪里理解错了？写清楚，agent 会据此重写判据') || '') : '';
+      if (act === 'revise' && note.trim() === '') { renderToast('没写原因，先不记'); return; }
+      decide(act, { note });
     });
   });
 }
@@ -394,7 +420,11 @@ function renderRounds() {
       else if (kind === 'image') openLightbox(url);
     });
   });
-  root.querySelectorAll('[data-stop]').forEach((el) => el.addEventListener('click', () => renderToast('只读模式：打断需要 agent 侧执行')));
+  root.querySelectorAll('[data-stop]').forEach((el) => el.addEventListener('click', () => {
+    const n = Number(el.dataset.stop);
+    const note = window.prompt('为什么在这一轮停？（可以不写）') || '';
+    decide('stop', { round: Number.isFinite(n) ? n : undefined, note });
+  }));
 }
 
 function renderDeliver() {
@@ -472,7 +502,12 @@ function renderDeliver() {
     + '</div>';
 
   root.querySelectorAll('[data-shot]').forEach((e) => e.addEventListener('click', () => openLightbox(e.dataset.shot)));
-  root.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => renderToast('只读模式：收下/打回需要 agent 侧执行')));
+  root.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => {
+    const act = b.dataset.act === 'accept' ? 'accept' : 'reject';
+    const note = act === 'reject' ? (window.prompt('哪里不对？写清楚，agent 会拿它重定判据') || '') : '';
+    if (act === 'reject' && note.trim() === '') { renderToast('没写原因，先不记'); return; }
+    decide(act, { note });
+  }));
 }
 
 function techKpiHtml(d) {
@@ -693,7 +728,10 @@ function copyText(t) {
 }
 
 function wireControls() {
-  $('stop-btn').addEventListener('click', () => renderToast('只读模式：停下来需要 agent 侧执行'));
+  $('stop-btn').addEventListener('click', () => {
+    const note = window.prompt('停下来的原因？（可以不写）') || '';
+    decide('stop', { note });
+  });
   $('copy-btn').addEventListener('click', () => copyText((S.data && S.data.report) || ''));
   $('lightbox').addEventListener('click', () => closeLightbox());
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });

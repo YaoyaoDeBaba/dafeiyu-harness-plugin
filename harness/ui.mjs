@@ -14,7 +14,7 @@
 //   - 文件缺失一律降级为空（老 run 没有 nodes/ 或 live.jsonl 也能看），不抛错。
 import http from 'node:http'
 import { createReadStream } from 'node:fs'
-import { readFile, readdir, stat } from 'node:fs/promises'
+import { appendFile, readFile, readdir, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -59,6 +59,15 @@ export function normRunPath(p, root) {
   return cleaned.startsWith('..') ? '' : cleaned
 }
 
+
+/** 人在这页上做的决定，落到 <run>/decisions.jsonl 给 agent 侧执行（本文件唯一的写操作） */
+export const DECISIONS = ['confirm', 'reject', 'stop', 'accept', 'revise', 'roles', 'note']
+export async function appendDecision(root, rec) {
+  const line = JSON.stringify({ at: new Date().toISOString(), ...rec }) + '\n'
+  await appendFile(path.join(root, 'decisions.jsonl'), line, 'utf8')
+  return line.trim()
+}
+
 /** 只做形状判断的 CSV 解析：首行表头，其余按逗号切；数字能转就转，转不了保留字符串 */
 export function parseCsv(text) {
   const lines = String(text).replace(/\r\n/g, '\n').split('\n').filter((l) => l.trim() !== '')
@@ -87,6 +96,15 @@ export async function buildState(runDir) {
   const intent = await safeJson(path.join(root, 'intent.json'))
   const research = await safeJson(path.join(root, 'research.json'))
   const liveText = await safeRead(path.join(root, 'live.jsonl'))
+  const decisionsText = await safeRead(path.join(root, 'decisions.jsonl'))
+  const decisions = []
+  if (decisionsText) {
+    for (const line of decisionsText.split('\n')) {
+      const t = line.trim()
+      if (t === '') continue
+      try { decisions.push(JSON.parse(t)) } catch { /* 半行忽略 */ }
+    }
+  }
   // 作业台层（0.14.1）：人看的四段——投入 / 理解 / 过程(轮次) / 交付
   const project = await safeJson(path.join(root, 'project.json'))
   const deliver = await safeJson(path.join(root, 'deliver.json'))
@@ -154,6 +172,7 @@ export async function buildState(runDir) {
 
   return {
     ok: true,
+    decisions: decisions.slice(-200),
     project,
     rounds,
     deliver,
@@ -195,6 +214,23 @@ export function createServer(runDir) {
     try {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
       const p = decodeURIComponent(url.pathname)
+      if (req.method === 'POST' && p === '/api/decision') {
+        let body = ''
+        for await (const chunk of req) {
+          body += chunk
+          if (body.length > 65536) return send(res, 413, JSON.stringify({ ok: false, error: '请求体过大' }))
+        }
+        let payload = {}
+        try { payload = JSON.parse(body || '{}') } catch { return send(res, 400, JSON.stringify({ ok: false, error: '不是合法 JSON' })) }
+        const action = String(payload.action ?? '')
+        if (!DECISIONS.includes(action)) return send(res, 400, JSON.stringify({ ok: false, error: '不认识的动作：' + action }))
+        const rec = { action, note: String(payload.note ?? '').slice(0, 2000) }
+        if (payload.round != null) rec.round = Number(payload.round)
+        if (payload.model != null) rec.model = String(payload.model).slice(0, 120)
+        if (payload.roles != null) rec.roles = payload.roles
+        try { await appendDecision(root, rec) } catch (e) { return send(res, 500, JSON.stringify({ ok: false, error: '写不进 decisions.jsonl：' + e.message })) }
+        return send(res, 200, JSON.stringify({ ok: true, recorded: rec }))
+      }
       if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, '405')
       if (p === '/api/state') {
         const st = await buildState(root)
