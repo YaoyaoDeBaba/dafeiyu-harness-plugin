@@ -58,8 +58,8 @@ test('② 量过了（research.extracted 非空）→ 放行', () => {
   const dir = makeRun({
     research: {
       findings: [
-        { title: 'A', url: 'https://example.com/a', what: 'x', how: 'y', used: true, usedFor: '把阈值从 0.9 改成 0.7' },
-        { title: 'B', url: 'https://example.com/b', what: 'x', how: 'y', used: false }
+        { title: 'A', url: 'https://github.com/x/y', kind: 'opensource', what: 'x', how: 'y', used: true, usedFor: '把阈值从 0.9 改成 0.7' },
+        { title: 'B', url: 'https://example.com/b', kind: 'article', what: 'x', how: 'y', used: false }
       ],
       extracted: [{ what: 'mean', value: 0.3, source: 'ref.png' }],
       changed: ['按实测调低了阈值']
@@ -105,6 +105,21 @@ test('②d used=true 但没写 usedFor → 硬错（空宣称）', () => {
   const r = runGate(dir)
   assert.equal(r.status, 1)
   assert.match(r.stderr, /usedFor/)
+})
+
+test('②e 全是二手博客（没有 opensource/paper）→ 硬错', () => {
+  const dir = makeRun({
+    research: {
+      findings: [
+        { title: 'A', url: 'https://blog.example.com/a', kind: 'article', used: true, usedFor: '改了阈值' },
+        { title: 'B', url: 'https://blog.example.com/b', kind: 'article' }
+      ],
+      extracted: [{ what: 'mean', value: 0.3, source: 'ref.png' }]
+    }
+  })
+  const r = runGate(dir)
+  assert.equal(r.status, 1)
+  assert.match(r.stderr, /opensource/)
 })
 
 test('③ 显式 --no-research → 放行（跳过有名字）', () => {

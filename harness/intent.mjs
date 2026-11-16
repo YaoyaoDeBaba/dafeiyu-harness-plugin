@@ -842,7 +842,17 @@ function gateCli(argv) {
           '\n  确实要跳过：--no-research'
         );
       }
-      notes.push('调研闸：锚点 ' + imageAnchors.length + ' 个 / 实测 ' + extracted.length + ' 条 / 外部来源 ' + withUrl.length + ' 条 / 采用 ' + used.length + ' 条');
+
+      // 证据等级：至少要有一条「读得到实现」的来源（开源代码或论文），不接受全是博客二手转述
+      const verified = withUrl.filter((f) => ['opensource', 'paper'].includes(String(f.kind || '')));
+      if (verified.length < 1) {
+        throw new Error(
+          '[调研闸] 外部来源里没有一条能核到原型：带 URL 的 ' + withUrl.length + ' 条中，kind 为 opensource/paper 的 0 条。' +
+          '\n  二手博客容易抄错（这次就有人把「中点位移不分叉」写成「能分叉」）。' +
+          '\n  要求：至少 1 条 kind="opensource"（能读代码）或 "paper"（有正文）。'
+        );
+      }
+      notes.push('调研闸：锚点 ' + imageAnchors.length + ' 个 / 实测 ' + extracted.length + ' 条 / 外部来源 ' + withUrl.length + ' 条（可核 ' + verified.length + '）/ 采用 ' + used.length + ' 条');
     }
   }
 
