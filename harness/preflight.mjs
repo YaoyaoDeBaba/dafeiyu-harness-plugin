@@ -74,6 +74,15 @@ if (!checkOnly && !existsSync(intentPath)) {
   }, null, 2), 'utf8')
 }
 
+// ── 3.5) 预算：没有就写默认值（用户可改）
+const budgetPath = join(dir, 'budget.json')
+if (!checkOnly && !existsSync(budgetPath)) {
+  writeFileSync(budgetPath, JSON.stringify({
+    _说明: 'research: low|mid|high|max（调查强度）| maxRounds: 迭代轮次上限 | useCritic: 是否派观察员',
+    research: 'high', maxRounds: 1, useCritic: true
+  }, null, 2), 'utf8')
+}
+
 // ── 4) 判定 + 下一步
 const f = Array.isArray(research.findings) ? research.findings : []
 const url = f.filter((x) => /^https?:/.test(x.url || ''))
@@ -88,6 +97,7 @@ console.log('=== preflight: ' + dir + ' ===')
 console.log('参考量测: ' + (measured ? measured.count + ' 张，写进 extracted ' + extracted.length + ' 条' : '未提供 --ref（跳过）'))
 console.log('调研: findings ' + f.length + ' / 带URL ' + url.length + ' / used ' + used.length + ' / 可核(opensource·paper) ' + verified.length)
 console.log('intent: ' + (intentReady ? '已确认，可开工' : '未完成（restate / criteria / anchors / confirmed）'))
+console.log('预算: budget.json（research / maxRounds / useCritic）')
 
 const todo = []
 if (!measured) todo.push('① 量参考：node harness/preflight.mjs --run <run> --ref <参考图或帧目录>')
