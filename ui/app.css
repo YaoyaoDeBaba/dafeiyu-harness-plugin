@@ -155,3 +155,8 @@ body{background:var(--bg);color:var(--text);font:13px/1.45 -apple-system,"Segoe 
 ::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-thumb{background:#2a3542;border-radius:6px}
 ::-webkit-scrollbar-track{background:transparent}
+
+/* 报告放主区全宽：340px 的侧栏读 report.md 太窄（截图验证时发现的） */
+.card-report{min-width:0}
+.card-report .report-details summary{cursor:pointer;padding:2px 0 8px;font-size:12px;color:var(--muted);user-select:none}
+.card-report #report-box{max-height:70vh;overflow:auto}
