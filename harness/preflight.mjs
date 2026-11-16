@@ -21,16 +21,18 @@ import { probeFile, summarize } from './ref-probe.mjs'
 
 function arg(name, def) { const i = process.argv.indexOf('--' + name); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : def }
 
+const checkOnly = process.argv.includes('--check')
 const runDir = arg('run', '')
 const refArg = arg('ref', '')
 const top = Number(arg('top', '0.45'))
-if (!runDir) { console.error('用法: node harness/preflight.mjs --run <run目录> --ref <参考图或帧目录>'); process.exit(2) }
+if (!runDir) { console.error('用法: node harness/preflight.mjs --run <run目录> [--ref <参考图或帧目录>] [--check]'); process.exit(2) }
 const dir = resolve(runDir)
-for (const d of ['refs', 'rounds', 'shots']) mkdirSync(join(dir, d), { recursive: true })
+// --check：只判定现状，不建目录、不写文件（给观察员/CI 用，任何执行器都过同一道闸）
+if (!checkOnly) for (const d of ['refs', 'rounds', 'shots']) mkdirSync(join(dir, d), { recursive: true })
 
 // ── 1) 量参考（没有 --ref 就跳过，但要明说）
 let measured = null
-if (refArg) {
+if (refArg && !checkOnly) {
   const refPath = resolve(refArg)
   let files = []
   try {
@@ -58,11 +60,11 @@ if (measured) {
     if (hit) Object.assign(hit, item); else research.extracted.push(item)
   }
 }
-writeFileSync(researchPath, JSON.stringify(research, null, 2), 'utf8')
+if (!checkOnly) writeFileSync(researchPath, JSON.stringify(research, null, 2), 'utf8')
 
 // ── 3) intent 骨架（只建空模板，不替人拍判据）
 const intentPath = join(dir, 'intent.json')
-if (!existsSync(intentPath)) {
+if (!checkOnly && !existsSync(intentPath)) {
   writeFileSync(intentPath, JSON.stringify({
     _说明: '这是 preflight 建的空壳：restate / criteria / anchors 由 agent 根据 research 与用户原话填，填完把 confirmed 改 true',
     version: '2', restate: '', anchors: [], criteria: [], notWanted: [],

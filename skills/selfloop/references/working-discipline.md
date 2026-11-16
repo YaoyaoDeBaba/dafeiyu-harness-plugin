@@ -141,3 +141,38 @@ node harness/preflight.mjs --run <run目录> --ref <参考图或帧目录>
 - 搜了 3 个链接但一条 used 都没有（调研没落地）
 - 用"参考图看起来是…"代替量测（这正是实战翻车的原因）
 
+
+---
+
+## 派单契约：规则写在派单那一刻，不写在文档里
+
+2026-11-16 两次受控实验的结论：
+- 第一次：执行代理读了全套规范、读了源码，**8 分钟零产出**（没有起飞跑道）；
+- 第二次：加了 `preflight` 之后，它仍然**手写了一个 python 量图脚本、跳过 preflight、直接改工程文件**。
+
+规范写进 skill 不等于会被执行。**靠得住的做法是派单者把开场指令写进 prompt**：
+
+```text
+你是一个执行 agent。第一步固定运行：
+  node <包>/harness/preflight.mjs --run <run目录> --ref <参考素材>
+它退出码非 0 就按它列的清单补齐（量参考 → 派调查员 → 填 intent），补齐之前不许改任何工程文件。
+```
+
+同时派一个**观察员**核对产物（不是核对自述）：
+
+| 核对项 | 判据 |
+|---|---|
+| 走了跑道 | `research.json.extracted[]` 非空 |
+| 调研有外部来源 | findings ≥2 带 URL、≥1 条 kind=opensource/paper |
+| 调研落地 | 每条 used 都有 `usedFor` |
+| 先判据后代码 | `intent.json` 的 mtime 早于被改的工程文件 |
+
+**这道闸与执行器无关**：不管用 `iter.ps1`、`cmdloop.mjs`，还是你自己拿 MCP / 脚本手搓一条链路，开工前都要过同一道检查：
+
+```bash
+node harness/preflight.mjs --run <run目录> --check    # 只判定，不写任何文件；0=可开工 / 3=调研没完 / 4=intent 没写完
+```
+
+2026-11-16 第二次受控实验的教训：因为引擎的 web 执行器**接不上 Unity 宿主**（三个适配器都 `runnable:false`），
+执行代理就自己搓了一条 MCP + Python 的链路——**而闸门原来只挂在引擎链路里**，于是全被绕过。
+现在闸门只看 run 目录的状态（`extracted` / `findings` / `intent.confirmed`），跟你怎么执行没关系。
