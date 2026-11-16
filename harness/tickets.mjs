@@ -2,7 +2,10 @@
 import { join } from 'node:path'
 
 const j = (...a) => join(...a)
-const doneLine = (dir, id) => '做完：node harness/pipeline.mjs done --run ' + dir + ' --stage ' + id
+const doneLine = (dir, id) => [
+  '交活前先填表：' + j(dir, 'forms', id + '.json') + '（每项 value 都填上，空着不放行）',
+  '做完：node harness/pipeline.mjs done --run ' + dir + ' --stage ' + id
+].join('\\n')
 
 const PHASE1 = {
   '1.2-translate1': (dir, id) => [

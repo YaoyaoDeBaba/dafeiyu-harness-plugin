@@ -116,3 +116,29 @@ test('⑩ 写了 draft1 但 openQuestions 为空 → 仍卡（调查员会没线
   assert.equal(r.status, 1)
   assert.match(r.stdout, /openQuestions/)
 })
+
+test('⑪ 主Agent 表单：空表不放行，逐项列出未填', () => {
+  const dir = makeRun({ research: 'low', maxRounds: 1, useCritic: true })
+  run('step', '--run', dir)                    // 1.1 过，停在 1.2 并发空表
+  assert.ok(existsSync(join(dir, 'forms', '1.2-translate1.json')), '应自动发空表')
+  writeFileSync(join(dir, 'intent.draft1.json'), JSON.stringify({ restate: 'x', openQuestions: ['a', 'b', 'c'], assumed: ['y'] }))
+  const r = run('done', '--run', dir, '--stage', '1.2-translate1')
+  assert.equal(r.status, 1, r.stdout)
+  assert.match(r.stdout, /表单未填/)
+})
+
+test('⑫ 主Agent 表单填全 → 放行', () => {
+  const dir = makeRun({ research: 'low', maxRounds: 1, useCritic: true })
+  run('step', '--run', dir)
+  writeFileSync(join(dir, 'intent.draft1.json'), JSON.stringify({ restate: 'x', openQuestions: ['a', 'b', 'c'], assumed: ['y'] }))
+  const f = JSON.parse(readFileSync(join(dir, 'forms', '1.2-translate1.json'), 'utf8'))
+  const vals = {
+    restate: '复述', openQuestions: ['q1', 'q2', 'q3'], assumed: ['a1'],
+    notInScope: ['n1'], metricHints: ['m1', 'm2']
+  }
+  for (const x of f.fields) x.value = vals[x.id]
+  writeFileSync(join(dir, 'forms', '1.2-translate1.json'), JSON.stringify(f))
+  const r = run('done', '--run', dir, '--stage', '1.2-translate1')
+  assert.equal(r.status, 0, r.stdout)
+  assert.match(r.stdout, /通过程序核对/)
+})

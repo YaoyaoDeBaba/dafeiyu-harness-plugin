@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { ticketFor } from './tickets.mjs'
+import { hasForm, writeBlankForm, checkForm } from './forms.mjs'
 
 const STAGE_DIR = 'stages'
 const TICKET_DIR = 'tickets'
@@ -295,10 +296,14 @@ function step(dir) {
       console.log(node.id + ' 通过')
       continue
     }
-    const ticket = { stage: node.id, kind: node.kind, title: node.title, check: node.check, prompt: ticketFor(dir, node) }
+    const ticket = { stage: node.id, kind: node.kind, title: node.title, check: node.check, ...(node.kind === 'manager' && hasForm(node.id) ? { form: j(dir, 'forms', node.id + '.json') } : {}), prompt: ticketFor(dir, node) }
     mkdirSync(j(dir, TICKET_DIR), { recursive: true })
     const p = j(dir, TICKET_DIR, node.id + '.json')
     writeFileSync(p, JSON.stringify(ticket, null, 2), 'utf8')
+    if (node.kind === 'manager' && hasForm(node.id)) {
+      const formPath = writeBlankForm(dir, node.id)
+      console.log('表单：' + formPath + '（必办事项，填不完不放行）')
+    }
     console.log('需要执行节点：' + node.id + '（' + (node.kind === 'manager' ? '主Agent 自己做' : '派子代理') + '）')
     console.log('  票：' + p)
     return 10
@@ -319,6 +324,8 @@ function done(dir, stageId) {
   }
   const fn = checks[node.check]
   const problems = fn ? fn(dir, node) : []
+  // 主Agent 节点：表单必填项一项都不能空（不控质量，只防遗漏）
+  if (node.kind === 'manager' && hasForm(node.id)) problems.push(...checkForm(dir, node.id))
   if (problems.length) { writeSignal(dir, stageId, 'failed', { problems }); console.log(stageId + ' 产物不合格，卡住：\n  ' + problems.join('\n  ')); return 1 }
   const extra = {}
   const dec = readJson(j(dir, 'decide.json'))
