@@ -73,40 +73,11 @@ description: 用「改参数 → 出可比较的观测 → 算判据 → 搜索�
 
 五步的产物：一张参数表（状态/管哪个指标/灵敏度）→ 一份白名单（2–3 根轴）→ 曲线 + 最优参数 → 六件套 → 一句人话结论。
 
-## 怎么跑一轮
+## 跑一轮（命令 / 产物 / 报告要素）
 
-入口是插件包里的执行器（`harness/iter.ps1`）。三样输入就够：**adapter + 预算 + 输出目录**。
+三样输入：**adapter + 预算 + 输出目录**。换目标就换 adapter，命令形状不变；跑之前先过需求转译闸（没有 `intent.json` 会直接拒跑）。
+完整命令、一次 run 的产物清单、报告里必须写清的九项、两条执行器怎么选：**`references/run-recipes.md`**。
 
-```powershell
-# 三输入就够（目标 / 白名单都写在 adapter 的 target / params 节里）
-pwsh -File <包目录>\harness\iter.ps1 -Adapter <你的 adapter.json> -Budget 60 -Out .\runs\r1
-```
-
-`widthPx` / `distM` 只是 vfx 领域那份示例 adapter 自己的参数名（现场位置用 `%VFX_LOOP_CLIENT%` 给），别的领域按自己 adapter 的 `params.list` 写，引擎不内置任何参数名：
-
-```powershell
-# vfx 领域的一份示例
-$env:VFX_LOOP_CLIENT = '<你的现场根目录>'
-pwsh -File <包目录>\harness\iter.ps1 -Adapter <包目录>\domains\vfx-render\adapters\fire-ray.json `
-     -Budget 60 -Out .\runs\r1
-```
-
-换目标（图还是数值）就换 adapter，命令形状不变。`target` / `params` 命令行没给、adapter 也没有就直接报错；`page.readbackExpr` 不给则跳过回读自检（打 warn，证据包里记 `selfCheck:false`）。
-
-一次 run 产出（都在 `-Out` 下）：`curve.csv`（每轮距离）、`best.json`（最优参数）、`report.md`（顶部有「本次运行：N done / N skipped / N degraded」汇总行）、`shots\`（target / best / 逐轮缩略）、`logs\`（每次评估的指标包）、`base\`（基线配置副本）、`nodes\`（**节点台帐**：每节点一条 `NN-<node>.json`）。
-
-**跑之前要先过需求转译闸（0.5.0；intent v2 在 0.5.1）**：默认读 `<Out>\intent.json`，没有就拒跑并写出 `intent.template.json`；确认后 `criteria` 会按 id 覆盖判据（权重 / 目标值）。
-**v2 要锚**：`anchors` 至少 1 条具体参照物（参考图 / 具体游戏名 / 前作，`kind:"image"` 的 `ref` 必须真实存在），另有 `restate` / `notWanted` / `freeVsFixed` / `howWeVerify`；
-只有"指标+权重+目标"的 v1 写法仍能跑，但会 warn 且台帐记 `degraded`。这些只进台帐与 `report.md` 顶部摘要，**不参与距离**。
-确实要跳过就显式 `-NoIntent`（台帐会记一条 `skipped intent`，跳过有名字）。怎么填见 `references/intent.md`，硬闸错误原文见 `references/intent-errors.md`，台帐与报告见 `references/ledger-and-report.md`。
-
-**纪律**：只改自己范围内的配置（**本体拒写由 adapter 的 `guard.protectPaths` 声明**，改参脚本会拒绝写进这些目录；前后交哈希）；浏览器用独立 `--user-data-dir`、按 PID 收尾；端口各 run 独占，别抢别人的；`capture.mjs` 自带父进程死亡看门狗，**判据是父进程没了，不是跑了多久**，别自己再加"超时杀"。
-
-## 报告里必须写清的东西
-
-不写这些，结论不可复验，等于没跑：
-
-`seed` ｜ 绝对时刻（ms）｜ 画质档（`-Tier`）｜ 分辨率 ｜ 端口 / CDP ｜ 命令原文 ｜ 目标来源（图还是 json）｜ 白名单（哪几根轴）｜ 预算用掉几次。
 
 ## 什么时候别用它
 
@@ -135,22 +106,9 @@ references 索引（按「我要干什么」查，别从头读）：
 | 这条规则为什么在我这条链路上没生效 | `references/chains-and-gaps.md` |
 | 写一份命令观测（`observe.type=command`） | `references/observe-command.md` |
 | 判断「这次是不是真的更好了」 | `references/observe-stability.md` |
+| 真的跑一轮：命令 / 产物清单 / 报告必须写清什么 / 两条执行器怎么选 | `references/run-recipes.md` |
 | 五步流程、活性扫描五分法、每步的判据与失败含义 | `references/workflow.md` |
 | 指标定义、跨工具换算、底噪、档位表 | `references/metrics.md` |
 | 按症状查坑（构建 / 参数 / 测量 / 传递） | `references/pitfalls.md` |
 | 第一次接别人的页面，怎么改造宿主 | `references/host-adaptation.md` |
 | vfx-render 领域现场怎么接、三份 adapter | `references/domains-vfx.md` |
-
-## 两条执行器（选一个）
-
-| 目标是什么 | 用哪个 | 观测长什么样 |
-|---|---|---|
-| 画面 / 特效 / 任何"要渲染出来才能看"的东西 | `harness/iter.ps1`（Windows：PowerShell + Edge） | 浏览器冻帧截图 → `metrics2.js` 量像素 |
-| 一串数：构建耗时、接口延迟、日志里的错误数、求解残差、内存占用 | `harness/cmdloop.mjs`（纯 node，跨平台） | 跑一条命令 → 从 stdout 取数（`json` / `number` / `line:k=v`） |
-
-```bash
-# 命令观测：三样输入就够（adapter + 预算 + 输出目录）
-node harness/cmdloop.mjs --adapter examples/command-echo.json --out runs/cmd1 --budget 40
-```
-
-判据在两条链路里是**同一份** `harness/score.js`；搜索的判据口径也一致（活性预检 + 坐标下降），所以"哪个参数是活的""这轮算不算变好"的结论读法不变。命令链路怎么写观测见 `references/observe-command.md`，怎么判断结果可信见 `references/observe-stability.md`。

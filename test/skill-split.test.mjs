@@ -27,6 +27,14 @@ function findOversized(entries, limit = REF_LIMIT) {
   return entries.filter((e) => e.chars > limit).map((e) => `${e.name} ${e.chars} 字符 > ${limit}`)
 }
 
+test('⓪ SKILL.md 当索引用：不超过 6,000 字符 / 120 行', () => {
+  const body = read(join(SKILL, 'SKILL.md'))
+  const chars = body.length
+  const lines = body.split('\n').length
+  assert.ok(chars <= 6000, `SKILL.md ${chars} 字符，超了 6,000——正文细节挪进 references`)
+  assert.ok(lines <= 120, `SKILL.md ${lines} 行，超了 120——索引不是摘要`)
+});
+
 test('① references 单篇不超过 12,000 字符', () => {
   const entries = refFiles().map((f) => ({ name: f, chars: read(join(REFS, f)).length }))
   const bad = findOversized(entries)
