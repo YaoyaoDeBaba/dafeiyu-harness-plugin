@@ -1,334 +1,519 @@
-/* Selfloop · 闭环查看器前端（零依赖，纯原生） */
 'use strict';
 
-// ============================================================
-// 全局状态
-// ============================================================
-const S = {
-  data: null,          // 最新 /api/state 聚合结果
-  selected: null,      // { png, dist, id, note, params }
-  byPng: new Map(),    // 归一化 png -> { dist, id, note, params }
-  paramCols: [],       // 曲线里的参数列（非 m:/nd: 前缀的数值列）
-  mode: 'side',        // side | overlay
-  blinkOn: false,
-  blinkTimer: null,
-  overlayPos: 50,      // 叠加分割线位置 0..100
-  curvePts: [],        // 曲线有效点
-};
-
-// ============================================================
-// 小工具
-// ============================================================
 const $ = (id) => document.getElementById(id);
 
+const S = { data: null, stage: 1, curvePts: [], byPng: new Map(), selectedPng: null };
+
+const ROLE_KEYS = ['manager', 'observer', 'researcher', 'executor'];
+const ROLE_FALLBACK = { manager: '项目经理', observer: '观察员', researcher: '调查员', executor: '执行者' };
+const MODEL_OPTIONS = ['自动', 'deepseek-v4-pro', 'deepseek-v4-flash', 'mimo-v2.6-pro', 'mimo-v2.6-flash', 'kimi-k3', 'kimi-k3.1-pro'];
+const PARAM_KEYS = ['length', 'radius', 'flow', 'sphereRadius', 'haloSize', 'flameGain', 'emberPerSec'];
+
 function esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const t = String(s == null ? '' : s);
+  return t.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function escAttr(s) { return esc(s); }
-
-function fmt(x) {
-  if (x == null) return '—';
-  if (typeof x === 'number') {
-    if (!Number.isFinite(x)) return String(x);
-    if (Number.isInteger(x)) return String(x);
-    const a = Math.abs(x);
-    const d = a >= 100 ? 0 : a >= 1 ? 2 : 4;
-    return x.toFixed(d);
+function pad(n) { return String(n).padStart(2, '0'); }
+function hhmm(v) {
+  let d = v == null || v === '' ? new Date() : new Date(v);
+  if (isNaN(d.getTime())) d = new Date();
+  return pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+function truncate(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; }
+function basename(p) { const s = String(p || ''); const i = s.lastIndexOf('/'); return i >= 0 ? s.slice(i + 1) : s; }
+function fmt(v) {
+  if (v == null || v === '') return '—';
+  const n = Number(v);
+  if (Number.isFinite(n)) {
+    if (Number.isInteger(n) && Math.abs(n) < 100000) return String(n);
+    return String(parseFloat(n.toFixed(4)));
   }
-  return String(x);
+  return String(v);
 }
-
-function normalize(p) { return String(p == null ? '' : p).replace(/\\/g, '/'); }
-function basename(p) { const n = normalize(p); const i = n.lastIndexOf('/'); return i >= 0 ? n.slice(i + 1) : n; }
-function runUrl(p) { return p ? '/run/' + normalize(p) : ''; }
-
-function paramsStr(params) {
-  const keys = Object.keys(params || {});
-  if (!keys.length) return '';
-  return keys.map((k) => k + '=' + fmt(params[k])).join(' ');
+function dist2(v) { const n = Number(v); return Number.isFinite(n) ? n.toFixed(2) : '—'; }
+function stripJsonExt(s) {
+  let t = String(s || '');
+  if (t.toLowerCase().slice(-5) === '.json') t = t.slice(0, -5);
+  return t;
 }
-
-function rowParams(r) {
-  const params = {};
-  for (const c of (S.paramCols || [])) if (r && r[c] != null) params[c] = r[c];
-  return params;
+function normalize(p) {
+  let s = String(p || '');
+  if (s.indexOf('/run/') === 0) s = s.slice('/run/'.length);
+  while (s.charAt(0) === '/') s = s.slice(1);
+  return s;
 }
-
-function el(tag, cls) { const e = document.createElement(tag); if (cls) e.className = cls; return e; }
-function span(cls, txt) { const s = el('span', cls); s.textContent = txt; return s; }
-
-let toastTimer = null;
-function flash(msg) {
-  const t = $('toast');
-  if (!t) return;
-  t.textContent = msg;
-  t.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 1400);
+function runUrl(p) {
+  if (p == null || p === '') return '';
+  const s = String(p);
+  if (s.indexOf('http:') === 0 || s.indexOf('https:') === 0) return s;
+  if (s.indexOf('/run/') === 0 || s.indexOf('/ui/') === 0) return s;
+  let t = s;
+  while (t.charAt(0) === '/') t = t.slice(1);
+  return '/run/' + t;
 }
-async function copyText(txt) {
-  try {
-    await navigator.clipboard.writeText(String(txt == null ? '' : txt));
-    flash('已复制');
-  } catch {
-    flash('复制失败（浏览器未授权剪贴板）');
-  }
-}
+function roundsArr() { const d = S.data || {}; return Array.isArray(d.rounds) ? d.rounds : []; }
+function maxRounds() { const d = S.data || {}; const b = (d.project && d.project.budget) || {}; return Number(b.maxRounds) || 0; }
 
-// ============================================================
-// 取数
-// ============================================================
 async function fetchState() {
   const res = await fetch('/api/state', { cache: 'no-store' });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
 }
 
-function derive() {
-  const d = S.data || {};
-  const known = new Set(['round', 'eval_seq', 'id', 'note', 'dist', 'pen', 'png']);
-  const header = (Array.isArray(d.curveHeader) && d.curveHeader.length)
-    ? d.curveHeader
-    : (Array.isArray(d.curve) && d.curve[0] ? Object.keys(d.curve[0]) : []);
-  S.paramCols = header.filter((h) => !known.has(h) && !String(h).startsWith('m:') && !String(h).startsWith('nd:'));
+let toastTimer = null;
+function renderToast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+function openLightbox(url) {
+  if (!url) return;
+  const lb = $('lightbox');
+  lb.innerHTML = '<img src="' + escAttr(url) + '" alt="">';
+  lb.hidden = false;
+}
+function closeLightbox() { const lb = $('lightbox'); lb.hidden = true; lb.innerHTML = ''; }
 
-  const map = new Map();
-  if (Array.isArray(d.curve)) {
-    for (const r of d.curve) {
-      if (!r || !r.png) continue;
-      const params = {};
-      for (const c of S.paramCols) if (r[c] != null) params[c] = r[c];
-      map.set(normalize(r.png), { dist: r.dist, id: r.id, note: r.note, params });
-    }
-  }
-  S.byPng = map;
+function currentStage(d) {
+  const deliver = d.deliver;
+  const rounds = Array.isArray(d.rounds) ? d.rounds : [];
+  const intent = d.intent;
+  if (deliver && (deliver.verdict || deliver.finalShot || deliver.finalRound != null)) return 4;
+  if (rounds.some((r) => r && r.status === 'running')) return 3;
+  if (intent && intent.status && intent.status !== 'confirmed') return 2;
+  if (rounds.length > 0) return 3;
+  return 1;
 }
 
-function resolveSelection() {
+function renderStepper() {
   const d = S.data || {};
-  const cur = S.selected && S.selected.png ? S.selected.png : '';
-  if (!cur) {
-    const best = d.bestPng
-      || (Array.isArray(d.curve) && d.curve.length ? d.curve[d.curve.length - 1].png : '')
-      || '';
-    S.selected = {
-      png: best,
-      dist: (d.summary && d.summary.bestDist) ?? null,
-      id: 'best', note: 'best',
-      params: (d.summary && d.summary.bestParams) || {},
-    };
+  S.stage = currentStage(d);
+  const steps = [['input', '① 投入'], ['understand', '② 理解'], ['rounds', '③ 过程'], ['deliver', '④ 交付']];
+  const nav = $('stepper');
+  let html = '';
+  for (let i = 0; i < steps.length; i++) {
+    const idx = i + 1;
+    const cls = 'step' + (idx === S.stage ? ' active' : '') + (idx < S.stage ? ' done' : '');
+    html += '<button type="button" class="' + cls + '" data-sec="' + steps[i][0] + '">' + steps[i][1] + '</button>';
+  }
+  nav.innerHTML = html;
+  nav.querySelectorAll('button').forEach((b) => {
+    b.addEventListener('click', () => {
+      const sec = document.getElementById('sec-' + b.dataset.sec);
+      if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+}
+
+function renderTopbar() {
+  const d = S.data || {};
+  const hasProject = !!d.project;
+  const p = d.project || {};
+  const rounds = roundsArr();
+  const m = maxRounds();
+  $('projname').textContent = hasProject ? (truncate(p.instruction, 20) || '（未命名项目）') : '（不是作业台）';
+  $('roundcount').textContent = hasProject ? ('项目已跑 ' + rounds.length + '/' + (m || rounds.length) + ' 轮') : '';
+  $('clock').textContent = '最后更新 ' + hhmm(d.run && d.run.mtime);
+  const banner = $('missing-banner');
+  banner.hidden = hasProject;
+  if (!hasProject) banner.innerHTML = '<span>这个目录不是作业台格式（缺 project.json）</span>';
+  const secs = ['input', 'understand', 'rounds', 'deliver'];
+  for (let i = 0; i < secs.length; i++) {
+    document.getElementById('sec-' + secs[i]).hidden = !hasProject;
+  }
+  $('stepper').hidden = !hasProject;
+  if (!hasProject) $('tech-details').open = true;
+}
+
+function roleCard(key, r) {
+  const name = (r && r.name) || ROLE_FALLBACK[key] || key;
+  const duty = (r && r.duty) || '';
+  const cur = (r && r.model) || '自动';
+  const curNorm = (cur === 'auto' || cur === '') ? '自动' : cur;
+  let opts = MODEL_OPTIONS.slice();
+  if (opts.indexOf(curNorm) < 0) opts.unshift(curNorm);
+  let sel = '<select class="role-select">';
+  for (const m of opts) sel += '<option value="' + escAttr(m) + '"' + (m === curNorm ? ' selected' : '') + '>' + esc(m) + '</option>';
+  sel += '</select>';
+  return '<div class="role-card">'
+    + '<div class="role-head"><span class="role-name">' + esc(name) + '</span>'
+    + '<span class="role-model mono">' + esc(curNorm) + '</span></div>'
+    + '<div class="role-duty">' + esc(duty) + '</div>'
+    + sel
+    + '</div>';
+}
+
+function renderInput() {
+  const d = S.data || {};
+  const p = d.project || {};
+  const intent = d.intent || {};
+  const root = $('input-root');
+  const nCrit = Array.isArray(intent.criteria) ? intent.criteria.length : null;
+
+  let html = '<div class="i-card i-need"><div class="i-label">需求</div>'
+    + '<div class="need-text">' + esc(p.instruction || '（无指令）') + '</div>'
+    + '<div class="need-sub">这句话会被转译成 ' + (nCrit != null ? nCrit : '若干') + ' 条可测判据</div>'
+    + '</div>';
+
+  const refs = Array.isArray(p.refs) ? p.refs : [];
+  html += '<div class="i-card i-refs"><div class="i-label">参考</div><div class="ref-grid">';
+  if (!refs.length) html += '<div class="empty">没有参考</div>';
+  for (const r of refs) {
+    const kind = (r && r.kind) || 'image';
+    const frameTag = (kind === 'gif' || kind === 'video')
+      ? '<span class="kind-corner">' + (kind === 'video' ? '视频' : '动图') + (r.frames != null ? ' ' + r.frames + ' 帧' : '') + '</span>'
+      : '';
+    html += '<div class="ref-card" data-full="' + escAttr(runUrl(r.path)) + '">'
+      + '<div class="ref-thumb"><img loading="lazy" src="' + escAttr(runUrl(r.path)) + '" alt=""></div>'
+      + '<span class="kind-badge kind-' + escAttr(kind) + '">' + esc(kind) + '</span>'
+      + frameTag
+      + (r.note ? '<div class="ref-note">' + esc(r.note) + '</div>' : '')
+      + '</div>';
+  }
+  html += '</div></div>';
+
+  const budget = p.budget || {};
+  const mr = Number(budget.maxRounds) || 0;
+  let dots = '';
+  for (let i = 0; i < mr; i++) dots += '<span class="dot filled">●</span>';
+  html += '<div class="i-card i-budget"><div class="i-label">预算</div>'
+    + '<div class="dots">' + (mr ? dots : '<span class="empty">未设上限</span>') + '</div>'
+    + '<div class="need-sub">' + esc(budget.note || '') + '</div>'
+    + '</div>';
+
+  const roles = p.roles || {};
+  html += '<div class="i-card i-roles"><div class="i-label">角色指派</div><div class="role-grid">';
+  for (const key of ROLE_KEYS) html += roleCard(key, roles[key]);
+  html += '</div></div>';
+
+  root.innerHTML = html;
+
+  root.querySelectorAll('.ref-card').forEach((c) => c.addEventListener('click', () => openLightbox(c.dataset.full)));
+  root.querySelectorAll('select.role-select').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      const card = sel.closest('.role-card');
+      if (card) card.querySelector('.role-model').textContent = sel.value;
+      renderToast('只读模式：角色模型由 agent 侧写入，这里仅预览');
+    });
+  });
+}
+
+function renderUnderstand() {
+  const d = S.data || {};
+  const intent = d.intent || {};
+  const research = d.research || {};
+  const root = $('understand-root');
+
+  const restate = intent.restate || '（还没有转译复述）';
+  const instr = intent.instruction || '';
+
+  let html = '<div class="u-grid"><div class="u-col u-left">'
+    + '<div class="u-label">我的理解</div>'
+    + '<div class="restate">' + esc(restate) + '</div>'
+    + (instr ? '<div class="instr-quote">' + esc(instr) + '</div>' : '')
+    + '</div>';
+
+  html += '<div class="u-col u-right">';
+  const criteria = Array.isArray(intent.criteria) ? intent.criteria : [];
+  html += '<div class="u-label">判据表</div>';
+  if (criteria.length) {
+    html += '<table class="crit-table"><thead><tr><th>要什么</th><th>你说的原话</th><th>怎么量</th><th class="num">阈值</th></tr></thead><tbody>';
+    for (const c of criteria) {
+      html += '<tr>'
+        + '<td class="anchor">' + esc((c && c.anchor) || '')
+        + ((c && c.weight != null) ? '<span class="w mono">w=' + esc(fmt(c.weight)) + '</span>' : '') + '</td>'
+        + '<td class="uw">“' + esc((c && c.userWords) || '') + '”</td>'
+        + '<td class="hm mono">' + esc((c && c.howMeasured) || '') + '</td>'
+        + '<td class="num mono">' + esc(fmt(c && c.target)) + '</td>'
+        + '</tr>';
+    }
+    html += '</tbody></table>';
+  } else {
+    html += '<div class="empty">还没有判据</div>';
+  }
+
+  const notWanted = Array.isArray(intent.notWanted) ? intent.notWanted : [];
+  html += '<div class="u-label">反例</div>';
+  html += notWanted.length
+    ? '<div class="chips">' + notWanted.map((x) => '<span class="chip chip-red">' + esc(x) + '</span>').join('') + '</div>'
+    : '<div class="empty">没有反例</div>';
+
+  const fvf = intent.freeVsFixed || {};
+  const fixed = Array.isArray(fvf.fixed) ? fvf.fixed : [];
+  const free = Array.isArray(fvf.free) ? fvf.free : [];
+  const listFn = (arr) => arr.length ? '<ul class="fv-list">' + arr.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '<div class="empty">—</div>';
+  html += '<div class="u-label">自由度</div>';
+  html += '<div class="fv-two">'
+    + '<div class="fv-box"><div class="fv-title">钉死（不能动）</div>' + listFn(fixed) + '</div>'
+    + '<div class="fv-box"><div class="fv-title">自由（随你发挥）</div>' + listFn(free) + '</div>'
+    + '</div>';
+  html += '</div></div>';
+
+  const findings = Array.isArray(research.findings) ? research.findings : [];
+  html += '<div class="u-label">调查员查到了什么</div>';
+  if (findings.length) {
+    html += '<div class="finding-list">';
+    for (const f of findings) {
+      const used = f.used ? '用上了' : '没采用';
+      const ucls = f.used ? 'tag-used' : 'tag-skip';
+      html += '<div class="finding">'
+        + '<div class="finding-main">'
+        + '<a class="finding-title" href="' + escAttr(f.url || '#') + '" target="_blank" rel="noopener">' + esc(f.title || '（无标题）') + '</a>'
+        + '<div class="finding-sum">' + esc(f.summary || '') + '</div>'
+        + '</div>'
+        + '<span class="tag ' + ucls + '">' + used + '</span>'
+        + '</div>';
+    }
+    html += '</div>';
+  } else {
+    html += '<div class="empty">还没调研</div>';
+  }
+
+  const changed = Array.isArray(research.changed) ? research.changed : [];
+  html += '<div class="changed-row">据此改了：'
+    + (changed.length ? changed.map((x) => '<span class="chip chip-accent">' + esc(x) + '</span>').join('') : '<span class="dim">（还没有）</span>')
+    + '</div>';
+
+  const status = intent.status;
+  const confirmed = status === 'confirmed';
+  const statusHtml = confirmed
+    ? '已于 ' + hhmm(intent.confirmedAt) + ' 确认'
+    : (status ? '状态：' + esc(status) : '待确认');
+  html += '<div class="u-actions">'
+    + '<button type="button" class="btn btn-primary' + (confirmed ? ' weak' : '') + '" data-act="confirm">确认，开干</button>'
+    + '<button type="button" class="btn btn-ghost' + (confirmed ? ' weak' : '') + '" data-act="revise">这里不对，我说清楚</button>'
+    + '<span class="u-status' + (confirmed ? ' ok' : '') + '">' + statusHtml + '</span>'
+    + '</div>';
+
+  root.innerHTML = html;
+  root.querySelectorAll('[data-act]').forEach((b) => {
+    b.addEventListener('click', () => {
+      renderToast(b.dataset.act === 'confirm' ? '只读模式：确认开干由 agent 侧执行' : '只读模式：这条反馈需要 agent 侧接收');
+    });
+  });
+}
+
+function roundCard(r) {
+  const status = (r && r.status) || 'reviewed';
+  const sd = { reviewed: 'gray', running: 'blue', delivered: 'green', interrupted: 'orange' }[status] || 'gray';
+  const stLabel = { reviewed: '已审', running: '进行中', delivered: '已交付', interrupted: '已打断' }[status] || status;
+  const title = 'v' + (r.n != null ? r.n : '') + ' ' + (r.title || '');
+  const shot = runUrl(r.shot);
+  const preview = r.preview || {};
+  const pkind = preview.kind || 'none';
+  const purl = preview.url || '';
+  const pUrlAbs = pkind === 'web' ? purl : runUrl(purl);
+
+  let prevBtn;
+  if (pkind === 'web') prevBtn = '<button type="button" class="btn btn-ghost btn-sm" data-prev="web" data-prev-url="' + escAttr(purl) + '">预览</button>';
+  else if (pkind === 'image') prevBtn = '<button type="button" class="btn btn-ghost btn-sm" data-prev="image" data-prev-url="' + escAttr(pUrlAbs) + '">预览</button>';
+  else prevBtn = '<button type="button" class="btn btn-ghost btn-sm" disabled title="这一版没有可运行预览">预览</button>';
+
+  const rev = r.review || {};
+  const notes = Array.isArray(rev.notes) ? rev.notes : [];
+  const notesHtml = notes.map((n) => '<div class="rev-note"><span class="dot"></span>' + esc(n) + '</div>').join('');
+  const vsRef = rev.vsRef ? '<div class="vsref">“' + esc(rev.vsRef) + '”</div>' : '';
+
+  const m = r.metrics || {};
+  const dist = m.dist != null ? m.dist : null;
+  const delta = m.deltaPct != null ? m.deltaPct : null;
+  let metricHtml = '';
+  if (dist != null) {
+    metricHtml = '<span class="metric">离参考还有 ' + dist2(dist);
+    if (delta != null) {
+      const arrow = delta < 0 ? '↓' : delta > 0 ? '↑' : '→';
+      const dcls = delta < 0 ? 'good' : delta > 0 ? 'bad' : '';
+      metricHtml += ' <span class="' + dcls + '">' + arrow + Math.abs(delta).toFixed(1) + '%</span>';
+    }
+    metricHtml += '</span>';
+  }
+
+  const changes = Array.isArray(r.changes) ? r.changes : [];
+  const changesHtml = changes.length
+    ? '<div class="chips">' + changes.map((c) => '<span class="chip">' + esc(c) + '</span>').join('') + '</div>'
+    : '';
+
+  const interruptChip = (status === 'interrupted' && r.interruptNote)
+    ? '<span class="chip chip-red">打断：' + esc(r.interruptNote) + '</span>' : '';
+
+  return '<div class="round-card status-' + escAttr(status) + '">'
+    + '<div class="round-head">'
+    + '<div class="round-title"><span class="status-dot sd-' + sd + (status === 'running' ? ' pulse' : '') + '"></span>'
+    + '<span class="rt-name">' + esc(title) + '</span>'
+    + '<span class="rt-status">' + stLabel + '</span></div>'
+    + '<div class="round-actions">' + prevBtn + '<button type="button" class="btn-stop-sm" data-stop>停在这里</button></div>'
+    + '</div>'
+    + '<div class="round-body">'
+    + (shot ? '<div class="round-shot" data-shot="' + escAttr(shot) + '"><img loading="lazy" src="' + escAttr(shot) + '" alt=""></div>' : '<div class="round-shot empty">无截图</div>')
+    + '<div class="round-review">'
+    + '<div class="rev-label">观察员评审' + (rev.model ? ' <span class="dim mono">' + esc(rev.model) + '</span>' : '') + '</div>'
+    + '<div class="verdict">' + esc(rev.verdict || '') + '</div>'
+    + notesHtml
+    + vsRef
+    + '</div>'
+    + '</div>'
+    + '<div class="round-foot">'
+    + '<div class="round-changes"><span class="ft-label">这轮改了什么</span>' + changesHtml + '</div>'
+    + metricHtml + interruptChip
+    + '</div>'
+    + '</div>';
+}
+
+function renderRounds() {
+  const rounds = roundsArr();
+  const m = maxRounds();
+  const root = $('rounds-root');
+
+  const delivered = rounds.filter((r) => r && r.status === 'delivered').length;
+  const running = rounds.find((r) => r && r.status === 'running');
+  const curN = running ? running.n : (rounds.length ? rounds[rounds.length - 1].n : 0);
+
+  let html = '<div class="rounds-sum">已交付 ' + delivered + '/' + m + ' 轮 · 当前第 ' + curN + ' 轮</div>';
+
+  if (!rounds.length) {
+    html += '<div class="empty">还没开始跑（确认理解后开始第 1 轮）</div>';
+    root.innerHTML = html;
     return;
   }
-  const n = normalize(cur);
-  const hit = S.byPng.get(n);
-  if (hit) {
-    S.selected = { png: cur, dist: hit.dist ?? null, id: hit.id, note: hit.note, params: hit.params };
-  } else if (n === normalize(d.bestPng)) {
-    S.selected = {
-      png: d.bestPng,
-      dist: (d.summary && d.summary.bestDist) ?? null,
-      id: 'best', note: 'best',
-      params: (d.summary && d.summary.bestParams) || {},
-    };
+
+  for (let i = 0; i < rounds.length; i++) {
+    html += roundCard(rounds[i]);
+    if (i < rounds.length - 1) html += '<div class="round-connector"><span>自审 →</span></div>';
   }
-  // 否则保留原样（该帧可能已在轮询更新中消失）
+  root.innerHTML = html;
+
+  root.querySelectorAll('[data-shot]').forEach((el) => el.addEventListener('click', () => openLightbox(el.dataset.shot)));
+  root.querySelectorAll('[data-prev]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const kind = el.dataset.prev;
+      const url = el.dataset.prevUrl;
+      if (kind === 'web') window.open(url, '_blank', 'noopener');
+      else if (kind === 'image') openLightbox(url);
+    });
+  });
+  root.querySelectorAll('[data-stop]').forEach((el) => el.addEventListener('click', () => renderToast('只读模式：打断需要 agent 侧执行')));
+}
+
+function renderDeliver() {
+  const d = S.data || {};
+  const deliver = d.deliver;
+  const root = $('deliver-root');
+  const rounds = roundsArr();
+
+  const hasDeliver = deliver && (deliver.verdict || deliver.finalShot || deliver.finalRound != null
+    || (Array.isArray(deliver.checks) && deliver.checks.length) || (Array.isArray(deliver.diff) && deliver.diff.length));
+
+  if (!hasDeliver) {
+    const last = rounds.length ? rounds[rounds.length - 1] : null;
+    let html = '<div class="deliver-missing">还没到交付阶段';
+    if (last && last.shot) {
+      html += '<div class="preview-note">下面用最后一轮（v' + (last.n != null ? last.n : '') + '）当预览</div>'
+        + '<div class="deliver-shot" data-shot="' + escAttr(runUrl(last.shot)) + '"><img loading="lazy" src="' + escAttr(runUrl(last.shot)) + '" alt=""></div>';
+    }
+    html += '</div>';
+    root.innerHTML = html;
+    root.querySelectorAll('[data-shot]').forEach((e) => e.addEventListener('click', () => openLightbox(e.dataset.shot)));
+    return;
+  }
+
+  const verdict = deliver.verdict || 'done';
+  const vcls = { done: 'green', partial: 'yellow', failed: 'red' }[verdict] || 'gray';
+  const vtxt = { done: '完成', partial: '部分完成', failed: '失败' }[verdict] || verdict;
+
+  const params = deliver.params || {};
+  const pKeys = Object.keys(params);
+  const paramsHtml = pKeys.length
+    ? '<table class="params-table">' + pKeys.map((k) => '<tr><td class="mono">' + esc(k) + '</td><td class="mono num">' + esc(fmt(params[k])) + '</td></tr>').join('') + '</table>'
+    : '<div class="empty">无参数</div>';
+
+  const interruptedTag = deliver.interrupted ? '<span class="tag tag-orange">中途停下</span>' : '';
+
+  const checks = Array.isArray(deliver.checks) ? deliver.checks : [];
+  const checksHtml = checks.length
+    ? '<table class="checks-table"><thead><tr><th>检查项</th><th>结果</th><th>详情</th></tr></thead><tbody>'
+      + checks.map((c) => {
+        const rcls = { pass: 'green', warn: 'yellow', fail: 'red' }[c.result] || 'gray';
+        const rtxt = { pass: '通过', warn: '有保留', fail: '不通过' }[c.result] || (c.result || '—');
+        return '<tr><td>' + esc(c.name || '') + '</td><td><span class="tag tag-' + rcls + '">' + rtxt + '</span></td><td class="dim">' + esc(c.detail || '') + '</td></tr>';
+      }).join('')
+      + '</tbody></table>'
+    : '<div class="empty">无检查记录</div>';
+
+  const diff = Array.isArray(deliver.diff) ? deliver.diff : [];
+  const diffHtml = diff.length
+    ? '<ul class="diff-list">' + diff.map((x) => '<li><span class="mono diff-file">' + esc(x.file || '') + '</span><span class="diff-change">' + esc(x.change || '') + '</span></li>').join('') + '</ul>'
+    : '<div class="empty">无改动记录</div>';
+
+  const sugg = Array.isArray(deliver.suggestion) ? deliver.suggestion : [];
+  const suggHtml = sugg.length
+    ? '<ol class="sugg-list">' + sugg.map((s) => '<li>' + esc(s) + '</li>').join('') + '</ol>'
+    : '<div class="empty">无建议</div>';
+
+  const shot = runUrl(deliver.finalShot);
+  const finalRound = deliver.finalRound != null ? deliver.finalRound : (rounds.length || '—');
+
+  root.innerHTML = '<div class="deliver-top">'
+    + (shot ? '<div class="deliver-shot" data-shot="' + escAttr(shot) + '"><img loading="lazy" src="' + escAttr(shot) + '" alt=""></div>' : '')
+    + '<div class="deliver-info">'
+    + '<div class="dv-row"><span class="dv-label">最终第 ' + finalRound + ' 轮</span>'
+    + '<span class="tag tag-' + vcls + '">' + vtxt + '</span>' + interruptedTag + '</div>'
+    + '<div class="u-label">参数</div>' + paramsHtml
+    + '</div>'
+    + '</div>'
+    + '<div class="u-label">跑过的检查</div>' + checksHtml
+    + '<div class="u-label">改动 diff</div>' + diffHtml
+    + '<div class="u-label">建议</div>' + suggHtml
+    + '<div class="u-actions">'
+    + '<button type="button" class="btn btn-primary" data-act="accept">满意，收下</button>'
+    + '<button type="button" class="btn btn-ghost" data-act="reject">不满意，说说哪里不对</button>'
+    + '</div>';
+
+  root.querySelectorAll('[data-shot]').forEach((e) => e.addEventListener('click', () => openLightbox(e.dataset.shot)));
+  root.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => renderToast('只读模式：收下/打回需要 agent 侧执行')));
+}
+
+function techKpiHtml(d) {
+  const s = d.summary || {};
+  const used = s.used != null ? s.used : (s.evaluations && s.evaluations.used);
+  const budget = s.budget;
+  const seed = s.seed, t = s.t, tier = s.tier, w = s.w, h = s.h;
+  const hash = String(s.hash || '');
+  const hash12 = hash.slice(0, 12);
+  const row = (k, v) => '<div class="kpi"><div class="k-label">' + esc(k) + '</div><div class="k-val">' + v + '</div></div>';
+  let html = '<div class="kpis">';
+  html += row('startDist → bestDist', '<span class="mono">' + esc(fmt(s.startDist)) + '</span> → <span class="mono good">' + esc(fmt(s.bestDist)) + '</span>');
+  html += row('评估 used / budget', '<span class="mono">' + esc(used != null ? used : '—') + ' / ' + esc(budget != null ? budget : '—') + '</span>');
+  html += row('seed / t / tier', '<span class="mono">' + esc(seed != null ? seed : '—') + ' / ' + esc(t != null ? t : '—') + ' / ' + esc(tier != null ? tier : '—') + '</span>');
+  html += row('尺寸 w×h', '<span class="mono">' + esc(w != null ? w : '—') + '×' + esc(h != null ? h : '—') + '</span>');
+  html += row('决策 hash', '<span class="mono" title="' + escAttr(hash) + '">' + esc(hash12 || '—') + '…</span>');
+  html += '</div>';
+  return html;
+}
+
+function rowParams(r) {
+  const o = {};
+  for (const k of PARAM_KEYS) if (r && r[k] != null) o[k] = r[k];
+  return o;
 }
 
 function selectFrame(png, dist, id, note, params) {
-  S.selected = { png: png || '', dist: dist ?? null, id: id || '', note: note || '', params: params || {} };
-  renderCompare();
-  renderCurve();
+  const fp = $('frame-preview');
+  const url = runUrl(png);
+  fp.innerHTML = '<img src="' + escAttr(url) + '" alt="">'
+    + '<div><div class="fp-meta mono">' + esc(id || basename(png)) + (note ? ' · ' + esc(note) : '') + (dist != null ? ' · d=' + esc(fmt(dist)) : '') + '</div>'
+    + (params && Object.keys(params).length ? '<div class="fp-params mono">' + esc(JSON.stringify(params)) + '</div>' : '')
+    + '</div>';
+  S.selectedPng = png;
   renderFilmstrip();
 }
 
-// ============================================================
-// 渲染 KPI
-// ============================================================
-function renderKPI() {
-  const box = $('kpis');
-  const d = S.data || {};
-  const s = d.summary || null;
-  if (!s) {
-    box.innerHTML = '<div class="kpi-banner">这个 run 没有 best.json（只有帧 / 报告 / 事件可看）</div>';
-    return;
-  }
-
-  const sd = s.startDist, bd = s.bestDist;
-  let pct = s.dropPct;
-  if (pct == null && sd != null && bd != null && sd !== 0) pct = (sd - bd) / sd * 100;
-  const good = pct != null && pct >= 0;
-  const dropBadge = pct != null
-    ? '<span class="k-sub ' + (good ? 'good' : 'bad') + '">' + (good ? '↓' : '↑') + ' ' + fmt(Math.abs(pct)) + '%</span>'
-    : '<span class="k-sub dim">—</span>';
-
-  const used = s.used ?? s.evaluations?.used ?? null;
-  const ev = s.evaluations;
-  const evSub = ev
-    ? '<span class="k-sub dim">预检' + fmt(ev.precheck) + ' · 搜索' + fmt(ev.search) + ' · 缓存' + fmt(ev.cache) + '</span>'
-    : '';
-  const metricStr = (Array.isArray(s.metricIds) && s.metricIds.length) ? s.metricIds.join(', ') : '—';
-  const aliveStr = (Array.isArray(s.alive) && s.alive.length) ? s.alive.join(',') : '—';
-  const tSub = s.stepN != null ? '<span class="k-sub dim">step ' + fmt(s.stepN) + '</span>' : '';
-  const tierSub = s.stepMs != null ? '<span class="k-sub dim">stepMs ' + fmt(s.stepMs) + '</span>' : '';
-  const wh = (s.w != null && s.h != null) ? s.w + '×' + s.h : '—';
-
-  const cards = [
-    card('距离', fmt(sd) + ' → ' + fmt(bd), dropBadge, '降幅 dropAbs=' + fmt(s.dropAbs)),
-    card('评估', fmt(used) + ' / ' + fmt(s.budget), evSub),
-    card('终止', s.stopReason || '—', '', s.stopDetail || ''),
-    card('种子 seed', fmt(s.seed), ''),
-    card('时刻 t', s.t != null ? fmt(s.t) + ' ms' : '—', tSub),
-    card('画质 tier', s.tier || '—', tierSub),
-    card('尺寸', wh, ''),
-    card('目标', (s.effect || '') + (s.block ? ' · ' + s.block : ''), s.strategy ? '<span class="k-sub dim">' + esc(s.strategy) + '</span>' : ''),
-    card('指标', metricStr, '<span class="k-sub dim">白名单 ' + esc(aliveStr) + '</span>'),
-    hashCard((s.hash || '').slice(0, 12), s.hash),
-  ];
-  box.innerHTML = cards.join('');
-
-  const hb = box.querySelector('.hash-copy');
-  if (hb) hb.addEventListener('click', () => copyText(s.hash || ''));
-}
-
-function card(label, val, sub, title) {
-  const t = title ? ' title="' + escAttr(title) + '"' : '';
-  return '<div class="kpi"' + t + '><div class="k-label">' + esc(label) + '</div>'
-    + '<div class="k-val mono">' + esc(val == null ? '—' : val) + '</div>' + (sub || '') + '</div>';
-}
-
-function hashCard(short, full) {
-  return '<div class="kpi" title="' + escAttr(full || '') + '（点击复制）"><div class="k-label">指纹 hash</div>'
-    + '<button type="button" class="k-val mono hash-copy">' + esc(short || '—') + '</button></div>';
-}
-
-// ============================================================
-// 渲染对比区
-// ============================================================
-function renderCompare() {
-  const body = $('compare-body');
-  const foot = $('compare-foot');
-  const d = S.data || {};
-  const ref = d.targetPng || '';
-  const sel = S.selected || {};
-  const cand = sel.png || d.bestPng || '';
-  const candDist = sel.dist != null ? sel.dist : null;
-  const aspect = aspectRatio(d);
-
-  stopBlink();
-
-  if (S.blinkOn) {
-    const stage = el('div', 'stage blink');
-    stage.style.aspectRatio = aspect;
-    stage.append(layerEl(ref, 'bky a'), layerEl(cand, 'bky b'));
-    stage.append(span('badge', 'A/B 闪烁'));
-    body.replaceChildren(stage);
-    foot.innerHTML = footHtml(cand, candDist, 'A/B 闪烁中：REF 与候选每 400ms 交替');
-    ensureBlink();
-    return;
-  }
-
-  if (S.mode === 'overlay') {
-    const stage = el('div', 'stage overlay');
-    stage.style.aspectRatio = aspect;
-    const candLyr = layerEl(cand, 'lyr cand');
-    candLyr.style.clipPath = 'inset(0 0 0 ' + S.overlayPos + '%)';
-    const divider = el('div', 'divider');
-    divider.style.left = S.overlayPos + '%';
-    divider.append(span('grip', '⋮'));
-    stage.append(layerEl(ref, 'lyr ref'), candLyr, divider);
-    stage.append(span('badge ref-badge', 'REF'), span('badge cand-badge', '候选'));
-    body.replaceChildren(stage);
-    foot.innerHTML = footHtml(cand, candDist, '叠加：拖动分割线切换 REF / 候选');
-    attachOverlayDrag(stage);
-    return;
-  }
-
-  const stage = el('div', 'stage side');
-  stage.append(panel(ref, 'REF', null), panel(cand, '候选', candDist));
-  body.replaceChildren(stage);
-  foot.innerHTML = footHtml(cand, candDist, '并排：左 REF 右候选');
-}
-
-function panel(png, label, dist) {
-  const fig = el('figure', 'panel');
-  const cap = el('figcaption', 'panel-cap');
-  cap.append(document.createTextNode(label + ' '), span('mono', basename(png) || '无图'));
-  if (dist != null) cap.append(span('mono dim', ' d=' + fmt(dist)));
-  const wrap = el('div', 'imgwrap');
-  wrap.append(layerEl(png, ''));
-  fig.append(cap, wrap);
-  return fig;
-}
-
-function footHtml(cand, dist, hint) {
-  const ps = paramsStr(S.selected && S.selected.params);
-  let s = '<span class="fn">' + esc(basename(cand) || '无候选') + '</span>';
-  if (dist != null) s += ' <span class="mono dim">d=' + fmt(dist) + '</span>';
-  if (ps) s += ' <span class="mono dim">' + esc(ps) + '</span>';
-  if (hint) s += '<span class="hint">' + esc(hint) + '</span>';
-  return s;
-}
-
-function aspectRatio(d) {
-  const s = d && d.summary;
-  if (s && s.w > 0 && s.h > 0) return s.w + ' / ' + s.h;
-  return '16 / 9';
-}
-
-function layerEl(src, cls) {
-  const n = normalize(src || '');
-  if (!n) {
-    const ph = el('div', (cls ? cls + ' ' : '') + 'img-fail');
-    ph.textContent = '✕ 无图';
-    return ph;
-  }
-  const img = document.createElement('img');
-  if (cls) img.className = cls;
-  img.src = runUrl(src);
-  img.alt = basename(src);
-  img.addEventListener('error', () => {
-    const ph = el('div', (cls ? cls + ' ' : '') + 'img-fail');
-    ph.textContent = '✕ ' + basename(src);
-    img.replaceWith(ph);
-  });
-  return img;
-}
-
-function ensureBlink() {
-  stopBlink();
-  if (!S.blinkOn) return;
-  const stage = $('compare-body').querySelector('.stage.blink');
-  if (stage) S.blinkTimer = setInterval(() => stage.classList.toggle('showB'), 400);
-}
-function stopBlink() { if (S.blinkTimer) { clearInterval(S.blinkTimer); S.blinkTimer = null; } }
-
-function attachOverlayDrag(stage) {
-  const cand = stage.querySelector('.lyr.cand');
-  const divider = stage.querySelector('.divider');
-  const apply = (pos) => {
-    S.overlayPos = Math.max(2, Math.min(98, pos));
-    if (cand) cand.style.clipPath = 'inset(0 0 0 ' + S.overlayPos + '%)';
-    if (divider) divider.style.left = S.overlayPos + '%';
-  };
-  const move = (clientX) => {
-    const r = stage.getBoundingClientRect();
-    if (r.width <= 0) return;
-    apply((clientX - r.left) / r.width * 100);
-  };
-  stage.addEventListener('pointerdown', (e) => { stage.setPointerCapture(e.pointerId); move(e.clientX); });
-  stage.addEventListener('pointermove', (e) => { if (e.buttons & 1) move(e.clientX); });
-}
-
-// ============================================================
-// 渲染曲线
-// ============================================================
 function renderCurve() {
   const box = $('curve');
   const d = S.data || {};
   const rows = Array.isArray(d.curve) ? d.curve : [];
-
   const pts = [];
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i] || {};
@@ -336,23 +521,19 @@ function renderCurve() {
     const y = r.dist != null ? Number(r.dist) : NaN;
     if (Number.isFinite(x) && Number.isFinite(y)) pts.push(Object.assign({}, r, { _x: x, _y: y }));
   }
-  if (!pts.length) {
-    box.innerHTML = '<div class="empty">这个 run 没有 curve.csv（或曲线为空）</div>';
-    S.curvePts = [];
-    return;
-  }
+  if (!pts.length) { box.innerHTML = '<div class="empty">这个 run 没有 curve（或曲线为空）</div>'; return; }
   pts.sort((a, b) => a._x - b._x);
   S.curvePts = pts;
 
   const xs = pts.map((p) => p._x), ys = pts.map((p) => p._y);
-  const xMin = Math.min(...xs), xMax = Math.max(...xs);
-  let yMin = Math.min(...ys), yMax = Math.max(...ys);
+  const xMin = Math.min.apply(null, xs), xMax = Math.max.apply(null, xs);
+  let yMin = Math.min.apply(null, ys), yMax = Math.max.apply(null, ys);
   if (yMax - yMin < 1e-9) { yMin -= 0.01; yMax += 0.01; }
 
-  const W = 960, H = 300, padL = 50, padR = 14, padT = 18, padB = 28;
+  const W = 960, H = 280, padL = 50, padR = 14, padT = 18, padB = 26;
   const plotW = W - padL - padR, plotH = H - padT - padB;
   const X = (x) => padL + (x - xMin) / (xMax - xMin || 1) * plotW;
-  const Y = (y) => padT + (y - yMin) / (yMax - yMin) * plotH;
+  const Y = (y) => padT + (y - yMin) / (yMax - yMin || 1) * plotH;
 
   let g = '';
   const yTicks = [yMin, (yMin + yMax) / 2, yMax];
@@ -361,103 +542,48 @@ function renderCurve() {
     g += '<line x1="' + padL + '" y1="' + yy.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + yy.toFixed(1) + '" class="grid"/>';
     g += '<text x="' + (padL - 6) + '" y="' + (yy + 3).toFixed(1) + '" class="axis" text-anchor="end">' + fmt(t) + '</text>';
   }
-  const xTicks = [xMin, (xMin + xMax) / 2, xMax];
-  for (const t of xTicks) {
-    const xx = X(t);
-    g += '<text x="' + xx.toFixed(1) + '" y="' + (H - 8) + '" class="axis" text-anchor="middle">' + fmt(t) + '</text>';
-  }
-
-  let budgetLine = '';
-  const used = (d.summary && (d.summary.used ?? d.summary.evaluations?.used)) ?? null;
-  if (used != null && used >= xMin - 1 && used <= xMax + 1) {
-    const xx = X(Math.max(xMin, Math.min(used, xMax)));
-    budgetLine = '<line x1="' + xx.toFixed(1) + '" y1="' + padT + '" x2="' + xx.toFixed(1) + '" y2="' + (padT + plotH) + '" class="budget"/>'
-      + '<text x="' + xx.toFixed(1) + '" y="' + (padT - 5) + '" class="budget-label" text-anchor="middle">预算</text>';
-  }
-
   const line = pts.map((p) => X(p._x).toFixed(2) + ',' + Y(p._y).toFixed(2)).join(' ');
 
   let bestIdx = 0;
   pts.forEach((p, i) => { if (p._y < pts[bestIdx]._y) bestIdx = i; });
 
-  const selN = normalize(S.selected && S.selected.png || '');
   let dots = '';
   pts.forEach((p, i) => {
     const cx = X(p._x).toFixed(1), cy = Y(p._y).toFixed(1);
     const note = String(p.note || '');
-    const cls = 'curve-point ' + (note === 'start' ? 'p-start' : note.indexOf('precheck') === 0 ? 'p-pre' : 'p-norm');
-    const isSel = normalize(p.png || '') === selN;
-    const isBest = i === bestIdx;
-    dots += '<circle class="' + cls + '" cx="' + cx + '" cy="' + cy + '" r="' + (isSel ? 5.5 : isBest ? 5 : 4) + '" data-i="' + i + '"'
-      + (isSel ? ' stroke="#fff" stroke-width="2"' : '')
-      + '></circle>';
-    if (isBest) {
-      dots += '<path d="M' + cx + ' ' + (parseFloat(cy) - 11).toFixed(1) + ' L' + (parseFloat(cx) + 5).toFixed(1) + ' ' + (parseFloat(cy) - 5).toFixed(1)
-        + ' L' + cx + ' ' + (parseFloat(cy) + 1).toFixed(1) + ' L' + (parseFloat(cx) - 5).toFixed(1) + ' ' + (parseFloat(cy) - 5).toFixed(1) + ' Z" class="best-flag"></path>';
-    }
+    const cls = 'curve-point ' + (note === 'start' ? 'p-start' : note.indexOf('precheck') === 0 ? 'p-pre' : 'p-norm') + (i === bestIdx ? ' is-best' : '');
+    dots += '<circle class="' + cls + '" cx="' + cx + '" cy="' + cy + '" r="' + (i === bestIdx ? 5 : 3.5) + '" data-i="' + i + '"><title>' + esc(p.id || '') + ' · d=' + esc(fmt(p.dist)) + ' · ' + esc(note) + '</title></circle>';
   });
 
   box.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" role="img">'
     + '<text x="' + (W - padR) + '" y="' + (padT + 4) + '" class="axis-title" text-anchor="end">dist（越低越靠上 = 越好）</text>'
-    + g + budgetLine
+    + g
     + '<polyline points="' + line + '" class="curve-line"/>'
     + dots
     + '</svg>';
 
   box.querySelectorAll('.curve-point').forEach((c) => {
-    const i = Number(c.dataset.i);
-    const p = S.curvePts[i];
-    c.addEventListener('click', () => selectFrame(p.png, p.dist, p.id, p.note, rowParams(p)));
-    c.addEventListener('mouseenter', (e) => showTip(e, p));
-    c.addEventListener('mousemove', (e) => moveTip(e));
-    c.addEventListener('mouseleave', hideTip);
+    c.addEventListener('click', () => {
+      const p = S.curvePts[Number(c.dataset.i)];
+      selectFrame(p.png, p.dist, p.id, p.note, rowParams(p));
+    });
   });
 }
 
-function showTip(e, p) {
-  const tip = $('tooltip');
-  const lines = [];
-  lines.push('id=' + (p.id || '—') + (p.note ? ' · ' + p.note : ''));
-  lines.push('dist=' + fmt(p.dist));
-  const ps = paramsStr(rowParams(p));
-  if (ps) lines.push(ps);
-  tip.innerHTML = lines.map((l) => '<div>' + esc(l) + '</div>').join('');
-  tip.hidden = false;
-  moveTip(e);
-}
-function moveTip(e) {
-  const tip = $('tooltip');
-  let x = e.clientX + 12, y = e.clientY + 12;
-  const r = tip.getBoundingClientRect();
-  if (x + r.width > window.innerWidth - 8) x = e.clientX - r.width - 12;
-  if (y + r.height > window.innerHeight - 8) y = e.clientY - r.height - 12;
-  tip.style.left = x + 'px';
-  tip.style.top = y + 'px';
-}
-function hideTip() { const tip = $('tooltip'); tip.hidden = true; }
-
-// ============================================================
-// 渲染胶片带
-// ============================================================
 function renderFilmstrip() {
   const box = $('filmstrip');
   const d = S.data || {};
   const shots = Array.isArray(d.shots) ? d.shots : [];
   const scrollLeft = box.scrollLeft;
-  if (!shots.length) {
-    box.innerHTML = '<div class="empty">没有截图帧（shots/ 为空）</div>';
-    return;
-  }
-  const selN = normalize(S.selected && S.selected.png || '');
+  if (!shots.length) { box.innerHTML = '<div class="empty">没有截图帧（shots/ 为空）</div>'; return; }
+  const selN = normalize(S.selectedPng || '');
   let html = '';
   for (const s of shots) {
     const n = normalize(s);
     const hit = S.byPng.get(n);
-    const dd = hit ? hit.dist : null;
     const active = n === selN ? ' active' : '';
-    html += '<button type="button" class="thumb' + active + '" data-png="' + escAttr(s) + '" title="' + escAttr(basename(s) + (dd != null ? ' · d=' + fmt(dd) : '')) + '">'
-      + '<img loading="lazy" src="' + escAttr(runUrl(s)) + '" alt="' + escAttr(basename(s)) + '">'
-      + '</button>';
+    html += '<button type="button" class="thumb' + active + '" data-png="' + escAttr(s) + '" title="' + escAttr(basename(s) + (hit && hit.dist != null ? ' · d=' + fmt(hit.dist) : '')) + '">'
+      + '<img loading="lazy" src="' + escAttr(runUrl(s)) + '" alt="' + escAttr(basename(s)) + '"></button>';
   }
   box.innerHTML = html;
   box.scrollLeft = scrollLeft;
@@ -465,50 +591,7 @@ function renderFilmstrip() {
     b.addEventListener('click', () => {
       const p = b.dataset.png;
       const hit = S.byPng.get(normalize(p));
-      selectFrame(p, hit ? hit.dist : null, hit ? hit.id : null, hit ? hit.note : null, hit ? hit.params : {});
-    });
-  });
-}
-
-// ============================================================
-// 渲染台帐
-// ============================================================
-function renderLedger() {
-  const box = $('ledger');
-  const d = S.data || {};
-  const nodes = Array.isArray(d.nodes) ? d.nodes : [];
-  if (!nodes.length) {
-    box.innerHTML = '<div class="empty">这个 run 没有台帐（0.5.0 之前的版本）</div>';
-    return;
-  }
-  const counts = { done: 0, skipped: 0, degraded: 0, failed: 0 };
-  nodes.forEach((n) => { const st = n.status || ''; if (st in counts) counts[st]++; });
-  const sorted = nodes.slice().sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
-  let html = '<div class="ledger-sum">'
-    + '<span class="st done">' + counts.done + ' done</span>'
-    + '<span class="st skipped">' + counts.skipped + ' skipped</span>'
-    + '<span class="st degraded">' + counts.degraded + ' degraded</span>'
-    + '<span class="st failed">' + counts.failed + ' failed</span>'
-    + '</div><ol class="ledger-list">';
-  for (const n of sorted) {
-    const st = n.status || 'other';
-    const name = n.node || n.name || String(n.file || '').replace(/\.json$/i, '');
-    const ms = n.ms != null ? fmt(n.ms) + 'ms' : '';
-    html += '<li class="node st-' + escAttr(st) + '">'
-      + '<button type="button" class="node-head"><span class="node-dot"></span>'
-      + '<span class="node-name mono">' + esc(name) + '</span>'
-      + '<span class="node-producer">' + esc(n.producer || '') + '</span>'
-      + '<span class="node-ms mono">' + esc(ms) + '</span></button>'
-      + '<div class="node-body" hidden>' + nodeDetail(n) + '</div>'
-      + '</li>';
-  }
-  html += '</ol>';
-  box.innerHTML = html;
-  box.querySelectorAll('.node-head').forEach((h) => {
-    h.addEventListener('click', () => {
-      const body = h.nextElementSibling;
-      body.hidden = !body.hidden;
-      h.classList.toggle('open', !body.hidden);
+      selectFrame(p, hit ? hit.dist : null, hit ? hit.id : null, hit ? hit.note : null, hit ? rowParams(hit) : {});
     });
   });
 }
@@ -520,160 +603,100 @@ function nodeDetail(n) {
   if (dec.why) parts.push(row('why', esc(dec.why)));
   if (dec.basis) parts.push(row('basis', esc(dec.basis)));
   if (Array.isArray(n.artifacts) && n.artifacts.length) parts.push(row('artifacts', esc(n.artifacts.join(', '))));
-  if (n.cost != null) {
-    let cs; try { cs = JSON.stringify(n.cost); } catch { cs = String(n.cost); }
-    parts.push(row('cost', '<span class="mono">' + esc(cs) + '</span>'));
-  }
+  if (n.cost != null) { let cs; try { cs = JSON.stringify(n.cost); } catch (e) { cs = String(n.cost); } parts.push(row('cost', '<span class="mono">' + esc(cs) + '</span>')); }
   if (!parts.length) return '<div class="d-row muted">无额外信息</div>';
   return parts.join('');
 }
 
-// ============================================================
-// 渲染报告 / 侧栏
-// ============================================================
-function renderSidebar() {
+function renderLedger() {
+  const box = $('ledger');
   const d = S.data || {};
-  const s = d.summary || null;
+  const nodes = Array.isArray(d.nodes) ? d.nodes : [];
+  if (!nodes.length) { box.innerHTML = '<div class="empty">这个 run 没有台帐（0.5.0 之前的版本）</div>'; return; }
+  const counts = { done: 0, degraded: 0, skipped: 0, failed: 0 };
+  nodes.forEach((n) => { const st = n.status || ''; if (st in counts) counts[st]++; });
+  const sorted = nodes.slice().sort((a, b) => (a.seq != null ? a.seq : 0) - (b.seq != null ? b.seq : 0));
+  let html = '<div class="ledger-sum"><span class="st done">' + counts.done + ' done</span><span class="st degraded">' + counts.degraded + ' degraded</span><span class="st skipped">' + counts.skipped + ' skipped</span><span class="st failed">' + counts.failed + ' failed</span></div><ol class="ledger-list">';
+  for (const n of sorted) {
+    const st = n.status || 'other';
+    const name = n.node || n.name || stripJsonExt(n.file);
+    const ms = n.ms != null ? fmt(n.ms) + 'ms' : '';
+    html += '<li class="node st-' + escAttr(st) + '"><button type="button" class="node-head"><span class="node-dot"></span><span class="node-name mono">' + esc(name) + '</span><span class="node-producer">' + esc(n.producer || '') + '</span><span class="node-ms mono">' + esc(ms) + '</span></button><div class="node-body" hidden>' + nodeDetail(n) + '</div></li>';
+  }
+  html += '</ol>';
+  box.innerHTML = html;
+  box.querySelectorAll('.node-head').forEach((h) => {
+    h.addEventListener('click', () => {
+      const b = h.nextElementSibling;
+      b.hidden = !b.hidden;
+      h.classList.toggle('open', !b.hidden);
+    });
+  });
+}
 
-  const ib = $('intent-box');
-  let ih = '';
-  if (s) ih += paramsBlock(s);
-  if (d.intent && typeof d.intent === 'object') ih += '<div class="sec-label">intent</div>' + renderTree(d.intent);
-  if (d.research && typeof d.research === 'object') ih += '<div class="sec-label">research</div>' + renderTree(d.research);
-  if (!ih) ih = '<div class="empty">无 intent.json / research.json</div>';
-  ib.innerHTML = ih;
-
-  const rb = $('report-box');
-  rb.innerHTML = '';
-  const head = el('div', 'report-head');
-  const btn = el('button', 'copy-btn');
-  btn.type = 'button';
-  btn.textContent = '复制全文';
-  head.append(btn);
-  const pre = el('pre', 'report-pre');
-  pre.textContent = d.report || '（无 report.md）';
-  rb.append(head, pre);
-  btn.addEventListener('click', () => copyText(d.report || ''));
-
-  const lb = $('live-box');
+function renderReportLive() {
+  const d = S.data || {};
+  $('report-pre').textContent = d.report || '（无 report.md）';
   const live = Array.isArray(d.live) ? d.live : [];
+  const lb = $('live-box');
   if (!live.length) { lb.innerHTML = '<div class="empty">无 live.jsonl</div>'; return; }
   const items = live.slice().reverse().map((ev) => {
-    let str; try { str = JSON.stringify(ev); } catch { str = String(ev); }
+    let str; try { str = JSON.stringify(ev); } catch (e) { str = String(ev); }
     const short = str.length > 240 ? str.slice(0, 240) + '…' : str;
     return '<div class="live-item mono" title="' + escAttr(str) + '">' + esc(short) + '</div>';
   }).join('');
   lb.innerHTML = '<div class="live-count mono">' + live.length + ' 条 · 最新在上</div>' + items;
 }
 
-function paramsBlock(s) {
-  const row = (k, v) => '<div class="d-row"><span class="d-k">' + esc(k) + '</span><span class="d-v mono">' + esc(v) + '</span></div>';
-  const j = (o) => { try { return JSON.stringify(o); } catch { return String(o); } };
-  let h = '<div class="sec-label">参数 / 白名单</div>';
-  h += row('白名单 alive', (Array.isArray(s.alive) && s.alive.length ? s.alive.join(', ') : '—'));
-  h += row('dead', (Array.isArray(s.dead) && s.dead.length ? s.dead.join(', ') : '—'));
-  h += row('指标 metricIds', (Array.isArray(s.metricIds) && s.metricIds.length ? s.metricIds.join(', ') : '—'));
-  h += row('起始参数', j(s.startParams || {}));
-  h += row('最佳参数', j(s.bestParams || {}));
-  return h;
-}
-
-function renderTree(obj) {
-  if (obj == null) return '<span class="nil mono">null</span>';
-  if (typeof obj !== 'object') return '<span class="mono">' + esc(fmt(obj)) + '</span>';
-  if (Array.isArray(obj)) {
-    if (!obj.length) return '<span class="nil mono">[]</span>';
-    return '<ul class="tree">' + obj.map((v, i) => '<li><span class="tk mono">' + i + '</span>' + renderTree(v) + '</li>').join('') + '</ul>';
-  }
-  const keys = Object.keys(obj);
-  if (!keys.length) return '<span class="nil mono">{}</span>';
-  return '<ul class="tree">' + keys.map((k) => '<li><span class="tk">' + esc(k) + '</span>' + renderTree(obj[k]) + '</li>').join('') + '</ul>';
-}
-
-// ============================================================
-// 汇总 / 页头
-// ============================================================
-function renderHeader() {
+function renderTechDetails() {
   const d = S.data || {};
-  const s = d.summary || null;
-  const parts = [];
-  if (d.run && d.run.name) parts.push('<span class="mono">' + esc(d.run.name) + '</span>');
-  if (d.run && d.run.dir) parts.push('<span class="dim" title="' + escAttr(d.run.dir) + '">' + esc(basename(d.run.dir)) + '</span>');
-  if (s && (s.effect || s.block)) parts.push('<span>' + esc((s.effect || '') + (s.block ? ' · ' + s.block : '')) + '</span>');
-  $('runmeta').innerHTML = parts.join('<span class="sep">/</span>');
-}
-
-function renderClock(err) {
-  const el = $('clock');
-  const d = S.data || {};
-  const now = new Date();
-  const ts = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0') + ':' + now.getSeconds().toString().padStart(2, '0');
-  let html = '最后更新 ' + esc(ts);
-  const s = d.summary;
-  if (!err && s && s.stopReason && d.run && d.run.mtime && (now.getTime() - d.run.mtime) > 30000) {
-    html += ' <span class="still">■ 已静止 · ' + esc(s.stopReason) + '</span>';
-  }
-  if (err) html = '<span class="err">连接失败：' + esc(err) + '</span>';
-  el.innerHTML = html;
-}
-
-function renderAll() {
-  renderHeader();
-  renderKPI();
-  renderCompare();
+  $('tech-kpi').innerHTML = techKpiHtml(d);
   renderCurve();
   renderFilmstrip();
   renderLedger();
-  renderSidebar();
-  renderClock();
+  renderReportLive();
 }
 
-// ============================================================
-// 轮询
-// ============================================================
+function derive() {
+  const d = S.data || {};
+  const rows = Array.isArray(d.curve) ? d.curve : [];
+  S.byPng = new Map();
+  for (const r of rows) { const png = normalize(r && r.png); if (png) S.byPng.set(png, r); }
+}
+
+function renderAll() {
+  renderTopbar();
+  renderStepper();
+  const hasProject = !!(S.data && S.data.project);
+  if (hasProject) {
+    renderInput();
+    renderUnderstand();
+    renderRounds();
+    renderDeliver();
+  }
+  renderTechDetails();
+}
+
 async function poll() {
   let d;
-  try {
-    d = await fetchState();
-  } catch (e) {
-    renderClock(e.message || String(e));
-    return;
-  }
-  const prev = S.data;
-  const changed = !prev
-    || (d.run && d.run.mtime) !== (prev.run && prev.run.mtime)
-    || (Array.isArray(d.live) ? d.live.length : 0) !== (Array.isArray(prev.live) ? prev.live.length : 0);
+  try { d = await fetchState(); }
+  catch (e) { renderToast('连接失败：' + (e && e.message ? e.message : e)); return; }
   S.data = d;
   derive();
-  resolveSelection();
-  if (changed) renderAll();
-  else renderClock();
+  renderAll();
 }
 
-// ============================================================
-// 控件接线 / 启动
-// ============================================================
+function copyText(t) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(t || '').then(() => renderToast('已复制')).catch(() => renderToast('复制失败'));
+  } else renderToast('复制失败');
+}
+
 function wireControls() {
-  $('mode-seg').querySelectorAll('button').forEach((b) => {
-    b.addEventListener('click', () => {
-      S.mode = b.dataset.mode;
-      $('mode-seg').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-      renderCompare();
-    });
-  });
-  $('blink-toggle').addEventListener('change', (e) => {
-    S.blinkOn = e.target.checked;
-    renderCompare();
-  });
-  // 胶片带缩略图加载失败 -> 占位块（error 不冒泡，用捕获阶段）
-  document.addEventListener('error', (e) => {
-    const t = e.target;
-    if (t && t.tagName === 'IMG' && t.closest('.thumb')) {
-      const ph = el('div', 'img-fail');
-      ph.textContent = '✕ ' + (t.alt || '');
-      t.replaceWith(ph);
-    }
-  }, true);
+  $('stop-btn').addEventListener('click', () => renderToast('只读模式：停下来需要 agent 侧执行'));
+  $('copy-btn').addEventListener('click', () => copyText((S.data && S.data.report) || ''));
+  $('lightbox').addEventListener('click', () => closeLightbox());
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
 }
 
 wireControls();

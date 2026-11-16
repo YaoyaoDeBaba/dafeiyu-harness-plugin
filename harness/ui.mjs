@@ -87,6 +87,18 @@ export async function buildState(runDir) {
   const intent = await safeJson(path.join(root, 'intent.json'))
   const research = await safeJson(path.join(root, 'research.json'))
   const liveText = await safeRead(path.join(root, 'live.jsonl'))
+  // 作业台层（0.14.1）：人看的四段——投入 / 理解 / 过程(轮次) / 交付
+  const project = await safeJson(path.join(root, 'project.json'))
+  const deliver = await safeJson(path.join(root, 'deliver.json'))
+  let rounds = []
+  try {
+    const files = (await readdir(path.join(root, 'rounds'))).filter((f) => f.endsWith('.json')).sort()
+    for (const f of files) {
+      const j = await safeJson(path.join(root, 'rounds', f))
+      if (j && typeof j === 'object') rounds.push({ ...j, _file: f })
+    }
+    rounds.sort((a, b) => (a.n ?? 0) - (b.n ?? 0))
+  } catch { /* 还没有轮次 */ }
 
   let shots = []
   try {
@@ -131,7 +143,7 @@ export async function buildState(runDir) {
 
   // 更新信号：跑的过程中 best.json 往往最后才写，真正会动的是 curve.csv / shots / nodes / live.jsonl
   let mtime = 0
-  for (const f of ['best.json', 'curve.csv', 'report.md', 'live.jsonl', 'shots', 'nodes']) {
+  for (const f of ['best.json', 'curve.csv', 'report.md', 'live.jsonl', 'shots', 'nodes', 'project.json', 'deliver.json', 'rounds']) {
     try { const st2 = await stat(path.join(root, f)); if (st2.mtimeMs > mtime) mtime = st2.mtimeMs } catch { /* 缺就跳过 */ }
   }
   const progress = { curveRows: curve.rows.length, shots: shots.length, nodes: nodes.length, live: live.length }
@@ -142,6 +154,9 @@ export async function buildState(runDir) {
 
   return {
     ok: true,
+    project,
+    rounds,
+    deliver,
     run: { dir: root, name: path.basename(root), mtime },
     progress,
     summary,

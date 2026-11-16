@@ -3,71 +3,74 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Selfloop · 闭环查看器</title>
+<title>Selfloop · 作业台</title>
 <link rel="stylesheet" href="/ui/app.css">
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">Selfloop <span>· 闭环查看器</span></div>
-  <div class="runmeta" id="runmeta"></div>
-  <div class="clock" id="clock">—</div>
+  <div class="projname" id="projname">…</div>
+  <nav class="stepper" id="stepper"></nav>
+  <div class="topright">
+    <span class="clock" id="clock">—</span>
+    <span id="roundcount"></span>
+    <button type="button" class="btn-stop" id="stop-btn">停下来</button>
+  </div>
 </header>
 
-<div class="layout">
-  <main class="main">
-    <section class="kpis" id="kpis"></section>
+<main class="workbench">
+  <div class="missing-banner" id="missing-banner" hidden></div>
 
-    <section class="card">
-      <div class="compare-head">
-        <div class="compare-title">主对比</div>
-        <div class="compare-controls">
-          <div class="seg" id="mode-seg">
-            <button type="button" data-mode="side" class="active">并排</button>
-            <button type="button" data-mode="overlay">叠加</button>
-          </div>
-          <label class="toggle"><input type="checkbox" id="blink-toggle"><span>A/B 闪烁</span></label>
-        </div>
+  <section class="stage-section" id="sec-input">
+    <h2 class="stage-head">① 投入</h2>
+    <div class="input-grid" id="input-root"></div>
+  </section>
+
+  <section class="stage-section" id="sec-understand">
+    <h2 class="stage-head">② 理解</h2>
+    <div id="understand-root"></div>
+  </section>
+
+  <section class="stage-section" id="sec-rounds">
+    <h2 class="stage-head">③ 过程</h2>
+    <div id="rounds-root"></div>
+  </section>
+
+  <section class="stage-section" id="sec-deliver">
+    <h2 class="stage-head">④ 交付</h2>
+    <div id="deliver-root"></div>
+  </section>
+
+  <details class="tech" id="tech-details">
+    <summary>技术细节（给 agent / 工程师看）</summary>
+    <div class="tech-root">
+      <div id="tech-kpi"></div>
+      <div class="tech-block">
+        <div class="tech-label">距离曲线（点选切帧）</div>
+        <div class="curve-wrap" id="curve"></div>
+        <div class="frame-preview" id="frame-preview"></div>
       </div>
-      <div class="compare-body" id="compare-body"></div>
-      <div class="compare-foot" id="compare-foot"></div>
-    </section>
+      <div class="tech-block">
+        <div class="tech-label">胶片带</div>
+        <div class="filmstrip" id="filmstrip"></div>
+      </div>
+      <div class="tech-block">
+        <div class="tech-label">节点台帐</div>
+        <div id="ledger"></div>
+      </div>
+      <div class="tech-block">
+        <div class="tech-label">报告 report.md</div>
+        <div class="report-head"><button type="button" class="copy-btn" id="copy-btn">复制全文</button></div>
+        <pre class="report-pre" id="report-pre"></pre>
+      </div>
+      <div class="tech-block">
+        <div class="tech-label">实时事件 live.jsonl</div>
+        <div id="live-box"></div>
+      </div>
+    </div>
+  </details>
+</main>
 
-    <section class="card">
-      <div class="card-title">距离曲线 <span class="hint">越小越好 · y 轴反向</span></div>
-      <div class="curve-wrap" id="curve"></div>
-    </section>
-
-    <section class="card">
-      <div class="card-title">胶片带</div>
-      <div class="filmstrip" id="filmstrip"></div>
-    </section>
-
-    <section class="card">
-      <div class="card-title">节点台帐</div>
-      <div id="ledger"></div>
-    </section>
-
-    <section class="card card-report">
-      <details class="report-details" open>
-        <summary>报告 report.md</summary>
-        <div id="report-box"></div>
-      </details>
-    </section>
-  </main>
-
-  <aside class="sidebar">
-    <details class="side-sec" open>
-      <summary>意图与调研</summary>
-      <div class="inner" id="intent-box"></div>
-    </details>
-    <details class="side-sec">
-      <summary>实时事件 live.jsonl</summary>
-      <div class="inner" id="live-box"></div>
-    </details>
-  </aside>
-</div>
-
-<div class="tooltip" id="tooltip" hidden></div>
+<div class="lightbox" id="lightbox" hidden></div>
 <div class="toast" id="toast"></div>
 
 <script type="module" src="/ui/app.js"></script>
