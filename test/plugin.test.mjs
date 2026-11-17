@@ -610,12 +610,12 @@ test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只�
   for (const k of ['.', './core', './cordis.patch.yml', './package.json', './locale/*.json']) {
     assert.ok(pkg.exports[k], `exports 缺 ${k}`)
   }
-  for (const need of ['lib', 'core', 'domains', 'harness', 'static', 'examples', 'skills', 'locale/*.json', 'cordis.patch.yml', 'icon.png', 'README.md']) {
+  for (const need of ['lib', 'core', 'config', 'domains', 'harness', 'static', 'examples', 'skills', 'locale/*.json', 'cordis.patch.yml', 'icon.png', 'README.md']) {
     assert.ok(pkg.files.includes(need), `files 缺 ${need}`)
   }
   assert.ok(!pkg.files.includes('adapters'), 'adapters 已搬进 domains/，根目录不该再列')
   const positives = pkg.files.filter((f) => !f.startsWith('!'))
-  assert.equal(positives.length, 15, 'files 正名单恰好 15 项（0.14.0 加 ui/、0.19.0 加 CHANGELOG-archive.md、0.26.0 加 dist/），不该有多余项')
+  assert.equal(positives.length, 16, 'files 正名单恰好 16 项（0.14.0 加 ui/、0.19.0 加 CHANGELOG-archive.md、0.26.0 加 dist/、0.27.x 加 config/（模型清单兜底）），不该有多余项')
   // 评审 §4.2：日志文件不许随包分发 —— 显式排除一条，别指望"忘了把文件挪进来"
   assert.ok(pkg.files.includes('!**/*.log'), 'files 要显式排除 *.log')
   // 白名单里的每一项都真有东西（带 * 的按"目录里至少命中一个"判）

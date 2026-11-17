@@ -1,0 +1,9 @@
+{
+  "note": "可派活的模型清单；用户可在设置页或直接改这个文件。provider/model 原样传给子代理派活，label 只给界面显示。",
+  "models": [
+    { "provider": "haituo", "model": "mimo-v2.6-pro", "label": "mimo-v2.6-pro（读图强，执行试过）" },
+    { "provider": "haituo", "model": "kimi-k3.1-pro", "label": "kimi-k3.1-pro（禁用读图）" },
+    { "provider": "haituo", "model": "deepseek-v4-pro", "label": "deepseek-v4-pro（默认执行）" },
+    { "provider": "haituo", "model": "deepseek-v4-flash", "label": "deepseek-v4-flash（快）" }
+  ]
+}

@@ -4,6 +4,40 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.28.0（未发布）· UI 大改：按轮分组、状态置顶、接单胶囊、模型下拉（用户 17 条待办的第一批）
+
+> 用户的判词：selfloop 的界面"信息组织"和"交互打断"两头都不行。这一版按契约 v2 重做数据层与面板。
+
+### 数据层（`/state` 契约 v2，见 docs/ui-contract-v2.md）
+- **`rounds[]` 按轮分组**：每轮含 意向确认 / 吐槽 / 工单 / 验收 / 评审 / 决策；**pipeline 在 2.1/2.3/2.4/2.5/1.9 交活时把产物归档到 `rounds/r<N>/`**
+  （此前 `plan/verify/review/decide` 每轮同名覆盖，历史是丢的）。
+- **`status`**：节点 → 人话（"等待子代理执行"而不是 `2.2-exec-r2`）+ `active-agents.json` 子代理名册 + 窗口状态。
+- **`title`**：`order.json` > 需求首句截 12 字 > 目录名；`orders[].title` 同源，下拉只显示标题。
+- **`models`**：优先走宿主 `llm` 服务（`listProviders` × `listModels`，45s 缓存），拿不到才退回 `config/models.json`，
+  用 `source: live|fallback` 标明来源。
+- **`/start`** 新增 `title` / `researchModel` / `execModel`，落 `<run>/order.json`（并镜像进 `order-pending.json`）。
+
+### 流程保证
+- **吐槽多消费点**：`2.5-decide` 交活时把未消费的 `user-interrupt.jsonl` 条目并入 `decide.gapsForNextRound`；
+  `checks.decided` 强制「jsonl 有条目但 decide 里没出现 → 不放行」；去重改成「前 8 字 + bigram 相似度 ≥0.72 + 包含关系」。
+
+### 面板（客户端）
+- 置顶**状态卡**（🚦 指示灯 + 🤖 子代理名册），下面 **按轮分组**：当前轮展开、历史轮折叠；
+  需求常驻可折起；意向确认答完自动折起；吐槽默认折起。
+- **胶囊**：无单=「＋ 肥鱼接单」；有单=状态胶囊；**跑单中点它只开面板**，不再弹下单框；有待确认时显示「等你确认」。
+- **接单模式**：标题输入 + **调查模型 / 执行模型两个下拉**（默认"由主 Agent 分配"）。
+- **吐槽框不再被轮询清空**：重绘前存 value+选区回填，输入中 2s 静默不重绘。
+- **提交后不停住**：卡片切成「已提交，等 Agent 继续（每 3 秒看一次）」。
+- 视觉：分类色卡片（蓝/黄/红/绿/灰）+ emoji + 三档字号；全部文案「肥鱼自治」→「肥鱼接单」。
+
+### 判据
+- 新增 `test/ui-state-v2.test.mjs`(7) / `test/ui-models.test.mjs`(8) / `test/pipeline-rounds.test.mjs`(6) / `test/client-render.test.mjs`(15)
+- `npm test` 全绿；`dist/client.cjs` 62,009 B，外壳与两槽位校验通过。
+
+### 已知未做
+- 待办 15 的第二个消费点（`3.1-summarize` 列"你说过但没处理的"）未做，需改 summary 语义，另批。
+- `3.1` 之后的收尾展示仍用旧字段。
+
 ## 0.27.1（未发布）· skill 里不替识图工具规定用法
 
 > 用户定界：selfloop 只需要知道「有识图能力可用」，怎么用写在识图工具自己的 skill 里。

@@ -8,6 +8,13 @@
 //   maxRounds: 迭代轮次上限   useCritic: 是否派观察员(false 则主Agent 直接验收)
 //
 // 用法：status / step(exit 10 = 需要执行节点，票已生成) / done --stage <id>
+//
+// 【子代理名册的约定】本文件**不写** <run>/active-agents.json。
+// 谁派子代理谁写：主 Agent 每次派活（1.3/1.4/1.5 调查员、2.2 执行员、2.4 观察员…）时，
+// 把「当前在跑的子代理及其在干什么」写进 <run>/active-agents.json，形状见 docs/ui-contract-v2.md §3：
+//   { "at": "2026-11-17T…", "agents": [ { "name": "exec-cloud4", "task": "云改 ParticleSystem" } ] }
+// 右侧栏只读这个文件展示「卡在谁身上」；不写就是空名册（UI 不会报错）。
+// 流水线这边只在 step 出票时写 active.json（主 Agent 正在处理哪个节点），两者不是一回事。
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,7 +40,78 @@ export function getBudget(dir) {
   return { research, maxRounds, useCritic, userReview, resupply }
 }
 
-const checks = {
+// ── 面板吐槽（user-interrupt.jsonl）的消费 ───────────────────────────────
+// 吐槽只落 jsonl 不消费 = 用户白说（待办 15）。统一三件事：
+//   ① 读；② 判「这条到底进没进 decide」（比文本，不看 at+text 的精确键）；
+//   ③ 去重按「前 8 字 + 相似度」——同一个意思换个标点不算两条，改口的另算一条。
+const normText = (s) => String(s == null ? '' : s).replace(/\s+/g, '').trim()
+
+function bigramDice(a, b) {
+  if (!a || !b) return 0
+  if (a === b) return 1
+  const grams = (s) => {
+    const m = new Map()
+    for (let i = 0; i < s.length - 1; i += 1) {
+      const g = s.slice(i, i + 2)
+      m.set(g, (m.get(g) || 0) + 1)
+    }
+    return m
+  }
+  const A = grams(a)
+  const B = grams(b)
+  const total = a.length - 1 + (b.length - 1)
+  if (!total) return 0
+  let hit = 0
+  for (const [g, n] of A) hit += Math.min(n, B.get(g) || 0)
+  return (2 * hit) / total
+}
+
+/** 两条吐槽是不是同一件事：前 8 字相同，或整体足够像。 */
+export function sameComplaint(a, b) {
+  const x = normText(a)
+  const y = normText(b)
+  if (!x || !y) return false
+  if (x === y) return true
+  if (x.slice(0, 8) === y.slice(0, 8)) return true
+  if (Math.min(x.length, y.length) < 4) return false // 太短不做相似度，免得把两句话并成一条
+  // 「出现在某条 field 里」也算消费了：用户原话常被主 Agent 扩写成一句话
+  if (x.includes(y) || y.includes(x)) return true
+  return bigramDice(x, y) >= 0.72
+}
+
+function readInterrupts(dir) {
+  const p = j(dir, 'user-interrupt.jsonl')
+  if (!existsSync(p)) return []
+  const out = []
+  for (const line of readFileSync(p, 'utf8').split('\n')) {
+    if (!line.trim()) continue
+    let rec
+    try { rec = JSON.parse(line) } catch { continue }
+    if (!rec || typeof rec.text !== 'string' || !rec.text.trim()) continue
+    out.push(rec)
+  }
+  return out
+}
+
+/** 把一个对象里所有字符串摊平（含 nextRoundOrders[].task 这类嵌套值）。 */
+function stringsOf(value, out) {
+  const acc = out || []
+  if (typeof value === 'string') acc.push(value)
+  else if (Array.isArray(value)) for (const v of value) stringsOf(v, acc)
+  else if (value && typeof value === 'object') for (const v of Object.values(value)) stringsOf(v, acc)
+  return acc
+}
+
+/** jsonl 里有、但 decide.json 任何字段都没出现的吐槽。 */
+export function unconsumedInterrupts(dir, decide) {
+  const d = decide === undefined ? readJson(j(dir, 'decide.json')) : decide
+  const list = readInterrupts(dir)
+  if (!d) return list
+  const hay = stringsOf(d, [])
+  return list.filter((rec) => !hay.some((s) => sameComplaint(s, rec.text)))
+}
+
+export const checks = {
   userReview(dir) {
     const u = readJson(j(dir, 'user-review.json'))
     if (!u) return ['缺 user-review.json（用户参与评审，但没收到意见）']
@@ -222,6 +300,11 @@ const checks = {
     if (d.action === 'next' && (!Array.isArray(d.nextRoundOrders) || d.nextRoundOrders.length === 0)) {
       out.push('决定 next 却没给 nextRoundOrders（下一轮打什么不说，等于空转）')
     }
+    // 吐槽必须有去处：jsonl 里有一条就要求它在 decide.json 里出现（gapsForNextRound / nextRoundOrders / 任何字段都算）
+    const pending = unconsumedInterrupts(dir, d)
+    if (pending.length) {
+      out.push('有 ' + pending.length + ' 条面板吐槽没进 decide.json（先并进 gapsForNextRound 再交活）：' + pending.map((p) => String(p.text).slice(0, 24)).join('｜'))
+    }
     return out
   },
   summarized(dir) {
@@ -352,6 +435,26 @@ function status(dir) {
 }
 
 /** 写「主 Agent 正在处理哪个环节」——乱入窗口靠它判断「主 Agent 处理中」。失败只吞。 */
+/**
+ * 每轮产物归档：plan/verify/review/decide 都是**同一个文件名每轮覆盖**，历史会丢。
+ * 这里在对应节点交活时复制一份到 rounds/r<N>/，供 UI 按轮展示与回看。
+ * 失败只警告（归档丢了不该挡住流水线）。
+ */
+function archiveRoundArtifact(dir, stageId, artifact) {
+  const m = String(stageId).match(/-r(\d+)$/)
+  const round = m ? m[1] : (/^1\.9-confirm$/.test(stageId) ? '1' : '')
+  if (!round) return
+  try {
+    const src = j(dir, artifact)
+    if (!existsSync(src)) return
+    const outDir = j(dir, 'rounds', 'r' + round)
+    mkdirSync(outDir, { recursive: true })
+    writeFileSync(j(outDir, artifact), readFileSync(src))
+  } catch (e) {
+    console.warn('  归档失败（不影响流程）：' + artifact + ' → r' + round + '：' + (e && e.message))
+  }
+}
+
 function touchActive(dir, stage, kind) {
   try {
     writeFileSync(j(dir, 'active.json'), JSON.stringify({ stage, kind, openedAt: new Date().toISOString() }, null, 2), 'utf8')
@@ -381,6 +484,29 @@ function absorbUiArtifacts(dir, stageId) {
       })
       writeFileSync(j(dir, 'intent.confirm.json'), JSON.stringify(confirm, null, 2), 'utf8')
       notes.push('意向答案已并入 intent.confirm.json（source=' + confirm.decisions.source + '，' + answers.answers.length + ' 条）')
+    }
+  }
+  // 2.5：把还没被消费的面板吐槽并进 decide.gapsForNextRound
+  // （吐槽不能只挂在 2.4b 一个钩子上：预算里 userReview=false 时 2.4b 根本不存在）
+  if (/^2\.5-decide-r(\d+)$/.test(stageId)) {
+    const decide = readJson(j(dir, 'decide.json'))
+    if (decide) {
+      const gaps = Array.isArray(decide.gapsForNextRound) ? decide.gapsForNextRound.slice() : []
+      // 逐条收：既要和 decide 里已有的比，也要和刚收进来的比（同一条说了两遍只算一条）
+      const added = []
+      for (const rec of unconsumedInterrupts(dir, decide)) {
+        const text = String(rec.text).trim()
+        if (gaps.some((g) => sameComplaint(g, text))) continue
+        if (added.some((t) => sameComplaint(t, text))) continue
+        added.push(text)
+      }
+      if (added.length) {
+        decide.gapsForNextRound = gaps.concat(added)
+        decide.uiInterrupts = (Number(decide.uiInterrupts) || 0) + added.length
+        decide.gapsSource = decide.gapsSource || 'ui-interrupt(2.5-decide)'
+        writeFileSync(j(dir, 'decide.json'), JSON.stringify(decide, null, 2), 'utf8')
+        notes.push('面板吐槽已并入 decide.gapsForNextRound（' + added.length + ' 条）')
+      }
     }
   }
   // 2.4b：把面板吐槽并入用户评审意见
@@ -471,6 +597,16 @@ function done(dir, stageId) {
   if (/^2\.5-decide-r/.test(stageId) && dec) extra.action = dec.action
   writeSignal(dir, stageId, 'done', extra)
   clearActive(dir)
+  // 每轮产物归档（供 UI 按轮回看；plan/verify/review/decide 每轮同名覆盖）
+  if (/^2\.1-plan-r\d+$/.test(stageId)) archiveRoundArtifact(dir, stageId, 'plan.json')
+  if (/^2\.3-verify-r\d+$/.test(stageId)) archiveRoundArtifact(dir, stageId, 'verify.json')
+  if (/^2\.4-critique-r\d+$/.test(stageId)) archiveRoundArtifact(dir, stageId, 'review.json')
+  if (/^2\.5-decide-r\d+$/.test(stageId)) archiveRoundArtifact(dir, stageId, 'decide.json')
+  if (/^1\.9-confirm$/.test(stageId)) {
+    archiveRoundArtifact(dir, stageId, 'intent.confirm.json')
+    if (existsSync(j(dir, 'intent.confirm.answers.json'))) archiveRoundArtifact(dir, stageId, 'intent.confirm.answers.json')
+    if (existsSync(j(dir, 'user-interrupt.jsonl'))) archiveRoundArtifact(dir, stageId, 'user-interrupt.jsonl')
+  }
   console.log(stageId + ' 通过程序核对')
   const next = currentNode(dir).node
   console.log(next ? '下一个节点：' + next.id + '（' + next.kind + '）' : '全部完成')
