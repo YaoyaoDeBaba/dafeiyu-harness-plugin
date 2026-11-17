@@ -209,3 +209,19 @@ test('非环回 Host → 403', async () => {
     await s.close()
   }
 })
+
+test('临时目录里的 run 不许写成「当前 run」（防测试污染指针）', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const { join: pjoin } = await import('node:path')
+  const { mkdtempSync: mk, existsSync: ex, readFileSync: rd } = await import('node:fs')
+  const { tmpdir: td } = await import('node:os')
+  const run = mk(pjoin(td(), 'sl-ptr-'))
+  const stateDir = mk(pjoin(td(), 'sl-state-'))
+  writeFileSync(pjoin(run, 'budget.json'), JSON.stringify({ research: 'high', maxRounds: 1 }))
+  execFileSync(process.execPath, [pjoin(import.meta.dirname, '..', 'harness', 'pipeline.mjs'), 'status', '--run', run], {
+    env: { ...process.env, DSH_SELFLOOP_STATE: stateDir },
+    stdio: 'pipe',
+  })
+  assert.equal(ex(pjoin(stateDir, 'active-run.json')), false, '临时 run 不该写 active-run.json')
+  void rd
+})

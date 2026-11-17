@@ -40,12 +40,14 @@ const CSS = [
 '.sl-chip .sl-win{color:#8a8f98;font-variant-numeric:tabular-nums}',
 '.sl-chip .sl-win.open{color:#1a73e8}',
 '.sl-hact{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:7px;border:1px solid #e3e3e8;background:#fff;font-size:12px;color:#5f6368;cursor:pointer}',
-'.sl-panel{position:fixed;top:0;right:0;bottom:0;background:#fff;border-left:1px solid #e8e8ec;z-index:60;display:none;flex-direction:column;box-shadow:-8px 0 24px rgba(0,0,0,.06);font:13px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#1f2328}',
+'.sl-panel{position:fixed;top:40px;right:0;bottom:0;background:#fff;border-top-left-radius:10px;border-left:1px solid #e8e8ec;z-index:2147483000;display:none;flex-direction:column;box-shadow:-8px 0 24px rgba(0,0,0,.06);font:13px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#1f2328}',
 '.sl-panel.on{display:flex}',
 '.sl-sh{display:flex;align-items:center;gap:6px;padding:9px 12px 0;border-bottom:1px solid #f0f0f2}',
 '.sl-tab{padding:7px 12px;font-size:12.5px;color:#8a8f98;cursor:pointer;border-bottom:2px solid transparent}',
 '.sl-tab.on{color:#1a73e8;font-weight:600;border-bottom-color:#1a73e8}',
-'.sl-fold{margin-left:auto;cursor:pointer;color:#8a8f98;padding:0 4px;font-size:14px}',
+'.sl-fold{cursor:pointer;color:#8a8f98;padding:0 6px 0 2px;font-size:15px;line-height:1}',
+'.sl-fold:hover{color:#1a73e8}',
+'.sl-title{font-size:12.5px;font-weight:600;color:#3c4043;margin-left:auto;padding-right:4px}',
 '.sl-body{flex:1;overflow:auto;padding:14px}',
 '.sl-sec{margin-bottom:16px}',
 '.sl-h{font-size:11.5px;color:#8a8f98;font-weight:600;letter-spacing:.03em;margin-bottom:7px;display:flex;align-items:center;gap:6px}',
@@ -195,11 +197,18 @@ function autonomyHtml(state, win) {
   return html
 }
 
+function panelRoundLabel() {
+  const plan = store.state && store.state.plan
+  const round = plan && plan.round ? plan.round : 1
+  return '第 ' + round + ' 轮'
+}
+
 function panelHtml(tab) {
   const body = tab === 'flow' ? metroHtml(store.state) : autonomyHtml(store.state, store.window)
-  return '<div class=\"sl-sh\"><div class=\"sl-tab ' + (tab === 'auto' ? 'on' : '') + '\" data-tab=\"auto\">肥鱼自治</div>' +
+  return '<div class=\"sl-sh\"><span class=\"sl-fold\" data-act=\"close\" title=\"收起右侧栏\">«</span>' +
+    '<div class=\"sl-tab ' + (tab === 'auto' ? 'on' : '') + '\" data-tab=\"auto\">肥鱼自治</div>' +
     '<div class=\"sl-tab ' + (tab === 'flow' ? 'on' : '') + '\" data-tab=\"flow\">流转状态</div>' +
-    '<span class=\"sl-fold\" data-act=\"close\" title=\"收起\">⇥</span></div>' +
+    '<span class=\"sl-title\">' + (panelRoundLabel()) + '</span></div>' +
     '<div class=\"sl-body\">' + body + '</div>'
 }
 
@@ -212,7 +221,9 @@ function ensurePanel() {
   panelEl.className = 'sl-panel'
   panelEl.style.width = PANEL_WIDTH + 'px'
   document.body.appendChild(panelEl)
-  panelEl.addEventListener('click', function (ev) {
+  // 用 pointerdown 而不是 click：轮询每 3s 重绘一次 innerHTML，
+  // 元素在 mousedown 与 mouseup 之间被换掉时 click 永远不触发（2026-11-17 实测：分栏点不动）。
+  panelEl.addEventListener('pointerdown', function (ev) {
     const tab = ev.target.closest('[data-tab]')
     if (tab) { panelTab = tab.getAttribute('data-tab'); drawPanel(); return }
     if (ev.target.closest('[data-act=\"close\"]')) { panelEl.classList.remove('on'); return }
@@ -221,9 +232,14 @@ function ensurePanel() {
   return panelEl
 }
 
+let lastHtml = ''
 function drawPanel() {
   if (!panelEl) return
-  panelEl.innerHTML = panelHtml(panelTab)
+  const html = panelHtml(panelTab)
+  // 内容没变就别重建 DOM：重建会打断点击，也会让滚动位置跳回顶部
+  if (html === lastHtml && panelEl.classList.contains('on')) return
+  lastHtml = html
+  panelEl.innerHTML = html
 }
 
 function togglePanel() {

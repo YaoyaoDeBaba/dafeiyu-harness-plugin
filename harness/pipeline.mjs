@@ -11,7 +11,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { ticketFor } from './tickets.mjs'
 import { hasForm, writeBlankForm, checkForm } from './forms.mjs'
 
@@ -431,9 +431,15 @@ if (isMainModule()) {
   // 记下「现在在跑哪个 run」——插件侧 UI 路由只读这个指针，不在插件里猜路径。
   // 失败一律吞掉：写指针不该影响流水线本身。
   try {
-    const stateDir = process.env.DSH_SELFLOOP_STATE || join(homedir(), '.dsh', 'dsh-selfloop')
-    mkdirSync(stateDir, { recursive: true })
-    writeFileSync(join(stateDir, 'active-run.json'), JSON.stringify({ runDir: dir, at: new Date().toISOString(), cmd }, null, 2), 'utf8')
+    // 不许被测试污染：跑在系统临时目录里的 run（fixture / 单测）不配当「当前 run」。
+    // 2026-11-17 实测：npm test 里的 pipeline.test.mjs 把 Temp 下的 fixture 写成了 active run，
+    // 界面上于是显示了一个根本不存在的实验。
+    const inTemp = resolve(dir).toLowerCase().startsWith(tmpdir().toLowerCase())
+    if (!inTemp && process.env.DSH_SELFLOOP_NO_POINTER !== '1') {
+      const stateDir = process.env.DSH_SELFLOOP_STATE || join(homedir(), '.dsh', 'dsh-selfloop')
+      mkdirSync(stateDir, { recursive: true })
+      writeFileSync(join(stateDir, 'active-run.json'), JSON.stringify({ runDir: dir, at: new Date().toISOString(), cmd }, null, 2), 'utf8')
+    }
   } catch { /* 只读文件系统也能照常跑流程 */ }
   if (cmd === 'status') { status(dir); process.exit(0) }
   if (cmd === 'step') process.exit(step(dir))
