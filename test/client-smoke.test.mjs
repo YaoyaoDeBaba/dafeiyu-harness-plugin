@@ -12,5 +12,4 @@ test('dist/client.cjs 在假宿主里能真加载并挂上两个槽位', () => {
   assert.match(out, /smoke-client 通过/)
   assert.match(out, /composer\.dock#dsh-selfloop-chip/)
   assert.match(out, /header\.actions#dsh-selfloop-header/)
-  assert.match(out, /composer\.dock#dsh-selfloop-new/)
 })

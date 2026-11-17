@@ -41,6 +41,33 @@ const CSS = [
 '.sl-dot.red{background:#e5484d;box-shadow:0 0 0 3px rgba(229,72,77,.18)}',
 '.sl-chip .sl-win{color:#8a8f98;font-variant-numeric:tabular-nums}',
 '.sl-chip .sl-win.open{color:#1a73e8}',
+'.sl-chip.on{background:#1a73e8;border-color:#1a73e8;color:#fff}',
+'.sl-chip.on .sl-dot{background:#fff}',
+'.sl-mode{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;width:min(960px,calc(100% - 40px));background:#fff;border:1px solid #cfe0fd;border-radius:16px;box-shadow:0 10px 34px rgba(26,115,232,.18);z-index:2147483000;display:none;flex-direction:column;font:13px/1.55 -apple-system,\'Segoe UI\',\'Microsoft YaHei\',sans-serif;color:#1f2328}',
+'.sl-mode.on{display:flex}',
+'.sl-mode .mhead{display:flex;align-items:center;gap:8px;padding:8px 14px;background:#f4f8ff;border-bottom:1px solid #e6effd;font-size:12px;color:#1a73e8;border-radius:16px 16px 0 0}',
+'.sl-mode .mhead .tag{background:#1a73e8;color:#fff;border-radius:5px;padding:1px 6px;font-size:11px}',
+'.sl-mode .mhead .x{margin-left:auto;cursor:pointer;color:#8a8f98}',
+'.sl-refs{display:flex;gap:8px;padding:12px 14px 0;flex-wrap:wrap}',
+'.sl-ref{width:62px;height:76px;border-radius:8px;background:linear-gradient(135deg,#dfe3e8,#cfd5dc);position:relative;overflow:hidden}',
+'.sl-ref img{width:100%;height:100%;object-fit:cover;display:block}',
+'.sl-ref .rm{position:absolute;top:2px;right:2px;width:15px;height:15px;border-radius:8px;background:rgba(0,0,0,.45);color:#fff;font-size:10px;line-height:15px;text-align:center;cursor:pointer}',
+'.sl-addref{width:62px;height:76px;border:1px dashed #c9ced6;border-radius:8px;display:grid;place-items:center;color:#9aa0a6;font-size:20px;cursor:pointer}',
+'.sl-mode textarea{width:100%;border:0;outline:0;font:inherit;font-size:13.5px;resize:none;padding:10px 14px 4px;min-height:46px;box-sizing:border-box}',
+'.sl-mode .mfoot{display:flex;align-items:center;gap:8px;padding:6px 12px 10px;font-size:12px;color:#5f6368;flex-wrap:wrap}',
+'.sl-sel{border:1px solid #e3e3e8;border-radius:7px;padding:3px 8px;background:#fbfbfc;color:#3c4043;font-size:12px}',
+'.sl-send{margin-left:auto;background:#1a73e8;color:#fff;border:0;border-radius:8px;padding:6px 14px;font-size:12.5px;cursor:pointer}',
+'.sl-send[disabled]{background:#dadce0;cursor:not-allowed}',
+'.sl-order{display:flex;align-items:center;gap:6px;padding:2px 8px;border:1px solid #e3e3e8;border-radius:7px;background:#fbfbfc;font-size:12px;cursor:pointer;color:#3c4043}',
+'.sl-menu{position:absolute;left:12px;right:12px;top:38px;background:#fff;border:1px solid #e3e3e8;border-radius:10px;box-shadow:0 14px 34px rgba(0,0,0,.14);display:none;z-index:6;overflow:hidden}',
+'.sl-menu.on{display:block}',
+'.sl-menu .it{padding:8px 10px;font-size:12.5px;border-bottom:1px solid #f4f4f6;display:flex;gap:8px;cursor:pointer}',
+'.sl-menu .it:hover{background:#f7f9fc}',
+'.sl-menu .it.cur{background:#f4f8ff}',
+'.sl-menu .it .st{margin-left:auto;color:#8a8f98;font-size:11px}',
+'.sl-newbtn{width:100%;border:1px dashed #cfe0fd;background:#f4f8ff;color:#1a73e8;border-radius:9px;padding:8px;font-size:12.5px;cursor:pointer}',
+'.sl-newbtn[disabled]{border-style:solid;border-color:#e8e8ec;background:#f7f7f8;color:#b0b4bb;cursor:not-allowed}',
+'.sl-newhint{font-size:11px;color:#9aa0a6;margin-top:6px;text-align:center}',
 '.sl-hact{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:7px;border:1px solid #e3e3e8;background:#fff;font-size:12px;color:#5f6368;cursor:pointer}',
 '.sl-panel{position:fixed;top:40px;right:0;bottom:0;background:#fff;border-top-left-radius:10px;border-left:1px solid #e8e8ec;z-index:2147483000;display:none;flex-direction:column;box-shadow:-8px 0 24px rgba(0,0,0,.06);font:13px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#1f2328}',
 '.sl-panel.on{display:flex}',
@@ -127,9 +154,14 @@ async function fetchJson(url) {
   return res.json()
 }
 
+let viewRun = ''
+function runQuery() {
+  return viewRun ? '?run=' + encodeURIComponent(viewRun) : ''
+}
+
 async function refresh() {
   try {
-    const pair = await Promise.all([fetchJson(STATE_ROUTE), fetchJson(WINDOW_ROUTE)])
+    const pair = await Promise.all([fetchJson(STATE_ROUTE + runQuery()), fetchJson(WINDOW_ROUTE + runQuery())])
     store.state = pair[0]
     store.window = pair[1]
     store.error = null
@@ -144,6 +176,32 @@ function startPolling() {
   if (pollTimer) return
   pollTimer = setInterval(refresh, POLL_MS)
 }
+
+const STATE_LABEL = {
+  'wait-requirement': '等需求',
+  'wait-reply': '等回复',
+  'vent': '来吐槽',
+  'review': '请验收',
+  'running': '运行中',
+  'finished': '已结束',
+}
+const STATE_DOT = {
+  'wait-requirement': 'wait',
+  'wait-reply': 'wait',
+  'vent': 'run',
+  'review': 'run',
+  'running': 'run',
+  'finished': 'done',
+}
+
+/** 当前会话有没有订单（有当前 run 即有订单） */
+function hasOrder() {
+  const s = store.state
+  if (!s) return false
+  return !!(s.currentNode || (s.orderState && s.orderState !== 'wait-requirement') || (s.orders || []).some(function (o) { return o.current }))
+}
+
+let composerMode = false
 
 function statusOf() {
   const cur = store.state && store.state.currentNode
@@ -161,9 +219,18 @@ function esc(s) {
 }
 
 function renderChip(el) {
-  const s = statusOf()
-  el.innerHTML = '<span class=\"sl-dot ' + s.kind + '\"></span><span>selfloop · ' + esc(s.label) + '</span>' +
-    (s.win ? '<span class=\"sl-win open\">' + esc(s.win) + '</span>' : '')
+  const orderState = (store.state && store.state.orderState) || ''
+  el.className = 'sl-chip' + (composerMode ? ' on' : '') + (hasOrder() ? '' : ' dash')
+  if (!hasOrder()) {
+    el.style.borderStyle = 'dashed'
+    el.innerHTML = '<span style="color:#1a73e8;font-weight:600">＋ 肥鱼接单</span>'
+    el.title = '把这次任务下成肥鱼接单订单'
+    return
+  }
+  el.style.borderStyle = ''
+  const dot = composerMode ? 'done' : (STATE_DOT[orderState] || 'wait')
+  el.innerHTML = '<span class="sl-dot ' + dot + '"></span><span>肥鱼接单 · ' + esc(STATE_LABEL[orderState] || '进行中') + (composerMode ? '（开启中）' : '') + '</span>'
+  el.title = composerMode ? '再点一次退出接单模式' : '点一下切到接单模式'
 }
 
 function metroHtml(state) {
@@ -258,13 +325,33 @@ function panelRoundLabel() {
   return '第 ' + round + ' 轮'
 }
 
+function orderBarHtml() {
+  const orders = (store.state && store.state.orders) || []
+  if (!orders.length) return ''
+  const cur = orders.find(function (o) { return o.current }) || orders[0]
+  const items = orders.map(function (o) {
+    return '<div class="it' + (o.current ? ' cur' : '') + '" data-order="' + esc(o.dir) + '"><span>' + esc(o.name) + '</span><span class="st">' + esc(STATE_LABEL[o.state] || o.state) + '</span></div>'
+  }).join('')
+  return '<button class="sl-order" data-act="order-menu" title="切换查看历史订单">' + esc(cur ? cur.name : '') + ' · ' + esc(STATE_LABEL[(cur && cur.state) || ''] || '') + ' ⌄</button>' +
+    '<div class="sl-menu" data-order-menu>' + items + '</div>'
+}
+
+function newOrderFooterHtml() {
+  const st = (store.state && store.state.orderState) || ''
+  const running = hasOrder() && st !== 'finished'
+  return '<div style="border-top:1px solid #f0f0f2;padding:10px 12px;background:#fcfcfd">' +
+    '<button class="sl-newbtn" data-act="new-order"' + (running ? ' disabled' : '') + '>' + (running ? '＋ 新订单（当前单进行中）' : '＋ 新订单') + '</button>' +
+    (running ? '<div class="sl-newhint">当前订单未结束，结束或交付后才能开新单</div>' : '') +
+    '</div>'
+}
+
 function panelHtml(tab) {
   const body = tab === 'flow' ? metroHtml(store.state) : autonomyHtml(store.state, store.window)
   return '<div class=\"sl-sh\"><span class=\"sl-fold\" data-act=\"close\" title=\"收起右侧栏\">«</span>' +
     '<div class=\"sl-tab ' + (tab === 'auto' ? 'on' : '') + '\" data-tab=\"auto\">肥鱼自治</div>' +
     '<div class=\"sl-tab ' + (tab === 'flow' ? 'on' : '') + '\" data-tab=\"flow\">流转状态</div>' +
-    '<span class=\"sl-title\">' + (panelRoundLabel()) + '</span></div>' +
-    '<div class=\"sl-body\">' + body + '</div>' + ventFooter(store.state, store.window)
+    '<span class=\"sl-title\">' + orderBarHtml() + '</span></div>' +
+    '<div class=\"sl-body\">' + body + '</div>' + ventFooter(store.state, store.window) + newOrderFooterHtml()
 }
 
 let panelEl = null
@@ -335,7 +422,21 @@ function ensurePanel() {
     if (tab) { panelTab = tab.getAttribute('data-tab'); drawPanel(); return }
     if (ev.target.closest('[data-act=\"close\"]')) { panelEl.classList.remove('on'); return }
     if (ev.target.closest('[data-act=\"send-vent\"]')) { sendVent(); return }
-    if (ev.target.closest('[data-act=\"submit-intent\"]')) { submitIntent(); return }
+    if (ev.target.closest('[data-act="submit-intent"]')) { submitIntent(); return }
+    if (ev.target.closest('[data-act="order-menu"]')) {
+      const menu = panelEl.querySelector('[data-order-menu]')
+      if (menu) menu.classList.toggle('on')
+      return
+    }
+    const orderItem = ev.target.closest('[data-order]')
+    if (orderItem) {
+      viewRun = orderItem.getAttribute('data-order') || ''
+      const menu = panelEl.querySelector('[data-order-menu]')
+      if (menu) menu.classList.remove('on')
+      refresh()
+      return
+    }
+    if (ev.target.closest('[data-act="new-order"]')) { toggleComposerMode(true); return }
   })
   listeners.add(function () { if (panelEl.classList.contains('on')) drawPanel() })
   panelEl.addEventListener('input', function (ev) {
@@ -369,13 +470,118 @@ function togglePanel() {
   } catch (e) { logWarn('面板打开失败：' + e.message) }
 }
 
+let modeEl = null
+let modeRefs = []
+let modeDraft = ''
+
+function ensureMode() {
+  if (modeEl && modeEl.isConnected) return modeEl
+  modeEl = document.createElement('div')
+  modeEl.className = 'sl-mode'
+  document.body.appendChild(modeEl)
+  modeEl.addEventListener('click', function (ev) {
+    if (ev.target.closest('[data-act="mode-close"]')) { toggleComposerMode(false); return }
+    if (ev.target.closest('[data-act="mode-addref"]')) {
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.multiple = true
+      input.accept = 'image/*,video/*,.txt,.md,.json,.cs,.js,.ts,.py,.ps1'
+      input.addEventListener('change', function () {
+        for (const f of Array.from(input.files || [])) modeRefs.push(f)
+        drawMode()
+      })
+      input.click()
+      return
+    }
+    const rm = ev.target.closest('[data-rm]')
+    if (rm) { modeRefs.splice(Number(rm.getAttribute('data-rm')), 1); drawMode(); return }
+    if (ev.target.closest('[data-act="mode-submit"]')) { submitMode(); return }
+  })
+  modeEl.addEventListener('input', function (ev) {
+    if (ev.target.closest('[data-req]')) modeDraft = ev.target.value
+  })
+  return modeEl
+}
+
+function drawMode() {
+  if (!modeEl) return
+  const refs = modeRefs.map(function (f, i) {
+    return '<div class="sl-ref"><span style="position:absolute;left:3px;bottom:2px;font-size:9px;color:#fff">' + esc(f.name) + '</span>' +
+      '<div class="rm" data-rm="' + i + '">×</div></div>'
+  }).join('')
+  modeEl.innerHTML =
+    '<div class="mhead"><span class="tag">肥鱼接单</span><span>描述目标 + 放参考，下单后我按闭环流程跑</span><span class="x" data-act="mode-close">退出</span></div>' +
+    '<div class="sl-refs">' + refs + '<div class="sl-addref" data-act="mode-addref">+</div></div>' +
+    '<textarea data-req rows="1" placeholder="要做什么？一句话描述目标，例如：把这个特效调成参考片的样子">' + esc(modeDraft) + '</textarea>' +
+    '<div class="mfoot">' +
+      '<select class="sl-sel" data-research><option value="high">调研 high</option><option value="max">调研 max</option><option value="mid">调研 mid</option><option value="low">调研 low</option></select>' +
+      '<select class="sl-sel" data-rounds><option>1</option><option>2</option><option selected>3</option></select>' +
+      '<span style="font-size:11.5px;color:#9aa0a6">参考：图 / 视频 / 代码</span>' +
+      '<button class="sl-send" data-act="mode-submit">下单</button>' +
+    '</div>'
+}
+
+async function submitMode() {
+  const ta = modeEl && modeEl.querySelector('[data-req]')
+  const req = String((ta && ta.value) || '').trim()
+  if (req.length < 8) { flash('需求太短了，至少 8 个字'); return }
+  if (hasOrder()) {
+    const st = (store.state && store.state.orderState) || ''
+    if (st !== 'finished') { flash('当前订单还没结束，不能在同一个会话里开新单'); return }
+  }
+  const btn = modeEl.querySelector('[data-act="mode-submit"]')
+  if (btn) { btn.disabled = true; btn.textContent = '下单中…' }
+  const refs = []
+  try {
+    for (const f of modeRefs) {
+      if (f.size > 8 * 1024 * 1024) { flash(f.name + ' 超过 8MB'); return }
+      const buf = await f.arrayBuffer()
+      const bytes = new Uint8Array(buf)
+      let bin = ''
+      for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i])
+      refs.push({ name: f.name, data: btoa(bin) })
+    }
+  } catch (e) {
+    flash('读文件失败：' + e.message)
+    return
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '下单' }
+  }
+  const budget = {
+    research: (modeEl.querySelector('[data-research]') || {}).value || 'high',
+    maxRounds: Number((modeEl.querySelector('[data-rounds]') || {}).value || 3),
+  }
+  const r = await postJson(START_ROUTE, { requirement: req, refs: refs, budget: budget })
+  if (r.status === 200) {
+    modeRefs = []
+    modeDraft = ''
+    toggleComposerMode(false)
+    await refresh()
+    flash('已下单：' + (r.data.run || '') + (refs.length ? '（' + refs.length + ' 个参考）' : ''))
+  } else {
+    flash('下单失败：' + ((r.data && r.data.error) || r.status))
+  }
+}
+
+function toggleComposerMode(next) {
+  try {
+    ensureMode()
+    composerMode = typeof next === 'boolean' ? next : !composerMode
+    modeEl.classList.toggle('on', composerMode)
+    if (composerMode) drawMode()
+    listeners.forEach(function (fn) { try { fn() } catch (e) { /* 单个订阅者失败不影响别人 */ } })
+  } catch (e) {
+    logWarn('接单模式切换失败：' + e.message)
+  }
+}
+
 function mountChip(slots, createElement) {
   function Chip() {
     const onRef = function (el) {
       if (!el || el.dataset.slReady) return
       el.dataset.slReady = '1'
       el.className = 'sl-chip'
-      el.addEventListener('click', togglePanel)
+      el.addEventListener('click', function () { toggleComposerMode() })
       listeners.add(function () { renderChip(el) })
       startPolling()
       renderChip(el)
@@ -500,7 +706,7 @@ function apply(ctx) {
     if (typeof createElement !== 'function') { logWarn('react.createElement 不是函数，UI 不挂载'); return }
     try { mountChip(slots, createElement) } catch (e) { logWarn('胶囊挂载失败：' + e.message) }
     try { mountHeaderAction(slots, createElement) } catch (e) { logWarn('标题栏按钮挂载失败：' + e.message) }
-    try { mountStartButton(slots, createElement) } catch (e) { logWarn('发起按钮挂载失败：' + e.message) }
+    // 下单入口已并入胶囊（无订单时胶囊就是「＋ 肥鱼接单」），不再单挂一颗按钮
   } catch (e) { logWarn('apply 失败：' + e.message) }
 }
 
