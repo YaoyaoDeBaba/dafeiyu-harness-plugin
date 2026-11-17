@@ -15,7 +15,7 @@ import { hasForm, writeBlankForm, checkForm } from './forms.mjs'
 
 const STAGE_DIR = 'stages'
 const TICKET_DIR = 'tickets'
-const DEFAULT_BUDGET = { research: 'high', maxRounds: 1, useCritic: true, userReview: false }
+const DEFAULT_BUDGET = { research: 'high', maxRounds: 1, useCritic: false, userReview: false, resupply: true }
 const TIER = { low: 0, mid: 1, high: 2, max: 3 }
 const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')) } catch { return null } }
 const j = (...a) => join(...a)
@@ -27,7 +27,8 @@ export function getBudget(dir) {
   const maxRounds = Number.isFinite(mr) && mr > 0 ? Math.min(20, Math.round(mr)) : DEFAULT_BUDGET.maxRounds
   const useCritic = b.useCritic === undefined ? DEFAULT_BUDGET.useCritic : Boolean(b.useCritic)
   const userReview = b.userReview === undefined ? DEFAULT_BUDGET.userReview : Boolean(b.userReview)
-  return { research, maxRounds, useCritic, userReview }
+  const resupply = b.resupply === undefined ? DEFAULT_BUDGET.resupply : Boolean(b.resupply)
+  return { research, maxRounds, useCritic, userReview, resupply }
 }
 
 const checks = {
@@ -39,6 +40,33 @@ const checks = {
     if (c.length === 0) out.push('comments 为空（用户没留意见也要明确写"无意见"）')
     if (!u.by) out.push('缺 by（谁给的评审：用户本人？）')
     if (!u.shot || !String(u.shot).trim()) out.push('缺 shot（用户评审时看的是哪张图/哪个入口）')
+    return out
+  },
+  knowledge(dir) {
+    const m = String(dir).match(/knowledge-r(\d+)$/) ? null : null
+    const node = arguments[1] || {}
+    const rm = String(node.id || '').match(/2\.6-knowledge-r(\d+)/)
+    const r = rm ? rm[1] : '1'
+    const f = readJson(j(dir, 'research.supplement-r' + r + '.json'))
+    if (!f) return ['缺 research.supplement-r' + r + '.json（没做补充知识调查）']
+    const out = []
+    const fd = Array.isArray(f.findings) ? f.findings : []
+    if (fd.length === 0) out.push('findings 为空')
+    const url = fd.filter((x) => x && typeof x.url === 'string' && /^https?:\/\//i.test(x.url))
+    if (url.length < 1) out.push('补充调研至少要有 1 条带真实 URL 的 finding')
+    const noTarget = fd.filter((x) => x && x.usedFor !== undefined && !String(x.usedFor).trim())
+    if (noTarget.length) out.push('有 finding 的 usedFor 为空')
+    if (!Array.isArray(f.targets) || f.targets.length === 0) out.push('缺 targets（这次补调研是针对哪些缺口）')
+    return out
+  },
+  nextBrief(dir) {
+    const b = readJson(j(dir, 'nextRoundBrief.json'))
+    if (!b) return ['缺 nextRoundBrief.json（补调研没被吸收成下一轮需求）']
+    const out = []
+    if (!b.goal || !String(b.goal).trim()) out.push('goal 为空（下一轮要打成什么样没说）')
+    if (!Array.isArray(b.absorbed) || b.absorbed.length === 0) out.push('absorbed 为空（调研没转成做法）')
+    if (!b.criteriaDelta || typeof b.criteriaDelta !== 'object') out.push('缺 criteriaDelta（判据增删改）')
+    if (!Array.isArray(b.orders) || b.orders.length === 0) out.push('orders 为空（下一轮没有候选工单）')
     return out
   },
   merged(dir) {
@@ -188,7 +216,11 @@ const checks = {
     const d = readJson(j(dir, 'decide.json'))
     if (!d) return ['缺 decide.json']
     if (!['next', 'stop'].includes(d.action)) return ['decide.action 只能是 next 或 stop']
-    return []
+    const out = []
+    if (d.action === 'next' && (!Array.isArray(d.nextRoundOrders) || d.nextRoundOrders.length === 0)) {
+      out.push('决定 next 却没给 nextRoundOrders（下一轮打什么不说，等于空转）')
+    }
+    return out
   },
   summarized(dir) {
     const s = readJson(j(dir, 'summary.json'))
@@ -230,10 +262,11 @@ export function roundNodes(r, budget) {
     { id: '2.3-verify-r' + r, kind: 'manager', title: '验收：能跑 / 能看', check: 'verified' }
   ]
   pushIf(n, budget.useCritic, { id: '2.4-critique-r' + r, kind: 'worker', title: '观察员：逐条对判据评审', check: 'critiqued' })
-  // 用户参与评审（开关）：观察员评完 → 用户看 → 主Agent 吸收合并，再进决策
-  pushIf(n, budget.userReview, { id: '2.4b-userreview-r' + r, kind: 'human', title: '用户参与评审（等人给意见）', check: 'userReview' })
-  pushIf(n, budget.userReview, { id: '2.4c-merge-r' + r, kind: 'manager', title: '主Agent：吸收合并观察员与用户的意见', check: 'merged' })
-  n.push({ id: '2.5-decide-r' + r, kind: 'manager', title: '评估是否派下一轮', check: 'decided' })
+  pushIf(n, budget.userReview, { id: '2.4b-userreview-r' + r, kind: 'human', title: '用户评审（等人给意见）', check: 'userReview' })
+  n.push({ id: '2.5-decide-r' + r, kind: 'manager', title: '判断是否下一轮（吸收观察员/用户意见）', check: 'decided' })
+  // 只有  决定 next 才有意义：定向补调研 + 主Agent 转成下一轮需求
+  pushIf(n, budget.resupply, { id: '2.6-knowledge-r' + r, kind: 'worker', title: '补充知识调查（按本轮缺口定向查）', check: 'knowledge' })
+  pushIf(n, budget.resupply, { id: '2.7-absorb-r' + r, kind: 'manager', title: '吸收调研 → 输出下一轮需求', check: 'nextBrief' })
   return n
 }
 
@@ -273,7 +306,12 @@ export function currentNode(dir) {
   })
   for (const n of nodes) {
     const rm = String(n.id).match(/-r(\d+)$/)
-    if (rm && stoppedAt > 0 && Number(rm[1]) > stoppedAt) continue
+    if (rm && stoppedAt > 0) {
+      const rr = Number(rm[1])
+      // 后续轮次整轮跳过；本轮里 decide 之后的补调研/吸收也跳过
+      if (rr > stoppedAt) continue
+      if (rr === stoppedAt && /^2\.(6|7)-/.test(String(n.id))) continue
+    }
     const s = signals[n.id]
     if (!s || s.status !== 'done') return { node: n, signals, budget }
   }
@@ -298,7 +336,10 @@ function status(dir) {
   for (const n of nodes) {
     const s = r.signals[n.id]
     const rm = String(n.id).match(/-r(\d+)$/)
-    const skippedByStop = rm && stopAt > 0 && Number(rm[1]) > stopAt
+    const skippedByStop = rm && stopAt > 0 && (
+      Number(rm[1]) > stopAt ||
+      (Number(rm[1]) === stopAt && /^2\.(6|7)-/.test(String(n.id)))
+    )
     const mark = skippedByStop ? '--' : !s ? '..' : s.status === 'done' ? 'OK' : 'NO'
     const owner = n.kind === 'manager' ? '[主Agent]' : n.kind === 'worker' ? '[子代理]' : n.kind === 'human' ? '[用户]  ' : '[程序]  '
     console.log('  [' + mark + '] ' + n.id.padEnd(20) + ' ' + owner + ' ' + n.title)

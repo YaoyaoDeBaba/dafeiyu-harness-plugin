@@ -4,6 +4,23 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.25.0（未发布）· 执行阶段重排：验收 → [观察员] → [用户评审] → 决策 → 补调研 → 吸收
+
+> 用户定的新顺序，并补上漏掉的一环（补调研没人吸收等于白查）。
+
+- **开关默认值调整**：`useCritic` 默认 **false**（观察员改成可选）、`userReview` 默认 false、
+  新增 `resupply` 默认 **true**（只在 decide=next 时触发）。
+- **取消 `2.4c-merge`**：合并并入 `2.5-decide`（它本来就要产出 nextRoundOrders），少一个节点。
+- **新增 `2.6-knowledge-rN`（子代理）**：按 `decide.nextRoundOrders` 定向补调研，
+  写 `research.supplement-rN.json`（targets + findings + gaps），要求 ≥1 条真 URL。
+- **新增 `2.7-absorb-rN`（主Agent）**：把补调研转成下一轮需求 `nextRoundBrief.json`
+  （goal / absorbed / criteriaDelta / orders / notDoing / budgetNote），表单 5 项必填。
+  下一轮 `2.1-plan` 的票里固定要求先读它。
+- **decide 加严**：`action: "next"` 却没给 `nextRoundOrders` → 硬错（不许空转）。
+- **stop 时自动跳过本轮的 2.6/2.7**（status 里标 `[--]`）。
+- `preflight` 写的默认 budget.json 同步新默认值。
+- 测试 255 → 258（默认开关、stop 跳过、decide 加严、补调研缺文件）。
+
 ## 0.24.0（未发布）· 用户参与评审：执行阶段每轮可插入「用户评审 → 主Agent 合并」
 
 > 用户要求：执行阶段的每轮评审+返修，可以加入「用户参与评审 → 主Agent 吸收合并」的开关。

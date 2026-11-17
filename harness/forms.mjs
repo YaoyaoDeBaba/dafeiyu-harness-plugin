@@ -84,6 +84,16 @@ const FORMS = {
       { id: 'nextRoundOrders', label: '合并后得出的下一轮工单（任务 / 完成判据）', type: 'list', minItems: 1 }
     ]
   },
+  '2.7-absorb': {
+    title: '吸收补充调研 → 输出下一轮需求',
+    fields: [
+      { id: 'absorbed', label: '吸收了哪几条调研：来源 / 说了什么 / 改了哪条做法', type: 'list', minItems: 1 },
+      { id: 'goal', label: '下一轮要打成什么样（一句话，可验收）', type: 'text' },
+      { id: 'criteriaDelta', label: '判据增删改：新增/修改/删除各是什么、阈值来源', type: 'list', minItems: 1 },
+      { id: 'orders', label: '候选工单：任务 / 完成判据', type: 'list', minItems: 1 },
+      { id: 'notDoing', label: '本轮明确不碰的（防范围蔓延）', type: 'list', minItems: 1 }
+    ]
+  },
   '2.5-decide': {
     title: '评估：要不要再来一轮',
     fields: [

@@ -34,7 +34,7 @@ test('① 默认预算：research=high、1 轮、观察员开；节点表含 1.3
   assert.ok(list.includes('1.3-research-env'))
   assert.ok(list.includes('1.4-research-doc'))
   assert.ok(!list.includes('1.5-research-ref'), 'high 档不含参考调查')
-  assert.ok(list.includes('2.4-critique-r1'))
+  assert.ok(!list.includes('2.4-critique-r1'), '观察员默认关')
   assert.ok(!list.includes('2.2-exec-r2'), '默认只 1 轮')
 })
 
@@ -143,10 +143,10 @@ test('⑫ 主Agent 表单填全 → 放行', () => {
   assert.match(r.stdout, /通过程序核对/)
 })
 
-test('⑬ userReview 开关打开 → 评审后多出「用户评审(human)」与「合并(manager)」两个节点', () => {
-  const list = ids(makeRun({ research: 'low', maxRounds: 1, useCritic: true, userReview: true }))
+test('⑬b userReview 打开 → 出现用户评审节点；合并已并入 decide，不再单独存在', () => {
+  const list = ids(makeRun({ research: 'low', maxRounds: 1, useCritic: false, userReview: true }))
   assert.ok(list.includes('2.4b-userreview-r1'), '缺用户评审节点')
-  assert.ok(list.includes('2.4c-merge-r1'), '缺合并节点')
+  assert.ok(!list.includes('2.4c-merge-r1'), '合并节点应已取消')
 })
 
 test('⑭ userReview 关（默认）→ 不出现这两个节点', () => {
@@ -168,15 +168,49 @@ test('⑮ 用户评审节点：step 返回 11（等人），没意见文件不�
   assert.match(d.stdout, /user-review\.json/)
 })
 
-test('⑯ 合并节点：缺 conflicts / nextRoundOrders 不放行', () => {
-  const dir = makeRun({ research: 'low', maxRounds: 1, useCritic: true, userReview: true })
+test('⑰ 默认：观察员关、用户评审关、补调研开；decide 后有 2.6/2.7', () => {
+  const list = ids(makeRun({ research: 'low', maxRounds: 1 }))
+  assert.ok(!list.includes('2.4-critique-r1'), '观察员默认关')
+  assert.ok(!list.includes('2.4b-userreview-r1'), '用户评审默认关')
+  assert.ok(list.includes('2.6-knowledge-r1'), '补调研默认开')
+  assert.ok(list.includes('2.7-absorb-r1'), '吸收节点默认开')
+  assert.ok(!list.includes('2.4c-merge-r1'), '合并节点已并入 decide')
+})
+
+test('⑱ decide=stop 时 2.6/2.7 一并跳过', () => {
+  const dir = makeRun({ research: 'low', maxRounds: 1 })
+  mkdirSync(join(dir, 'stages'), { recursive: true })
+  const done = (id, extra) => writeFileSync(join(dir, 'stages', id + '.json'), JSON.stringify(Object.assign({ stage: id, status: 'done', by: 'pipeline' }, extra || {})))
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1', '2.2-exec-r1', '2.3-verify-r1']) done(id)
+  done('2.5-decide-r1', { action: 'stop' })
+  const r = run('status', '--run', dir)
+  assert.match(r.stdout, /当前节点：3\.1-summarize/)
+  assert.match(r.stdout, /\[--\] 2\.6-knowledge-r1/)
+})
+
+test('⑲ decide=next 但没给 nextRoundOrders → 卡住', () => {
+  const dir = makeRun({ research: 'low', maxRounds: 1 })
   mkdirSync(join(dir, 'stages'), { recursive: true })
   const done = (id) => writeFileSync(join(dir, 'stages', id + '.json'), JSON.stringify({ stage: id, status: 'done', by: 'pipeline' }))
-  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1', '2.2-exec-r1', '2.3-verify-r1', '2.4-critique-r1']) done(id)
-  writeFileSync(join(dir, 'user-review.json'), JSON.stringify({ by: '用户', shot: 'shots/a.png', comments: [{ point: '云是矩形', severity: 'high' }], verdict: '不合格' }))
-  done('2.4b-userreview-r1')
-  writeFileSync(join(dir, 'review.merged.json'), JSON.stringify({ fromCritic: [{ id: 'C1', pass: false }], fromUser: [{ point: '云是矩形' }] }))
-  const r = run('done', '--run', dir, '--stage', '2.4c-merge-r1')
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1', '2.2-exec-r1', '2.3-verify-r1']) done(id)
+  writeFileSync(join(dir, 'decide.json'), JSON.stringify({ action: 'next', why: 'x' }))
+  mkdirSync(join(dir, 'forms'), { recursive: true })
+  writeFileSync(join(dir, 'forms', '2.5-decide-r1.json'), JSON.stringify({ stage: '2.5-decide-r1', fields: [
+    { id: 'action', label: 'a', type: 'enum', value: 'next' }, { id: 'why', label: 'b', type: 'text', value: 'x' },
+    { id: 'gapsForNextRound', label: 'c', type: 'list', value: ['g'] }, { id: 'budgetNote', label: 'd', type: 'text', value: 'ok' }
+  ]}))
+  const r = run('done', '--run', dir, '--stage', '2.5-decide-r1')
   assert.equal(r.status, 1, r.stdout)
-  assert.match(r.stdout, /conflicts|nextRoundOrders/)
+  assert.match(r.stdout, /nextRoundOrders/)
+})
+
+test('⑳ 补调研缺 supplement 文件 → 2.6 卡住', () => {
+  const dir = makeRun({ research: 'low', maxRounds: 1 })
+  mkdirSync(join(dir, 'stages'), { recursive: true })
+  const done = (id, extra) => writeFileSync(join(dir, 'stages', id + '.json'), JSON.stringify(Object.assign({ stage: id, status: 'done', by: 'pipeline' }, extra || {})))
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1', '2.2-exec-r1', '2.3-verify-r1']) done(id)
+  done('2.5-decide-r1', { action: 'next' })
+  const r = run('done', '--run', dir, '--stage', '2.6-knowledge-r1')
+  assert.equal(r.status, 1, r.stdout)
+  assert.match(r.stdout, /supplement-r1/)
 })

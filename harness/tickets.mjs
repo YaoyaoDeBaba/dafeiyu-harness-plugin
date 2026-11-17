@@ -66,9 +66,23 @@ const PHASE1 = {
 }
 
 const ROUND = {
+  knowledge: (dir, r, id) => [
+    '你是**调查员**（补充知识）。这一轮只做一件事：按本轮暴露的缺口做**定向**调研，写 ' + j(dir, 'research.supplement-r' + r + '.json') + '。',
+    '缺口来源：' + j(dir, 'decide.json') + ' 的 nextRoundOrders（每条就是你要查的方向）。',
+    '格式：{ round, targets:[缺口id或描述], findings:[{title,url,kind,what,how,usedFor}], gaps:[] }。',
+    '硬约束：至少 1 条带真实 URL；查不到写进 gaps，不许编；不许改代码与上游文件。',
+    doneLine(dir, id)
+  ].join('\n'),
+  absorb: (dir, r, id) => [
+    '你是**主Agent**。只做一件事：把补充调研转成**下一轮需求**，写 ' + j(dir, 'nextRoundBrief.json') + '。',
+    '读 ' + j(dir, 'research.supplement-r' + r + '.json') + ' 与 ' + j(dir, 'decide.json') + '。',
+    '格式：{ round, goal, absorbed:[{from,what,apply}], criteriaDelta:{add:[],modify:[],drop:[]}, orders:[{id,task,done_when}], notDoing:[], budgetNote }。',
+    '会填 ' + j(dir, 'forms', id + '.json') + ' 的表（5 项必填）。',
+    doneLine(dir, id)
+  ].join('\n'),
   plan: (dir, r, id) => [
     '你是**主Agent**。第 ' + r + ' 轮开工前：列工单 + 配执行员，写 ' + j(dir, 'plan.json') + '。',
-    '读 requirement.md / research.json / intent.json' + (r > 1 ? '、上一轮 rounds/' + String(r - 1).padStart(2, '0') + '.json 与 review.json' : '') + '。',
+    '读 requirement.md / research.json / intent.json' + (r > 1 ? '、上一轮 rounds/' + String(r - 1).padStart(2, '0') + '.json、decide.json 与 **nextRoundBrief.json**（下一轮需求就写在里面）' : '') + '。',
     '格式：{ round, orders:[{id, task, done_when}], executor:{model, why} }。',
     'executor.model 写你打算用来干这一轮的具体模型名。',
     doneLine(dir, id)
@@ -120,6 +134,10 @@ export function ticketFor(dir, node) {
   if (um) return USER_REVIEW(dir, um[1], node.id)
   const id = String(node.id)
   if (PHASE1[id]) return PHASE1[id](dir, id)
+  const km = id.match(/^2\.6-knowledge-r(\d+)$/)
+  if (km) return ROUND.knowledge(dir, km[1], id)
+  const am = id.match(/^2\.7-absorb-r(\d+)$/)
+  if (am) return ROUND.absorb(dir, am[1], id)
   const m = id.match(/^2\.(\d)-(\w+)-r(\d+)$/)
   if (m && ROUND[m[2]]) return ROUND[m[2]](dir, m[3], id)
   if (id === '3.1-summarize') {

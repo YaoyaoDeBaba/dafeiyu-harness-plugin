@@ -79,7 +79,7 @@ const budgetPath = join(dir, 'budget.json')
 if (!checkOnly && !existsSync(budgetPath)) {
   writeFileSync(budgetPath, JSON.stringify({
     _说明: 'research: low|mid|high|max（调查强度）| maxRounds: 迭代轮次上限 | useCritic: 是否派观察员',
-    research: 'high', maxRounds: 1, useCritic: true
+    research: 'high', maxRounds: 1, useCritic: false, userReview: false, resupply: true
   }, null, 2), 'utf8')
 }
 
