@@ -509,6 +509,30 @@ function absorbUiArtifacts(dir, stageId) {
       }
     }
   }
+  // 3.1：把「说过但总结里没提到的」吐槽列进 summary.unhandledInterrupts
+  // 用户在界面吐槽过、但最终没进任何一轮工单的，必须被交到用户眼前（待办 15 的第二个消费点）
+  if (/^3\.1-summarize$/.test(stageId)) {
+    const lines = existsSync(j(dir, 'user-interrupt.jsonl')) ? readFileSync(j(dir, 'user-interrupt.jsonl'), 'utf8').split('\n').filter(Boolean) : []
+    const summary = readJson(j(dir, 'summary.json'))
+    if (lines.length && summary) {
+      const text = String(summary.text || '')
+      const unhandled = []
+      const seen = []
+      for (const line of lines) {
+        let rec
+        try { rec = JSON.parse(line) } catch { continue }
+        if (sameComplaint(rec.text, text)) continue
+        if (seen.some((x) => sameComplaint(x.text, rec.text))) continue
+        seen.push(rec)
+        unhandled.push({ at: rec.at, stage: rec.stage, text: rec.text, expired: !!rec.expired })
+      }
+      if (unhandled.length) {
+        summary.unhandledInterrupts = unhandled
+        writeFileSync(j(dir, 'summary.json'), JSON.stringify(summary, null, 2), 'utf8')
+        notes.push('有 ' + unhandled.length + ' 条吐槽没进任何工单，已列进 summary.unhandledInterrupts')
+      }
+    }
+  }
   // 2.4b：把面板吐槽并入用户评审意见
   if (/^2\.4b-userreview-r(\d+)$/.test(stageId)) {
     const lines = existsSync(j(dir, 'user-interrupt.jsonl')) ? readFileSync(j(dir, 'user-interrupt.jsonl'), 'utf8').split('\n').filter(Boolean) : []
