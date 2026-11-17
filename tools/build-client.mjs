@@ -34,6 +34,15 @@ const checks = [
   [text.includes("inject('conversation.composer.dock'"), '没有挂 composer.dock'],
   [text.includes("inject('conversation.session.header.actions'"), '没有挂 header.actions'],
 ]
+// 语法判据：外壳内那一段必须能被 JS 引擎解析（2026-11-17 实测漏过一次：
+// CSS 数组少了个 ']'，字符串检查全过、装上去整页 boot 失败）
+try {
+  // eslint-disable-next-line no-new-func
+  new Function('require', body)
+} catch (e) {
+  checks.push([false, '客户端代码有语法错误：' + e.message])
+}
+
 let bad = 0
 for (const [ok, message] of checks) {
   if (!ok) {

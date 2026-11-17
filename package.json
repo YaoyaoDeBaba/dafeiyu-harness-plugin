@@ -50,7 +50,7 @@
     }
   },
   "scripts": {
-    "test": "node test/plugin.test.mjs && node test/hue.test.mjs && node test/command.test.mjs && node test/intent.test.mjs && node test/watch.test.mjs && node test/domain-assets.test.mjs && node test/invariants.test.mjs && node test/audit.test.mjs && node test/crash.test.mjs && node test/research.test.mjs && node test/metrics.test.mjs && node test/mask-sentinel.test.mjs && node test/skill-split.test.mjs && node test/demand-translator.test.mjs && node test/ui.test.mjs && node test/ref-probe.test.mjs && node test/research-gate.test.mjs && node test/preflight.test.mjs && node test/pipeline.test.mjs && node test/ui-routes.test.mjs && node test/client-bundle.test.mjs",
+    "test": "node test/plugin.test.mjs && node test/hue.test.mjs && node test/command.test.mjs && node test/intent.test.mjs && node test/watch.test.mjs && node test/domain-assets.test.mjs && node test/invariants.test.mjs && node test/audit.test.mjs && node test/crash.test.mjs && node test/research.test.mjs && node test/metrics.test.mjs && node test/mask-sentinel.test.mjs && node test/skill-split.test.mjs && node test/demand-translator.test.mjs && node test/ui.test.mjs && node test/ref-probe.test.mjs && node test/research-gate.test.mjs && node test/preflight.test.mjs && node test/pipeline.test.mjs && node test/ui-routes.test.mjs && node test/client-bundle.test.mjs && node test/client-smoke.test.mjs",
     "ui": "node harness/ui.mjs",
     "build:client": "node tools/build-client.mjs"
   },
