@@ -202,6 +202,13 @@ function hasOrder() {
 }
 
 let composerMode = false
+let lastChipEl = null
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('resize', function () {
+    if (composerMode && modeEl) alignModeToHost(lastChipEl)
+  })
+}
 
 function statusOf() {
   const cur = store.state && store.state.currentNode
@@ -473,6 +480,53 @@ function togglePanel() {
 let modeEl = null
 let modeRefs = []
 let modeDraft = ''
+let modeHost = null
+let modeHostPrev = ''
+
+/**
+ * 从胶囊往上找「真实输入框容器」：最近一个包含 textarea / contenteditable 的祖先。
+ * 为什么从胶囊找而不是 document.querySelector：胶囊本身就在 composer.dock 里，
+ * 沿祖先链找最稳，不依赖宿主的类名（那玩意会变）。
+ */
+function findComposerHost(fromEl) {
+  let node = fromEl
+  let best = null
+  for (let i = 0; i < 8 && node; i += 1) {
+    const hasInput = node.querySelector && node.querySelector('textarea,[contenteditable="true"]')
+    if (hasInput && node.getBoundingClientRect) {
+      const r = node.getBoundingClientRect()
+      // 只认「像输入框那条」的容器：太高就把整页都藏了（2026-11-17 差点踩）
+      if (r.height > 40 && r.height <= 340 && r.width > 240) best = node
+    }
+    node = node.parentElement
+  }
+  return best
+}
+
+/** 把我们这块按真实输入框的矩形摆好（宽/底部对齐），并把握不住的宿主藏起来。 */
+function alignModeToHost(chipEl) {
+  if (!modeEl) return
+  const host = findComposerHost(chipEl) || findComposerHost(modeEl)
+  if (!host) return
+  const rect = host.getBoundingClientRect()
+  modeEl.style.left = rect.left + 'px'
+  modeEl.style.width = rect.width + 'px'
+  modeEl.style.bottom = Math.max(8, window.innerHeight - rect.bottom) + 'px'
+  modeEl.style.transform = 'none'
+  if (modeHost !== host) {
+    if (modeHost && modeHostPrev !== undefined) modeHost.style.visibility = modeHostPrev
+    modeHost = host
+    modeHostPrev = host.style.visibility || ''
+  }
+  host.style.visibility = 'hidden'
+}
+
+function releaseModeHost() {
+  if (modeHost) {
+    modeHost.style.visibility = modeHostPrev || ''
+    modeHost = null
+  }
+}
 
 function ensureMode() {
   if (modeEl && modeEl.isConnected) return modeEl
@@ -563,12 +617,17 @@ async function submitMode() {
   }
 }
 
-function toggleComposerMode(next) {
+function toggleComposerMode(next, chipEl) {
   try {
     ensureMode()
     composerMode = typeof next === 'boolean' ? next : !composerMode
     modeEl.classList.toggle('on', composerMode)
-    if (composerMode) drawMode()
+    if (composerMode) {
+      alignModeToHost(chipEl || lastChipEl)
+      drawMode()
+    } else {
+      releaseModeHost()
+    }
     listeners.forEach(function (fn) { try { fn() } catch (e) { /* 单个订阅者失败不影响别人 */ } })
   } catch (e) {
     logWarn('接单模式切换失败：' + e.message)
@@ -581,7 +640,8 @@ function mountChip(slots, createElement) {
       if (!el || el.dataset.slReady) return
       el.dataset.slReady = '1'
       el.className = 'sl-chip'
-      el.addEventListener('click', function () { toggleComposerMode() })
+      lastChipEl = el
+      el.addEventListener('click', function () { toggleComposerMode(undefined, el) })
       listeners.add(function () { renderChip(el) })
       startPolling()
       renderChip(el)
