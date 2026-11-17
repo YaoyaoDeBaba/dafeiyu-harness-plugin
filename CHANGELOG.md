@@ -4,6 +4,23 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.26.3（未发布）· 让流程**真的消费**界面写下来的东西（这才是「能跑」）
+
+> 0.26.2 交付后用户一句话点破：「这只是一个界面交互体验吧？还没有真的能跑吧？」
+> 查证属实：面板填的答案与吐槽都落了盘，但 `pipeline.mjs` 里对它们的引用是 0 条。
+
+- **意向答案并入流程**：`done --stage 1.9-confirm` 时，若存在 `intent.confirm.answers.json`，
+  自动并入 `intent.confirm.json`（`answers` + `decisions.source = "user(ui)"` + 时间）。
+  没填答案时仍是 `default(no-ui)`，两种来源可区分。
+- **吐槽并入评审**：`done --stage 2.4b-userreview-rN` 时，把 `user-interrupt.jsonl` 的记录并入
+  `user-review.json.comments`（带 `source: ui-interrupt` / `ui-interrupt(expired)`），按
+  `at+text` 去重，重复交活不会并两次。
+- **active.json 落地**：`step` 出票时写（`{stage, kind, openedAt}`），`done` 清理；
+  乱入窗口的「主 Agent 处理中」分支从此有真实依据（之前只有 fixture 里有，真实流程从不写）。
+- 判据：`test/ui-consume.test.mjs` 3 条（答案并入、吐槽并入且标 expired、去重）；
+  该测试按真实 CLI 跑 `step`/`done`，并正确对待退出码 10/11。
+- 版本 0.26.3。
+
 ## 0.26.2（未发布）· 从「看得见」做到「能用」：吐槽可发、意向可提交、参考可见
 
 > 0.26.1 只做到「看得见」，用户点进去发现说不话、选不了、也没图。这一版补齐三块。

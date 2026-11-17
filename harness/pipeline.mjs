@@ -8,7 +8,7 @@
 //   maxRounds: 迭代轮次上限   useCritic: 是否派观察员(false 则主Agent 直接验收)
 //
 // 用法：status / step(exit 10 = 需要执行节点，票已生成) / done --stage <id>
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, tmpdir } from 'node:os'
@@ -351,6 +351,70 @@ function status(dir) {
   return r.node
 }
 
+/** 写「主 Agent 正在处理哪个环节」——乱入窗口靠它判断「主 Agent 处理中」。失败只吞。 */
+function touchActive(dir, stage, kind) {
+  try {
+    writeFileSync(j(dir, 'active.json'), JSON.stringify({ stage, kind, openedAt: new Date().toISOString() }, null, 2), 'utf8')
+  } catch { /* 只读目录也能照常跑 */ }
+}
+
+function clearActive(dir) {
+  try {
+    const p = j(dir, 'active.json')
+    if (existsSync(p)) rmSync(p)
+  } catch { /* 同上 */ }
+}
+
+/** 消费 UI 写下来的东西：意向答案并入确认单、吐槽并入用户评审。 */
+function absorbUiArtifacts(dir, stageId) {
+  const notes = []
+  // 1.9：意向确认单 + 面板提交的答案
+  if (/^1\.9-confirm$/.test(stageId)) {
+    const answers = readJson(j(dir, 'intent.confirm.answers.json'))
+    const confirm = readJson(j(dir, 'intent.confirm.json'))
+    if (answers && Array.isArray(answers.answers) && answers.answers.length && confirm) {
+      confirm.answers = answers.answers
+      confirm.decisions = Object.assign({}, confirm.decisions || {}, {
+        source: answers.whoDecided === 'user' ? 'user(ui)' : 'default(no-ui)',
+        answers: answers.answers,
+        answeredAt: answers.at,
+      })
+      writeFileSync(j(dir, 'intent.confirm.json'), JSON.stringify(confirm, null, 2), 'utf8')
+      notes.push('意向答案已并入 intent.confirm.json（source=' + confirm.decisions.source + '，' + answers.answers.length + ' 条）')
+    }
+  }
+  // 2.4b：把面板吐槽并入用户评审意见
+  if (/^2\.4b-userreview-r(\d+)$/.test(stageId)) {
+    const lines = existsSync(j(dir, 'user-interrupt.jsonl')) ? readFileSync(j(dir, 'user-interrupt.jsonl'), 'utf8').split('\n').filter(Boolean) : []
+    const review = readJson(j(dir, 'user-review.json'))
+    if (lines.length && review) {
+      const seen = new Set((review.comments || []).map((c) => String(c.evidence || c.point || '')))
+      const added = []
+      for (const line of lines) {
+        let rec
+        try { rec = JSON.parse(line) } catch { continue }
+        const key = 'ui-interrupt:' + rec.at + ':' + rec.text
+        if (seen.has(key)) continue
+        seen.add(key)
+        added.push({
+          point: rec.text,
+          severity: 'user-ui',
+          evidence: key,
+          source: 'ui-interrupt' + (rec.expired ? '(expired)' : ''),
+          stage: rec.stage,
+        })
+      }
+      if (added.length) {
+        review.comments = (review.comments || []).concat(added)
+        review.uiInterrupts = (review.uiInterrupts || 0) + added.length
+        writeFileSync(j(dir, 'user-review.json'), JSON.stringify(review, null, 2), 'utf8')
+        notes.push('面板吐槽已并入 user-review.json（' + added.length + ' 条）')
+      }
+    }
+  }
+  return notes
+}
+
 function step(dir) {
   for (let guard = 0; guard < 60; guard += 1) {
     const { node } = currentNode(dir)
@@ -365,6 +429,7 @@ function step(dir) {
     }
     const ticket = { stage: node.id, kind: node.kind, title: node.title, check: node.check, ...(node.kind === 'manager' && hasForm(node.id) ? { form: j(dir, 'forms', node.id + '.json') } : {}), prompt: ticketFor(dir, node) }
     mkdirSync(j(dir, TICKET_DIR), { recursive: true })
+    touchActive(dir, node.id, node.kind)
     const p = j(dir, TICKET_DIR, node.id + '.json')
     writeFileSync(p, JSON.stringify(ticket, null, 2), 'utf8')
     if (node.kind === 'manager' && hasForm(node.id)) {
@@ -394,6 +459,8 @@ function done(dir, stageId) {
     console.log('顺序不对：当前节点是 ' + (cur ? cur.id : '(已完成)') + '，不是 ' + stageId + '。上游信号没到，不许提前交活。')
     return 3
   }
+  const absorbed = absorbUiArtifacts(dir, stageId)
+  if (absorbed.length) absorbed.forEach((n) => console.log('  · ' + n))
   const fn = checks[node.check]
   const problems = fn ? fn(dir, node) : []
   // 主Agent 节点：表单必填项一项都不能空（不控质量，只防遗漏）
@@ -403,6 +470,7 @@ function done(dir, stageId) {
   const dec = readJson(j(dir, 'decide.json'))
   if (/^2\.5-decide-r/.test(stageId) && dec) extra.action = dec.action
   writeSignal(dir, stageId, 'done', extra)
+  clearActive(dir)
   console.log(stageId + ' 通过程序核对')
   const next = currentNode(dir).node
   console.log(next ? '下一个节点：' + next.id + '（' + next.kind + '）' : '全部完成')
