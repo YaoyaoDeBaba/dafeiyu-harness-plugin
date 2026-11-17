@@ -4,6 +4,23 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.27.0（未发布）· P0 三件一起补：GIF 拆帧、会话绑定、下单后「等接手」
+
+> 用户要求：视频下一期，**GIF 必须做**（雷暴参考就是 GIF）；P0 三件一口气做完，尽快推进试运行。
+
+- **GIF 拆帧（客户端）**：下单时用浏览器 `ImageDecoder` 逐帧解 GIF（上限 60 帧），导成
+  `<名>-gNNN.png` 一起上传，落进 `run/refs/`；拿不到 ImageDecoder 时不阻塞下单，界面提示
+  「GIF 未能拆帧，可能量不了」。视频仍不支持（下一期）。
+- **会话 ↔ 订单绑定**：客户端探测会话键（`__DSH_BOOT__` → `[data-session-id]` → URL → global），
+  所有请求带 `?session=`；宿主按会话写 `active-run-<会话>.json`，并同时维护全局指针兼容单会话。
+  判据：`test/ui-session.test.mjs`（两会话各一单互不覆盖）。
+- **下单后可被接手**：`/start` 多写一份 `<run>/order-pending.json`；没有 stage 的新单
+  `orderState = wait-agent`（界面显示「等接手」，CTA 说明"接手后先量参考再出 1.1 的票"）。
+- **skill 补一节**：GIF/视频与「双通道识图」（豆包网页免 key + mimo API，模型用 `mimo-v2.6-pro`，
+  两者交叉比对；模型读图只当线索，用户文字优先），细节放 `references/reference-reading.md`，
+  SKILL.md 只加一行索引（守住 6000 字符上限）。
+- 判据：`ui-session.test.mjs` 2 条 + `ui-orders/ui-start/ui-extra/ui-consume` 全绿。
+
 ## 0.26.6（未发布）· 接单模式不再是「浮层假装切换」：按真实输入框矩形对齐并隐藏原框
 
 > 用户一眼看穿：「你做了一个接单模式的聊天框覆盖在上面，假装是切换……别一看就穿帮（漏出原聊天框）」。

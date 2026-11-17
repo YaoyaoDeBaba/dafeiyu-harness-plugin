@@ -26,6 +26,22 @@ const ANSWERS_ROUTE = '/plugins/dsh-selfloop/intent-answers'
 const SHOT_ROUTE = '/plugins/dsh-selfloop/shot'
 const START_ROUTE = '/plugins/dsh-selfloop/start'
 
+/** 会话键：一个 DSH 会话一个订单（用户规则）。探测顺序：全局钩子 → DOM 属性 → URL → global。 */
+function sessionKey() {
+  try {
+    const g = typeof window !== 'undefined' ? window : undefined
+    const boot = g && g.__DSH_BOOT__
+    const guess = (boot && (boot.sessionId || (boot.session && boot.session.id))) ||
+      (g && g.__DSH_SESSION__ && g.__DSH_SESSION__.id)
+    if (guess) return String(guess)
+    const el = document.querySelector('[data-session-id]')
+    if (el) return String(el.getAttribute('data-session-id'))
+    const m = String(location.pathname + location.hash).match(/session[\/=-]([0-9a-fA-F-]{8,})/)
+    if (m) return m[1]
+  } catch (e) { /* 探测失败就用 global */ }
+  return ''
+}
+
 const PLUGIN_ID = 'dsh-selfloop'
 const STYLE_ID = 'dsh-selfloop/ui.css'
 const POLL_MS = 3000
@@ -156,7 +172,11 @@ async function fetchJson(url) {
 
 let viewRun = ''
 function runQuery() {
-  return viewRun ? '?run=' + encodeURIComponent(viewRun) : ''
+  const parts = []
+  if (viewRun) parts.push('run=' + encodeURIComponent(viewRun))
+  const sk = sessionKey()
+  if (sk) parts.push('session=' + encodeURIComponent(sk))
+  return parts.length ? '?' + parts.join('&') : ''
 }
 
 async function refresh() {
@@ -179,6 +199,7 @@ function startPolling() {
 
 const STATE_LABEL = {
   'wait-requirement': '等需求',
+  'wait-agent': '等接手',
   'wait-reply': '等回复',
   'vent': '来吐槽',
   'review': '请验收',
@@ -187,6 +208,7 @@ const STATE_LABEL = {
 }
 const STATE_DOT = {
   'wait-requirement': 'wait',
+  'wait-agent': 'wait',
   'wait-reply': 'wait',
   'vent': 'run',
   'review': 'run',
@@ -258,7 +280,8 @@ function autonomyHtml(state, win) {
   }
   const cur = state.currentNode
   let cta
-  if (!cur) cta = '<div class=\"sl-cta\"><div class=\"t\">本轮已全部完成</div><div class=\"d\">下一轮开始后这里会显示当前站的建议。</div></div>'
+  if (!cur && store.state && store.state.orderState === 'wait-agent') cta = '<div class=\"sl-cta\"><div class=\"t\">订单已提交，等 Agent 接手</div><div class=\"d\">流程还没开跑：接手后先量参考，再出 1.1 的票。</div></div>'
+  else if (!cur) cta = '<div class=\"sl-cta\"><div class=\"t\">本轮已全部完成</div><div class=\"d\">下一轮开始后这里会显示当前站的建议。</div></div>'
   else if (win && win.open && win.reason === 'human') cta = '<div class=\"sl-cta\"><div class=\"t\">这一步需要你</div><div class=\"d\">' + esc(cur.title) + ' 在等你，填完流程自动往下走。</div></div>'
   else if (win && win.open) cta = '<div class=\"sl-cta warn\"><div class=\"t\">吐槽窗口开放中</div><div class=\"d\">现在说会进下一轮工单；本环节一交付就关，过期只顺延不打断。</div></div>'
   else cta = '<div class=\"sl-cta\"><div class=\"t\">' + esc(cur.title) + ' 正在跑</div><div class=\"d\">不需要你动手，出结果我会在这里更新。</div></div>'
@@ -575,6 +598,43 @@ function drawMode() {
     '</div>'
 }
 
+/**
+ * 展开 GIF：用浏览器自带的 ImageDecoder 逐帧解，再画到 canvas 导出 PNG。
+ * 为什么在客户端做：参考片常是 GIF（雷暴那次就是），而 preflight 只量 PNG。
+ * 拿不到 ImageDecoder 时不阻塞下单，原样传上去并在界面上提示「这一单的 GIF 可能量不了」。
+ */
+async function explodeGif(file, cap) {
+  const limit = cap || 60
+  if (typeof ImageDecoder === 'undefined') return { frames: [], skipped: true }
+  try {
+    const buf = await file.arrayBuffer()
+    const decoder = new ImageDecoder({ data: buf, type: file.type || 'image/gif' })
+    await decoder.tracks.ready
+    const track = decoder.tracks.selectedTrack
+    const total = Math.min(track ? track.frameCount : 1, limit)
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')
+    const out = []
+    const base = String(file.name || 'ref').replace(/\.[^.]+$/, '')
+    for (let i = 0; i < total; i += 1) {
+      const { image } = await decoder.decode({ frameIndex: i })
+      canvas.width = image.displayWidth || image.codedWidth
+      canvas.height = image.displayHeight || image.codedHeight
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      ctx.drawImage(image, 0, 0)
+      if (image.close) image.close()
+      const blob = await new Promise(function (resolve) { canvas.toBlob(resolve, 'image/png') })
+      if (!blob) continue
+      out.push(new File([blob], base + '-g' + String(i + 1).padStart(3, '0') + '.png', { type: 'image/png' }))
+    }
+    try { decoder.close() } catch (e) { /* 已关闭 */ }
+    return { frames: out, skipped: false }
+  } catch (e) {
+    logWarn('GIF 拆帧失败：' + e.message)
+    return { frames: [], skipped: true }
+  }
+}
+
 async function submitMode() {
   const ta = modeEl && modeEl.querySelector('[data-req]')
   const req = String((ta && ta.value) || '').trim()
@@ -586,7 +646,18 @@ async function submitMode() {
   const btn = modeEl.querySelector('[data-act="mode-submit"]')
   if (btn) { btn.disabled = true; btn.textContent = '下单中…' }
   const refs = []
+  let gifSkipped = false
   try {
+    const expanded = []
+    for (const f of modeRefs) {
+      const isGif = /\.gif$/i.test(f.name || '') || f.type === 'image/gif'
+      if (isGif) {
+        const got = await explodeGif(f)
+        if (got.skipped || !got.frames.length) { gifSkipped = true; expanded.push(f) }
+        else got.frames.forEach(function (x) { expanded.push(x) })
+      } else expanded.push(f)
+    }
+    modeRefs = expanded
     for (const f of modeRefs) {
       if (f.size > 8 * 1024 * 1024) { flash(f.name + ' 超过 8MB'); return }
       const buf = await f.arrayBuffer()
@@ -605,13 +676,13 @@ async function submitMode() {
     research: (modeEl.querySelector('[data-research]') || {}).value || 'high',
     maxRounds: Number((modeEl.querySelector('[data-rounds]') || {}).value || 3),
   }
-  const r = await postJson(START_ROUTE, { requirement: req, refs: refs, budget: budget })
+  const r = await postJson(START_ROUTE, { requirement: req, refs: refs, budget: budget, session: sessionKey() || null })
   if (r.status === 200) {
     modeRefs = []
     modeDraft = ''
     toggleComposerMode(false)
     await refresh()
-    flash('已下单：' + (r.data.run || '') + (refs.length ? '（' + refs.length + ' 个参考）' : ''))
+    flash('已下单：' + (r.data.run || '') + (refs.length ? '（' + refs.length + ' 个参考）' : '') + (gifSkipped ? ' · GIF 未能拆帧，可能量不了' : ''))
   } else {
     flash('下单失败：' + ((r.data && r.data.error) || r.status))
   }
@@ -685,71 +756,6 @@ function mountStartButton(slots, createElement) {
   slots.inject('conversation.composer.dock', function () {
     return slots.register({ name: 'conversation.composer.dock', id: PLUGIN_ID + '-new', order: 19 }, NewTask)
   })
-}
-
-let startEl = null
-function openStartModal() {
-  try {
-    if (startEl && startEl.isConnected) { startEl.style.display = 'flex'; return }
-    startEl = document.createElement('div')
-    startEl.style.cssText = 'position:fixed;inset:0;background:rgba(15,20,30,.35);z-index:2147483001;display:flex;align-items:center;justify-content:center'
-    startEl.innerHTML =
-      '<div style="width:560px;max-width:calc(100vw - 40px);background:#fff;border-radius:14px;box-shadow:0 24px 60px rgba(0,0,0,.25);padding:16px;font:13px/1.6 -apple-system,\'Segoe UI\',\'Microsoft YaHei\',sans-serif">' +
-      '<div style="font-size:14px;font-weight:600;margin-bottom:4px">发起 selfloop</div>' +
-      '<div style="font-size:12px;color:#8a8f98;margin-bottom:10px">一句话也行。参考可传图/视频/代码文件，会落进本次任务的 refs/。</div>' +
-      '<textarea data-req style="width:100%;min-height:88px;border:1px solid #e3e3e8;border-radius:9px;padding:9px 11px;font:inherit;resize:vertical" placeholder="要做什么？一句话描述目标，例如：把这个效果调成参考片的样子"></textarea>' +
-      '<div style="display:flex;gap:8px;margin-top:10px">' +
-      '<label style="flex:1;border:1px dashed #c9ced6;border-radius:9px;padding:10px;text-align:center;color:#5f6368;cursor:pointer;font-size:12px">＋ 选择参考文件<input data-files type="file" multiple accept="image/*,video/*,.txt,.md,.json,.cs,.js,.ts" style="display:none"></label>' +
-      '<div style="flex:1;font-size:11.5px;color:#8a8f98;display:flex;align-items:center" data-filelist>未选择文件</div>' +
-      '</div>' +
-      '<div style="display:flex;gap:8px;margin-top:10px;font-size:12px;color:#5f6368;align-items:center">' +
-      '调研 <select data-research style="border:1px solid #e3e3e8;border-radius:6px;padding:3px 6px"><option value="high">high</option><option value="max">max</option><option value="mid">mid</option><option value="low">low</option></select>' +
-      '轮数 <select data-rounds style="border:1px solid #e3e3e8;border-radius:6px;padding:3px 6px"><option>1</option><option>2</option><option selected>3</option></select>' +
-      '<span style="margin-left:auto"></span>' +
-      '<button data-act="cancel" style="border:1px solid #e3e3e8;background:#fff;border-radius:7px;padding:6px 12px;cursor:pointer">取消</button>' +
-      '<button data-act="submit-start" style="background:#1a73e8;color:#fff;border:0;border-radius:7px;padding:6px 14px;cursor:pointer">下单</button>' +
-      '</div><div data-msg style="font-size:12px;color:#c0392b;margin-top:8px"></div></div>'
-    document.body.appendChild(startEl)
-    let files = []
-    startEl.querySelector('[data-files]').addEventListener('change', function (ev) {
-      files = Array.from(ev.target.files || [])
-      startEl.querySelector('[data-filelist]').textContent = files.length ? files.map(function (f) { return f.name }).join('、') : '未选择文件'
-    })
-    startEl.addEventListener('click', function (ev) {
-      if (ev.target === startEl || ev.target.closest('[data-act="cancel"]')) { startEl.style.display = 'none'; return }
-      if (ev.target.closest('[data-act="submit-start"]')) submitStart(startEl, files)
-    })
-  } catch (e) {
-    logWarn('下单弹窗失败：' + e.message)
-  }
-}
-
-async function submitStart(root, files) {
-  const msg = root.querySelector('[data-msg]')
-  const req = String((root.querySelector('[data-req]') || {}).value || '').trim()
-  if (req.length < 8) { msg.textContent = '需求太短了，至少写 8 个字'; return }
-  msg.textContent = '正在下单…'
-  const refs = []
-  for (const f of files) {
-    if (f.size > 8 * 1024 * 1024) { msg.textContent = f.name + ' 超过 8MB'; return }
-    const buf = await f.arrayBuffer()
-    let bin = ''
-    const bytes = new Uint8Array(buf)
-    for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i])
-    refs.push({ name: f.name, data: btoa(bin) })
-  }
-  const budget = {
-    research: (root.querySelector('[data-research]') || {}).value || 'high',
-    maxRounds: Number((root.querySelector('[data-rounds]') || {}).value || 3),
-  }
-  const r = await postJson(START_ROUTE, { requirement: req, refs: refs, budget: budget })
-  if (r.status === 200) {
-    root.style.display = 'none'
-    await refresh()
-    flash('已下单：' + (r.data.run || '') + (refs.length ? '（' + refs.length + ' 个参考）' : ''))
-  } else {
-    msg.textContent = '下单失败：' + ((r.data && r.data.error) || r.status)
-  }
 }
 
 function apply(ctx) {

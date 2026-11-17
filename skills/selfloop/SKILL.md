@@ -103,6 +103,7 @@ references 索引（按「我要干什么」查，别从头读）：
 | 我要…… | 读哪篇 |
 |---|---|
 | 写或改一份 `intent.json`（判据 / 锚 / 用户原话 / 量法） | `references/intent.md` |
+| 手上是 GIF/视频参考、要判断「参考像什么」 | `references/reference-reading.md` |
 | 配硬不变量（不合格直接判废，不进距离） | `references/invariants.md` |
 | 看懂 `[需求转译闸]` 的报错原文与退出码 | `references/intent-errors.md` |
 | 跑 02 号调研节点（`research.json`） | `references/research-node.md` |
