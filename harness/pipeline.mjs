@@ -10,6 +10,8 @@
 // 用法：status / step(exit 10 = 需要执行节点，票已生成) / done --stage <id>
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
 import { ticketFor } from './tickets.mjs'
 import { hasForm, writeBlankForm, checkForm } from './forms.mjs'
 
@@ -407,13 +409,35 @@ function done(dir, stageId) {
   return 0
 }
 
-const argv = process.argv.slice(2)
-const cmd = argv[0]
-const argName = (n) => { const i = argv.indexOf('--' + n); return i >= 0 ? argv[i + 1] : '' }
-const dir = resolve(argName('run') || '')
-if (!dir || !cmd) { console.error('用法: node harness/pipeline.mjs <status|step|done> --run <run> [--stage <id>]'); process.exit(2) }
-if (cmd === 'status') { status(dir); process.exit(0) }
-if (cmd === 'step') process.exit(step(dir))
-if (cmd === 'done') process.exit(done(dir, argName('stage')))
-console.error('未知子命令：' + cmd)
-process.exit(2)
+// ── CLI 入口 ─────────────────────────────────────────────────────────────
+// 只有「被当成脚本跑」时才执行；被 import（插件路由要复用 allNodes/currentNode）
+// 时不许碰 argv，更不许 process.exit —— 2026-11-17 实测：routes.js 一 import 它，
+// 整个插件进程直接按「用法」退出。
+function isMainModule() {
+  try {
+    if (!process.argv[1]) return false
+    return resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  } catch {
+    return false
+  }
+}
+
+if (isMainModule()) {
+  const argv = process.argv.slice(2)
+  const cmd = argv[0]
+  const argName = (n) => { const i = argv.indexOf('--' + n); return i >= 0 ? argv[i + 1] : '' }
+  const dir = resolve(argName('run') || '')
+  if (!dir || !cmd) { console.error('用法: node harness/pipeline.mjs <status|step|done> --run <run> [--stage <id>]'); process.exit(2) }
+  // 记下「现在在跑哪个 run」——插件侧 UI 路由只读这个指针，不在插件里猜路径。
+  // 失败一律吞掉：写指针不该影响流水线本身。
+  try {
+    const stateDir = process.env.DSH_SELFLOOP_STATE || join(homedir(), '.dsh', 'dsh-selfloop')
+    mkdirSync(stateDir, { recursive: true })
+    writeFileSync(join(stateDir, 'active-run.json'), JSON.stringify({ runDir: dir, at: new Date().toISOString(), cmd }, null, 2), 'utf8')
+  } catch { /* 只读文件系统也能照常跑流程 */ }
+  if (cmd === 'status') { status(dir); process.exit(0) }
+  if (cmd === 'step') process.exit(step(dir))
+  if (cmd === 'done') process.exit(done(dir, argName('stage')))
+  console.error('未知子命令：' + cmd)
+  process.exit(2)
+}

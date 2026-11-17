@@ -543,9 +543,10 @@ test('老宿主没有 ctx.inject 时：走 ctx.get 同步探测，绝不碰 ctx.
   assert.equal(tools.length, 2)
 })
 
-test('Cordis 式 ctx.inject：tools 与 skills 各订阅一次，回调里拿作用域服务', () => {
+test('Cordis 式 ctx.inject：tools / skills / webServer 各订阅一次，回调里拿作用域服务', () => {
   const tools = []
   const skills = []
+  const routes = []
   const seen = []
   const ctx = {
     get: () => undefined,
@@ -554,14 +555,28 @@ test('Cordis 式 ctx.inject：tools 与 skills 各订阅一次，回调里拿作
       cb({
         tools: { register: (t) => (tools.push(t), () => {}) },
         skills: { register: (s) => (skills.push(s), () => {}) },
+        webServer: { register: (r) => (routes.push(r), () => {}) },
       })
     },
   }
   apply(ctx)
-  assert.deepEqual(seen, [['tools'], ['skills']])
+  // 2026-11-17 起多了 webServer（右侧栏 UI 的四条路由）
+  assert.deepEqual(seen, [['tools'], ['skills'], ['webServer']])
   assert.equal(tools.length, 2)
   assert.equal(skills.length, 1)
   assert.equal(skills[0].name, 'selfloop')
+  // 四条路由：state / window / intent-answers / interrupt，全是 exact
+  assert.equal(routes.length, 4)
+  assert.deepEqual(routes.map((r) => r.path).sort(), [
+    '/plugins/dsh-selfloop/intent-answers',
+    '/plugins/dsh-selfloop/interrupt',
+    '/plugins/dsh-selfloop/state',
+    '/plugins/dsh-selfloop/window',
+  ])
+  routes.forEach((r) => {
+    assert.equal(r.kind, 'exact')
+    assert.equal(typeof r.handler, 'function')
+  })
 })
 
 // ---------------------------------------------------------------- 清单与 locale
@@ -598,7 +613,7 @@ test('清单：files 白名单覆盖三层、分发协议行、engines.dsh 只�
   }
   assert.ok(!pkg.files.includes('adapters'), 'adapters 已搬进 domains/，根目录不该再列')
   const positives = pkg.files.filter((f) => !f.startsWith('!'))
-  assert.equal(positives.length, 14, 'files 正名单恰好 14 项（0.14.0 加 ui/、0.19.0 加 CHANGELOG-archive.md），不该有多余项')
+  assert.equal(positives.length, 15, 'files 正名单恰好 15 项（0.14.0 加 ui/、0.19.0 加 CHANGELOG-archive.md、0.26.0 加 dist/），不该有多余项')
   // 评审 §4.2：日志文件不许随包分发 —— 显式排除一条，别指望"忘了把文件挪进来"
   assert.ok(pkg.files.includes('!**/*.log'), 'files 要显式排除 *.log')
   // 白名单里的每一项都真有东西（带 * 的按"目录里至少命中一个"判）

@@ -4,6 +4,29 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.26.0（未发布）· 会话内 UI 的宿主侧底座：四条同源路由 + 浏览器半边
+
+> 用户在右侧栏里要能看见流程走到哪、能填意向、能在窗口期内吐槽。这一版只做**代码与判据**，
+> 装机仍需改 profile pin + 重启宿主（另开一次发版）。
+
+- **新增四条同源路由**（`lib/routes.js`，前缀 `/plugins/dsh-selfloop`）：
+  `GET /state`（流程态 + 需求/调研/验收摘要）、`GET /window`（乱入窗口开合）、
+  `POST /intent-answers`（`intent.confirm.answers.json`）、`POST /interrupt`（`user-interrupt.jsonl`，
+  过期标 `expired` 并回 409）。
+- **窗口语义**（按用户 2026-11-17 拍板）：调查员/观察员在跑 → 开；主 Agent 正在做本环节
+  （存在 `active.json`）→ 也开；`done` 一写就关。过期不丢，只顺延。
+- **安全姿态**照抄大肥鱼的七条路由：只读判 Host 环回；写要自定义头 `x-selfloop: 1`。
+- **新增 `lib/active-run.js`**：pipeline 每次 `status/step/done` 写一个「当前在跑哪个 run」的指针
+  （`~/.dsh/dsh-selfloop/active-run.json`），插件路由只读它，不在插件里猜路径。
+- **新增浏览器半边** `lib/client.js` 与 `tools/build-client.mjs`（产出 `dist/client.cjs`，外壳逐字节校验）：
+  挂 `conversation.composer.dock`（状态胶囊）与 `conversation.session.header.actions`（肥鱼自治按钮），
+  面板由插件 docked 到右侧渲染，两分栏「肥鱼自治 / 流转状态」。
+- **修 `harness/pipeline.mjs` 不能 import 的老毛病**：加了 `isMainModule()` 守卫，
+  否则插件路由一 import 它，整个进程按「用法」退出。
+- **修 `expired` 布尔化 bug**：`false || (undefined && x)` 得到 `undefined`，JSON 里整条字段消失。
+- 判据：`test/ui-routes.test.mjs`（9 条）、`test/client-bundle.test.mjs`（5 条）；
+  `plugin.test.mjs` 那条订阅断言按新契约改为 tools / skills / webServer 三份。
+
 ## 0.25.0（未发布）· 执行阶段重排：验收 → [观察员] → [用户评审] → 决策 → 补调研 → 吸收
 
 > 用户定的新顺序，并补上漏掉的一环（补调研没人吸收等于白查）。
