@@ -15,11 +15,20 @@
     "text": "等待子代理执行",           // 节点 → 人话（见 §4）
     "node": "2.2-exec-r2",
     "agents": [{ "name": "exec-cloud4", "task": "云改 ParticleSystem" }],  // 读 <run>/active-agents.json
-    "windowOpen": true
+    "windowOpen": true,
+    "returned": 2,                     // A2：已返回的子代理数（客户端显示「已返回 2/3」）
+    "total": 3,                        // A2：名册总数
+    "stale": true,                     // A2：超过阈值没更新 → 客户端红字「⚠ 已静默 X 分钟」
+    "silentForMs": 660000,             // A2：最久没动静那条的静默毫秒数
+    "failed": 0,                       // A2：status=failed 的条数（失败也算"回来了"，但不计入 returned）
+    "running": 1,                      // A2：仍在跑（没写 status 的老条目按 running 算）
+    "needAgent": false                 // A1 自唤醒：有个节点出票后 90s 没进展 → true（客户端挂提示条，见 §3b）
   },
 
   "orderState": "vent",                // wait-requirement | wait-agent | wait-reply | vent | review | running | finished
   "orders": [                          // 历史订单（下拉只显示 title）
+    // ⑲ 会话隔离：只返回当前 session（?session=）的订单；没给 session 时只返回「没绑会话」的老订单。
+    //    例外：明确 ?run= 点开的那一单总会列出。
     { "name": "sl-xxx", "dir": "...", "title": "雷云优化", "state": "finished", "current": true, "updatedAt": "..." }
   ],
 
@@ -38,15 +47,21 @@
   "models": {                          // ★可派活的模型（§5）
     "default": "由主 Agent 分配",
     "source": "live",                  // live = 宿主 llm 服务实时拉的；fallback = config/models.json 兜底
-    "options": [ { "provider": "haituo", "model": "mimo-v2.6-pro", "label": "mimo-v2.6-pro（haituo）" } ]
+    // efforts：该模型能设的努力程度（⑱⑳）。缺这个字段 = 用标准三档 low/high/max；
+    // 写成空数组 [] = 该模型不支持设定努力程度，客户端下拉禁用并提示
+    "options": [ { "provider": "haituo", "model": "mimo-v2.6-pro", "label": "mimo-v2.6-pro（haituo）", "efforts": ["low", "high", "max"] } ]
   },
 
   // 兼容旧字段（客户端 v1 用过，暂不删）
   "currentNode": {...}, "nodes": [...], "budget": {...}, "intent": {...}, "research": {...},
   "plan": {...}, "verify": {...}, "review": {...}, "decide": {...}, "interrupts": [...],
-  "shots": [...], "refs": [...], "confirm": {...}
+  "shots": [...], "refs": [...],
+  "confirm": { "legacy": true, "questions": [...], "answered": [...] }   // ㉝ 只为老客户端保留，永远不许当"本轮"
 }
 ```
+
+> ㉝ **意向确认的归属只认 `rounds/r<N>/intent.confirm.json`**：`rounds[]` 里该轮没有归档就是 `null`（客户端显示「本轮无意向确认」）。
+> 顶层 `confirm` 保留但带 `legacy: true`，据此不再把它挂到当前轮。
 
 ## 2. `POST /start` 请求体新增
 
@@ -55,6 +70,8 @@
   "budget": { "research": "high", "maxRounds": 3 },
   "researchModel": { "provider": "haituo", "model": "kimi-k3.1-pro" } | null,   // null = 主 Agent 分配
   "execModel":     { "provider": "haituo", "model": "mimo-v2.6-pro" } | null,
+  "researchEffort": "max",   // ⑱：调查模型的努力程度 low|high|max，缺省 max
+  "execEffort":     "max",   // ⑳：执行模型的努力程度 low|high|max，缺省 max
   "session": "sess-xxx" }
 ```
 落盘：`<run>/order.json` = `{ title, researchModel, execModel, session, at }`；`title` 缺省时由需求首句截前 12 字。
@@ -62,11 +79,32 @@
 ## 3. `<run>/active-agents.json`（主 Agent 派活时写，UI 只读）
 
 ```jsonc
-{ "at": "…", "agents": [ { "name": "exec-cloud4", "task": "云改 ParticleSystem" } ] }
+{ "at": "…", "agents": [
+  { "name": "exec-cloud4", "task": "云改 ParticleSystem",
+    "status": "running",                   // 可选：running | done | failed（A2 起）
+    "lastSeenAt": "2026-11-17T…" }         // 可选：最后一次有动静的时刻（A2 起；缺省回落 roster 的 at / 文件 mtime）
+] }
 ```
+
+> 老文件（只有 name/task）照旧能读：`/state.status.agents` **不会**硬塞 `status`/`lastSeenAt` 键（老客户端做深比较会炸），
+> 但汇总里按 running 算（否则「吞斥」就漏了）。
 
 谁写：**主 Agent**，每次派子代理时整体覆盖（流水线 `harness/pipeline.mjs` 不写这个文件，它只写 `active.json`＝「主 Agent 正在处理哪个节点」）。
 不写就是空名册：`/state.status.agents` 返回 `[]`，UI 不许报错。
+
+### 3b. `<run>/need-agent.json`（A1 自唤醒，watcher 写，客户端只读）
+
+`harness/watch-ticket.mjs` 发现「当前节点的票在、但超过 90s 没有任何进展」时写：
+
+```jsonc
+{ "needAgent": true, "node": "2.3-verify-r1", "ticketAt": "2026-11-17T…",
+  "waitedMs": 120000, "thresholdMs": 90000,
+  "hint": "节点 2.3-verify-r1（验收：能跑 / 能看）出票后 120 秒没有任何进展：主 Agent 可能已经停手。…",
+  "at": "2026-11-17T…" }
+```
+
+客户端据此挂提示条；主 Agent 侧轮询：`node harness/watch-ticket.mjs --run <dir> --once`（exit 0 = 该喊人了，3 = 还不用）。
+该节点的信号一旦 `done`（或当前节点已经换人），`status.needAgent` 自动回落 `false`。
 
 ## 4. 节点 → 人话状态映射（后端 `nodeText()`，客户端不再自己映射）
 

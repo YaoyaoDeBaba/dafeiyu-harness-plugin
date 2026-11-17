@@ -16,11 +16,13 @@
 // 右侧栏只读这个文件展示「卡在谁身上」；不写就是空名册（UI 不会报错）。
 // 流水线这边只在 step 出票时写 active.json（主 Agent 正在处理哪个节点），两者不是一回事。
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, tmpdir } from 'node:os'
 import { ticketFor } from './tickets.mjs'
 import { hasForm, writeBlankForm, checkForm } from './forms.mjs'
+import { missingPieces as snapshotMissing } from './snapshot.mjs'
+import { crashCheck } from './crash-check.mjs'
 
 const STAGE_DIR = 'stages'
 const TICKET_DIR = 'tickets'
@@ -279,7 +281,22 @@ export const checks = {
   verified(dir) {
     const v = readJson(j(dir, 'verify.json'))
     if (!v) return ['缺 verify.json（没验收）']
-    const out = []
+    // ㉞ 崩坏自检**优先于任何数值判据**：列进 verify.shots 的帧先证明没崩（洋红 / 纯色大块 / 全黑全白），
+    // 崩了的帧再"接近目标"也是废图 —— 数值判据不许放行它。
+    const crash = []
+    const shots = Array.isArray(v.shots) ? v.shots : []
+    for (const s of shots) {
+      const name = String(s || '').trim()
+      if (!name) continue
+      const file = isAbsolute(name) ? name : j(dir, name)
+      if (!existsSync(file)) {
+        crash.push('崩坏自检：' + name + ' 不存在（列进 verify.shots 就要能查到）')
+        continue
+      }
+      const r = crashCheck(file)
+      if (r.fail) crash.push('崩坏自检不通过：' + name + ' → ' + r.reasons.join('；'))
+    }
+    const out = crash
     if (v.runs !== true) out.push('没有确认能跑（编译/加载通过）')
     if (v.visible !== true) out.push('没有确认能看（有图或入口）')
     return out
@@ -455,6 +472,38 @@ function archiveRoundArtifact(dir, stageId, artifact) {
   }
 }
 
+/**
+ * A5·㊱ 交活即快照：2.2-exec-rN 交活时 `rounds/r<N>/snapshot/` 要有三件套
+ * （code/ + scene-params.json + params.md）。
+ * 缺了**不硬拦** —— 写进 verify.caveat 留痕，让主 Agent 与用户看见；2.3-verify 交活时再补一次
+ * （2.3 的执行者会重写 verify.json，把 caveat 冲掉）。
+ */
+function recordSnapshotCaveat(dir, round) {
+  const missing = snapshotMissing(dir, round)
+  if (missing.length === 0) return []
+  const file = j(dir, 'verify.json')
+  const v = readJson(file) || {}
+  const caveat = Array.isArray(v.caveat) ? v.caveat.slice() : []
+  const added = []
+  for (const m of missing) {
+    const line = 'r' + round + ' 快照不全：缺 rounds/r' + round + '/snapshot/' + m + '（交活即快照三件套：code/ + scene-params.json + params.md，见 skills/selfloop/references/executor-brief.md）'
+    if (!caveat.includes(line)) {
+      caveat.push(line)
+      added.push(line)
+    }
+  }
+  if (added.length === 0) return []
+  v.caveat = caveat
+  v.caveatAt = new Date().toISOString()
+  v.caveatRound = round
+  try {
+    writeFileSync(file, JSON.stringify(v, null, 2), 'utf8')
+  } catch {
+    return []
+  }
+  return added
+}
+
 function touchActive(dir, stage, kind) {
   try {
     writeFileSync(j(dir, 'active.json'), JSON.stringify({ stage, kind, openedAt: new Date().toISOString() }, null, 2), 'utf8')
@@ -616,6 +665,12 @@ function done(dir, stageId) {
   // 主Agent 节点：表单必填项一项都不能空（不控质量，只防遗漏）
   if (node.kind === 'manager' && hasForm(node.id)) problems.push(...checkForm(dir, node.id))
   if (problems.length) { writeSignal(dir, stageId, 'failed', { problems }); console.log(stageId + ' 产物不合格，卡住：\n  ' + problems.join('\n  ')); return 1 }
+  // 交活即快照：2.2 交活、2.3 验收交活都核一遍（缺件写 verify.caveat，不拦）
+  const snapRound = stageId.match(/^2\.(?:2-exec|3-verify)-r(\d+)$/)
+  if (snapRound) {
+    const caveat = recordSnapshotCaveat(dir, Number(snapRound[1]))
+    caveat.forEach((c) => console.log('  · 快照留痕：' + c))
+  }
   const extra = {}
   const dec = readJson(j(dir, 'decide.json'))
   if (/^2\.5-decide-r/.test(stageId) && dec) extra.action = dec.action

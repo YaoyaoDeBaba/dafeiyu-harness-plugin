@@ -5,7 +5,11 @@ description: 用「改参数 → 出可比较的观测 → 算判据 → 搜索�
 
 # Selfloop（权臣）· 通用闭环引擎
 
-## 0. 开工三步（照做，别跳）
+## 0. 你是谁（先分流，越界就是事故）
+- **主 Agent**（2.1~2.5）：跨轮闭环归你——活性扫描 / 选轴 / 搜索 / 判定 / 要不要下一轮。
+- **执行员**（子代理，2.2）：做**有限**本地自迭代，最多自调 `maxSelfIterations`（默认 3）；三条停止条件满足任一即停——①硬判据全在带内；②用满轮次预算；③平台期：连续 2 轮**无显著提升**（主判据改善 <5%，或交付帧平均像素差 <2%）。
+- 停下必须**如实交**：当前值 + 差多少 + 卡在哪个约束（禁止「已优化」这种空话）；每轮自迭代留一行 `rounds/r<N>/iters.md`；细则与自检清单见 `references/executor-brief.md`。
+## 1. 开工三步（照做，别跳）
 ```bash
 node harness/preflight.mjs --run <run目录> --ref <参考图或帧目录>   # ① 建骨架+量参考，并列出还差什么
 # ② 派调查员（≥2 条带 URL 的 findings、≥1 条 opensource/paper、used 写 usedFor）→ ③ 填 intent 并 confirmed
@@ -17,8 +21,7 @@ node harness/preflight.mjs --run <run目录> --ref <参考图或帧目录>   # �
 
 引擎对题材没有偏好：它只要求**三件事能配出来**（下面三个概念）。渲染特效是今天接上的第一个领域（`domains/vfx-render/`），换成别的目标只是在 adapter 里换实现，引擎本身不动。
 
-它只解决**形**：粗细、长度、节奏、面积、亮度这类能算的量。
-它不解决**色 / 质 / 味**，也不替人判断成品好不好看。
+它只解决**形**：粗细、长度、节奏、面积、亮度这类能算的量；不解决**色 / 质 / 味**，也不替人判断成品好不好看。
 
 ## 三个概念（引擎与题材的分界）
 
@@ -29,8 +32,7 @@ node harness/preflight.mjs --run <run目录> --ref <参考图或帧目录>   # �
 
 ## 开工前先确认三件事（缺一个就别开始）
 
-1. 有能跑通的回路：**改配置 → 出观测 → 算判据**。
-   插件版把执行器放在包内 `harness/`，现场位置由环境变量（如 `%VFX_LOOP_CLIENT%`）或命令行 `-Mirror` 给，包里不含任何本机路径。
+1. 有能跑通的回路：**改配置 → 出观测 → 算判据**。插件版把执行器放在包内 `harness/`，现场位置由环境变量（如 `%VFX_LOOP_CLIENT%`）或命令行 `-Mirror` 给，包里不含任何本机路径。
    **环境**：Node ≥ 22.19；执行器是 Windows 专用（PowerShell + Edge），首装要浏览器 —— 用系统 Edge 零下载，走 Playwright 的 Chromium 约 740 MB（只要无头约 290 MB，`npx playwright install --only-shell chromium`）。
 2. 有一个具体目标：**一张目标图**，或**一份 JSON 目标参数**（如 `{"widthPx":32,"distM":3.6}`）。
 3. 有一个能写的输出目录（证据包落这里），且**不覆盖**别人的 run 目录。
@@ -69,18 +71,15 @@ node harness/preflight.mjs --run <run目录> --ref <参考图或帧目录>   # �
 
 ## 标准流程（每步的判据与失败含义在 references/workflow.md）
 
-```
-1 活性扫描 → 2 选轴 → 3 搜索 → 4 证据包 → 5 半自动判定
-     ↑                                  |
-     └── 换了管线 / 参数路由后重跑 ──────┘
+```text
+1 活性扫描 → 2 选轴 → 3 搜索 → 4 证据包 → 5 半自动判定（换了管线 / 参数路由就重跑）
 ```
 
 五步的产物：一张参数表（状态/管哪个指标/灵敏度）→ 一份白名单（2–3 根轴）→ 曲线 + 最优参数 → 六件套 → 一句人话结论。
 
 ## 跑一轮（命令 / 产物 / 报告要素）
 
-三样输入：**adapter + 预算 + 输出目录**。换目标就换 adapter，命令形状不变；跑之前先过需求转译闸（没有 `intent.json` 会直接拒跑）。
-完整命令、一次 run 的产物清单、报告里必须写清的九项、两条执行器怎么选：**`references/run-recipes.md`**。
+三样输入：**adapter + 预算 + 输出目录**。换目标就换 adapter，命令形状不变；跑之前先过需求转译闸（没有 `intent.json` 会直接拒跑）。完整命令、一次 run 的产物清单、报告里必须写清的九项、两条执行器怎么选：**`references/run-recipes.md`**。
 
 
 ## 什么时候别用它
@@ -95,13 +94,13 @@ node harness/preflight.mjs --run <run目录> --ref <参考图或帧目录>   # �
 ## 领域细节
 
 引擎通用部分就上面这些。**具体领域的现场要求、示例 adapter、已知天花板看 `references/domains-vfx.md`**（今天只有一个领域：vfx 渲染）。
-
 第一次接**不是自己的页面**（第三方台、别人做的 demo、你只拿到 dist 的那种）：先做宿主改造，再看领域文档。改造清单在 `references/host-adaptation.md`（参数提前注入 / readyExpr 双标记 / 隐藏会变的 DOM / 冻完就退 rAF / 扁平回读接口），改造完的 adapter 形态看 `examples/third-party-3d.json`。
 
 references 索引（按「我要干什么」查，别从头读）：
 
 | 我要…… | 读哪篇 |
 |---|---|
+| 我是执行员（2.2）/ 交活前自查三件套与 4 条自检 | `references/executor-brief.md` |
 | 写或改一份 `intent.json`（判据 / 锚 / 用户原话 / 量法） | `references/intent.md` |
 | 手上是 GIF/视频参考、要判断「参考像什么」 | `references/reference-reading.md` |
 | 配硬不变量（不合格直接判废，不进距离） | `references/invariants.md` |

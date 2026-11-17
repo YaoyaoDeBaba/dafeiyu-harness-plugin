@@ -4,6 +4,42 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.29.0（未发布）· selfloop 硬伤修复批（今夜实战暴露的七件事）
+
+> 背景：2026-11-17 一整晚跑「雷暴第三版」，暴露出 7 个硬伤，全部落码并带判据。
+
+### A1 自唤醒（`harness/watch-ticket.mjs`）
+出票后 90s 无进展 → 写 `<run>/need-agent.json`；`/state.status.needAgent` 透出，节点交活后自动失效。
+CLI：`--run --idle --once --now`（exit 0=该喊人／3=还不用）。
+
+### A2 子代理吞吐（`/state.status`）
+`returned/total/stale/silentForMs/failed/running`；stale = 有 running 且静默 >10min。
+`active-agents.json` 支持 `status/lastSeenAt`（老条目不多塞键，保住既有 deepEqual）。
+
+### A3 崩坏自检（`harness/crash-check.mjs`）
+洋红 >0.1% / **高饱和**纯色块 >1% 屏 / 全黑 / 全白 → fail，**排在 checks.verified 问题列表最前**（优先于任何数值判据）。
+> 实测修正：初版把灰色棋盘地板误报成「纯色大块 88%」，故纯色块判定加**饱和度下限 0.25**；中性灰地板/天空不再算崩坏。
+
+### A4 自迭代有边界（`SKILL.md` + `references/executor-brief.md`）
+角色分流：主 Agent（2.1~2.5）跨轮闭环；执行员（2.2）**有限**自迭代 + 三条停止条件
+（达标／用满 maxSelfIterations=3／平台期：连续 2 轮无显著提升，主判据改善<5% 或帧平均像素差<2%）+ 如实交格式 + `iters.md` 留痕。
+
+### A5 交活即快照（`harness/snapshot.mjs`）
+`rounds/r<N>/snapshot/` 三件套：`code/`、`scene-params.json`、`params.md`；缺件写进 `verify.caveat`（2.3 再校验一次，防被重写冲掉）。**没有来源就报缺，不写占位文件。**
+
+### ㉝ 意向确认归属
+只从 `rounds/r<N>/intent.confirm.json` 读；无归档显示「本轮无意向确认」；老单（整单无 rounds）才允许合成一轮并标「（阶段 1 · 旧单，无归档）」。
+
+### ⑲ 订单按会话隔离
+`/state.orders` 只返回当前 session 的订单；同会话已有未结束订单 → `/start` 409 `session-busy`。
+
+### P3 交互与视觉
+㉛ 折叠体统一 `foldBodyHtml()`（折叠不再"不渲染"而是"隐藏"，修掉折叠后仍很厚）；⑱⑳ 努力程度上/下拉（`efforts: []` → 禁用并提示）；状态卡显示 `已返回 2/3` 与「⚠ 已静默 N 分钟」。
+
+### 判据
+新增 8 个测试文件 **43 条**（skill-executor 8 / snapshot 6 / crash-check 9 / watch-ticket 6 / status-agents 5 / round-confirm 4 / orders-session 4 / client-render +7）。
+`npm test` 全绿；`dist/client.cjs` 67,991 B。
+
 ## 0.28.2（未发布）· 吐槽窗口延后到「第一版执行结果返回后」（待办 2）
 
 > 用户指出：0.28 那批没覆盖这条——窗口一进 2.2 就开，用户还没看见任何效果，没得吐槽。

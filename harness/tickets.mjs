@@ -91,6 +91,11 @@ const ROUND = {
     '你是**执行者**。第 ' + r + ' 轮：按 ' + j(dir, 'plan.json') + ' 的工单干活，结果写进 ' + j(dir, 'rounds', String(r).padStart(2, '0') + '.json') + '。',
     '硬约束：只改工单允许的范围；不许动 research.json / intent.json / plan.json。',
     '必须产出：shot 或 preview（人能看到）、changes[]（改了什么）、metrics（关键指标）。',
+    // A4：允许本轮内自迭代，但必须带停止条件（达到判据 / 用满 maxSelfIterations 默认 3 / 平台期：连续 2 轮无显著提升）
+    '自迭代有边界：最多自调 3 轮，满足任一停止条件就停（达标 / 用满预算 / 平台期）；停下**如实交**当前值 + 差多少 + 卡在哪。每轮留一行 ' + j(dir, 'rounds', 'r' + r, 'iters.md') + '。',
+    // A5：交活即快照三件套（缺了 pipeline 会写进 verify.caveat 留痕）
+    '交活前补快照三件套 ' + j(dir, 'rounds', 'r' + r, 'snapshot') + '：code/（本轮改过的源文件）、scene-params.json（组件字段 + 材质值）、params.md（旧值→新值→为什么）；手动快照：node harness/snapshot.mjs --run ' + dir + ' --tag <名字>。',
+    '交付自检（skills/selfloop/references/executor-brief.md）：贴完整帧 + node harness/crash-check.mjs <帧> + 每项判据一行实测 + 每完成一项立刻落盘 rounds。',
     doneLine(dir, id)
   ].join('\n'),
   verify: (dir, r, id) => [

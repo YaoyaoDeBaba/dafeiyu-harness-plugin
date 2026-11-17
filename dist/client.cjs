@@ -78,7 +78,7 @@ const CSS = [
 '.sl-mode .ttl-in{display:block;width:calc(100% - 28px);margin:8px 14px 0;border:1px solid #e6effd;background:#fbfcff;border-radius:8px;padding:6px 9px;font:inherit;font-size:12.5px;outline:0;box-sizing:border-box}',
 '.sl-mode .mfoot{display:flex;align-items:center;gap:8px;padding:8px 12px 10px;font-size:12px;color:#5f6368;flex-wrap:wrap}',
 '.sl-mode .mf-lb{font-size:11px;color:#8a8f98}',
-'.sl-sel{border:1px solid #e3e3e8;border-radius:7px;padding:3px 8px;background:#fbfbfc;color:#3c4043;font-size:12px;max-width:190px}',
+'.sl-sel{border:1px solid #e3e3e8;border-radius:7px;padding:3px 8px;background:#fbfbfc;color:#3c4043;font-size:12px;max-width:190px}\n.sl-sel[disabled]{color:#9aa0a6;background:#f2f3f5;cursor:not-allowed}\n.sl-eff-hint{font-size:10.5px;color:#c0392b;max-width:150px;line-height:1.4}\n.sl-stale{color:#e5484d;font-weight:600}',
 '.sl-send{margin-left:auto;background:#1a73e8;color:#fff;border:0;border-radius:8px;padding:6px 14px;font-size:12.5px;cursor:pointer}',
 '.sl-send[disabled]{background:#dadce0;cursor:not-allowed}',
 '.sl-order{display:flex;align-items:center;gap:6px;padding:2px 8px;border:1px solid #e3e3e8;border-radius:7px;background:#fbfbfc;font-size:12px;cursor:pointer;color:#3c4043;max-width:190px;overflow:hidden;white-space:nowrap}',
@@ -99,19 +99,19 @@ const CSS = [
 '.sl-fold{cursor:pointer;color:#8a8f98;padding:0 6px 0 2px;font-size:15px;line-height:1}',
 '.sl-fold:hover{color:#1a73e8}',
 '.sl-title{font-size:12.5px;font-weight:600;color:#3c4043;margin-left:auto;padding-right:4px;position:relative}',
-'.sl-body{flex:1;overflow:auto;padding:12px}',
+'.sl-body{flex:1;overflow:auto;padding:12px;min-width:0;overflow-wrap:anywhere}',
 '.sl-sec{margin-bottom:14px}',
 '.sl-h{font-size:11.5px;color:#8a8f98;font-weight:600;letter-spacing:.03em;margin-bottom:7px;display:flex;align-items:center;gap:6px}',
 '.sl-h .ln{flex:1;height:1px;background:#f0f0f2}',
-'.sl-card{border:1px solid #e8eaed;border-radius:11px;padding:9px 11px;margin-bottom:9px;background:#fff}',
+'.sl-card{border:1px solid #e8eaed;border-radius:11px;padding:9px 11px;margin-bottom:9px;background:#fff;min-width:0;overflow-wrap:anywhere}',
 '.sl-card.blue{border-color:#cfe0fd;background:linear-gradient(180deg,#f5f9ff,#fff)}',
 '.sl-card.amber{border-color:#f2dfb2;background:linear-gradient(180deg,#fffbf0,#fff)}',
 '.sl-card.red{border-color:#f2c8c8;background:linear-gradient(180deg,#fff6f6,#fff)}',
 '.sl-card.green{border-color:#c6e8d3;background:linear-gradient(180deg,#f5fdf8,#fff)}',
 '.sl-card.gray{border-color:#e8eaed;background:#fbfbfc}',
 '.sl-ttl{font-size:13px;font-weight:600;color:#1f2328;display:flex;align-items:center;gap:6px;min-width:0}',
-'.sl-p{font-size:12.5px;line-height:1.6;color:#3c4043;margin-top:5px;overflow-wrap:anywhere}',
-'.sl-meta{font-size:11px;color:#8a8f98;margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;overflow-wrap:anywhere}',
+'.sl-p{font-size:12.5px;line-height:1.6;color:#3c4043;margin-top:5px;min-width:0;overflow-wrap:anywhere}',
+'.sl-meta{font-size:11px;color:#8a8f98;margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-width:0;overflow-wrap:anywhere}',
 '.sl-lamp{width:8px;height:8px;border-radius:50%;background:#9aa0a6;flex:none;display:inline-block}',
 '.sl-lamp.run{background:#1a73e8;box-shadow:0 0 0 3px rgba(26,115,232,.16)}',
 '.sl-lamp.wait{background:#f2b544;box-shadow:0 0 0 3px rgba(242,181,68,.2)}',
@@ -119,14 +119,14 @@ const CSS = [
 '.sl-lamp.red{background:#e5484d;box-shadow:0 0 0 3px rgba(229,72,77,.2)}',
 '.sl-foldh{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;min-width:0}',
 '.sl-foldh .cv{color:#8a8f98;font-size:11px;width:10px;flex:none}',
-'.sl-foldb{padding-top:6px}',
+'.sl-foldb{padding-top:6px;min-width:0;overflow-wrap:anywhere}\n.sl-foldb.folded{max-height:0;overflow:hidden;height:0;padding-top:0}',
 '.sl-agents{display:flex;flex-direction:column;gap:3px;margin-top:6px}',
 '.sl-agent{display:flex;gap:6px;font-size:11.5px;color:#3c4043;align-items:baseline}',
 '.sl-agent .nm{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:#1a73e8;flex:none}',
 '.sl-rnd{margin-bottom:10px;border:1px solid #eef0f3;border-radius:12px;padding:9px 10px;background:#fff}',
 '.sl-rnd.cur{border-color:#cfe0fd;box-shadow:0 2px 10px rgba(26,115,232,.06)}',
 '.sl-rnd .hd{display:flex;align-items:center;gap:6px;cursor:pointer;min-width:0}',
-'.sl-rnd .bd{padding-top:2px}',
+'.sl-rnd .bd{padding-top:2px;min-width:0;overflow-wrap:anywhere}',
 '.sl-sub{margin-top:8px;margin-bottom:8px}',
 '.sl-sub:last-child{margin-bottom:0}',
 '.sl-opt{display:flex;gap:7px;align-items:flex-start;padding:4px 6px;border-radius:6px;cursor:pointer}',
@@ -330,6 +330,16 @@ function foldHeadHtml(key, open, titleHtml, extraHtml) {
   return '<div class="sl-foldh" data-fold="' + esc(key) + '" data-open="' + (open ? '1' : '0') + '">' +
     '<span class="cv">' + (open ? '▾' : '▸') + '</span>' + titleHtml + (extraHtml || '') + '</div>'
 }
+/**
+ * 折叠体（㉛ 布局 bug）：展开时包住内容，折叠时**留一个 display:none + max-height:0 的空壳**。
+ * 以前是「折叠就不渲染内容」，DOM 里根本没有节点 ⇒ 折叠态高度无从量、一旦哪天改成渲染就把
+ * 卡片撑成一条缝。空壳同时把 min-width:0 / overflow-wrap:anywhere 钉在内容容器上，
+ * 长 URL、长中文任务名不再把卡片顶出面板宽度。
+ */
+function foldBodyHtml(open, innerHtml) {
+  if (!open) return '<div class="sl-foldb folded" data-folded="1" style="display:none;max-height:0;overflow:hidden"></div>'
+  return '<div class="sl-foldb" style="min-width:0;overflow-wrap:anywhere">' + (innerHtml || '') + '</div>'
+}
 
 /* ------------------------------------------------------------------ *
  * 置顶「状态」卡：人话 + 指示灯 + 子代理名册（待办 12 / 契约 §6）
@@ -341,12 +351,20 @@ function statusCardHtml(state) {
   }
   const st = state.status || {}
   const agents = Array.isArray(st.agents) ? st.agents : []
-  const lamp = LAMP[(state.orderState || '')] || 'wait'
+  // A2：子代理进度（已返回 2/3）+ 静默告警；静默超过阈值时灯直接转红
+  const returned = Number(st.returned)
+  const total = Number(st.total)
+  const hasProgress = total > 0 && Number.isFinite(returned)
+  const stale = !!st.stale
+  const silentMin = Math.max(1, Math.round(Number(st.silentForMs || 0) / 60000))
+  const lamp = stale ? 'red' : (LAMP[(state.orderState || '')] || 'wait')
   const text = st.text || (state.currentNode && state.currentNode.title) || '空闲'
   let html = '<div class="sl-card blue">' +
     '<div class="sl-ttl"><span class="sl-lamp ' + lamp + '"></span>🚦 ' + esc(text) + '</div>' +
     '<div class="sl-meta">' + (st.node ? '节点 ' + esc(st.node) : '没有当前节点') +
-    (st.windowOpen ? ' · 💬 吐槽窗口开放中' : '') + '</div>'
+    (hasProgress ? ' · 已返回 ' + Math.max(0, returned) + '/' + total : '') +
+    (st.windowOpen ? ' · 💬 吐槽窗口开放中' : '') + '</div>' +
+    (stale ? '<div class="sl-meta"><span class="sl-stale">⚠ 已静默 ' + silentMin + ' 分钟</span></div>' : '')
   if (agents.length) {
     html += '<div class="sl-agents">' + agents.map(function (a) {
       return '<div class="sl-agent"><span class="nm">🤖 ' + esc(a.name) + '</span><span>' + esc(a.task || '在干活') + '</span></div>'
@@ -367,7 +385,7 @@ function requirementCardHtml(state) {
   return '<div class="sl-card gray">' +
     foldHeadHtml('req', open, '<span class="sl-ttl">📋 需求原文</span>',
       '<span class="sl-meta" style="margin-left:auto">' + text.length + ' 字</span>') +
-    (open ? '<div class="sl-p" style="white-space:pre-wrap">' + esc(text) + '</div>' : '') + '</div>'
+    foldBodyHtml(open, '<div class="sl-p" style="white-space:pre-wrap">' + esc(text) + '</div>') + '</div>'
 }
 
 /* ------------------------------------------------------------------ *
@@ -402,6 +420,45 @@ function modelSelectHtml(attr, current, models) {
     html += '<option value="' + esc(v) + '"' + (current === v ? ' selected' : '') + '>' + esc(modelLabel(o)) + '</option>'
   }
   return html + '</select>'
+}
+
+/* ------------------------------------------------------------------ *
+ * 努力程度（⑱⑳）：值只认 state.models.options[].efforts；模型不宣告 = 不支持，下拉禁用
+ * ------------------------------------------------------------------ */
+const EFFORT_LEVELS = ['low', 'high', 'max']
+const EFFORT_DEFAULT = 'max'
+/** 某个模型值（provider|model）能选的努力档。没选模型 / 模型没写 efforts 字段 → 标准三档 */
+function modelEfforts(models, pick) {
+  const list = models && Array.isArray(models.options) ? models.options : []
+  const value = String(pick == null ? '' : pick)
+  const hit = value ? list.find(function (o) { return modelValue(o) === value }) : null
+  if (!hit) return { levels: EFFORT_LEVELS.slice(), supported: true }
+  if (!Array.isArray(hit.efforts)) return { levels: EFFORT_LEVELS.slice(), supported: true }
+  const levels = hit.efforts.map(function (x) { return String(x) }).filter(function (x) { return !!x })
+  // 宣告了 efforts 但是空的 ⇒ 这个模型不支持设定努力程度
+  if (!levels.length) return { levels: EFFORT_LEVELS.slice(), supported: false }
+  return { levels: levels, supported: true }
+}
+/** 当前值不在可选档里时：优先 max，其次最后一档（自定义档位只有 low/high 时不会选空） */
+function pickEffort(levels, current) {
+  const s = String(current == null ? '' : current)
+  if (levels.indexOf(s) >= 0) return s
+  if (levels.indexOf(EFFORT_DEFAULT) >= 0) return EFFORT_DEFAULT
+  return levels[levels.length - 1] || EFFORT_DEFAULT
+}
+function effortHtml(attr, current, models, pick) {
+  const info = modelEfforts(models, pick)
+  const cur = pickEffort(info.levels, current)
+  const opts = info.levels.map(function (l) {
+    return '<option value="' + esc(l) + '"' + (l === cur ? ' selected' : '') + '>' + esc(l) + '</option>'
+  }).join('')
+  return '<select class="sl-sel" data-' + attr + (info.supported ? '' : ' disabled') + '>' + opts + '</select>' +
+    (info.supported ? '' : '<span class="sl-eff-hint">该模型不支持设定努力程度</span>')
+}
+/** 请求体里的 effort：留空就按默认 max，不替用户瞎猜 */
+function effortValue(v) {
+  const s = String(v == null ? '' : v).trim()
+  return s || EFFORT_DEFAULT
 }
 
 /* ------------------------------------------------------------------ *
@@ -452,15 +509,13 @@ function groupRounds(state) {
       decide: state && state.decide,
     })
     const any = legacy.confirm || legacy.interrupts.length || legacy.plan || legacy.verify || legacy.review || legacy.decide
-    if (any) groups = [legacy]
+    // 合成的老单一轮（整单没有 rounds）：允许借用顶层字段，但这一轮要在界面上标出来
+    if (any) { legacy.synthetic = true; groups = [legacy] }
   }
   if (groups.length && !groups.some(function (g) { return g.round === cur })) groups.push(normalizeRound({ round: cur }))
-  // 本轮的问题可能还在顶层（还没归档进 rounds/rN）——挂到当前轮，表单才不会消失
-  const top = state && state.confirm
-  if (top && Array.isArray(top.questions) && top.questions.length) {
-    const g = groups.find(function (x) { return x.round === cur })
-    if (g && !g.confirm) g.confirm = { questions: top.questions, answers: Array.isArray(top.answered) ? top.answered : [] }
-  }
+  // ㉝ 数据归属：意向确认**只认** rounds/r<N>/intent.confirm.json 归档的那一份。
+  // 以前这里会把顶层 confirm 挂到当前轮，后果是 r2 的卡片上顶着 r1 的问题、用户点了答案
+  // 却写进了错误的轮次。顶层的 confirm 现在只服务于「整单没有 rounds」的老订单合成（上面那段）。
   groups.sort(function (a, b) { return a.round - b.round })
   return { groups: groups, current: cur }
 }
@@ -470,8 +525,17 @@ function groupRounds(state) {
  * ------------------------------------------------------------------ */
 let submitWait = null
 
-function confirmSectionHtml(c, round, isCurrent) {
-  if (!c || !c.questions || !c.questions.length) return ''
+/** 老单标记：整单没有 rounds 时才可能出现，且只出现在合成出来的那一轮上 */
+function legacyTagHtml(synthetic) {
+  if (!synthetic) return ''
+  return '<span class="sl-badge" style="color:#8a8f98;font-weight:400">（阶段 1 · 旧单，无归档）</span>'
+}
+
+function confirmSectionHtml(c, round, isCurrent, synthetic) {
+  // ㉝：本轮没有归档的意向确认就明说「本轮无意向确认」，不许拿别的轮次顶替
+  if (!c || !c.questions || !c.questions.length) {
+    return '<div class="sl-card gray"><div class="sl-meta" style="margin-top:0">📭 本轮无意向确认' + legacyTagHtml(synthetic) + '</div></div>'
+  }
   const answered = Array.isArray(c.answers) && c.answers.length > 0
   // 等待卡片只在当前轮出现（历史轮只是回看，不该冒充「刚提交」）
   if (submitWait && isCurrent) {
@@ -483,15 +547,14 @@ function confirmSectionHtml(c, round, isCurrent) {
   }
   const key = 'c' + round
   const open = foldOpen(key, !answered)
-  let html = '<div class="sl-card ' + (answered ? 'gray' : 'amber') + '">' +
-    foldHeadHtml(key, open, '<span class="sl-ttl">❓ 意向确认' + (answered ? '（已填）' : '（待你选）') + '</span>',
+  const html = '<div class="sl-card ' + (answered ? 'gray' : 'amber') + '">' +
+    foldHeadHtml(key, open, '<span class="sl-ttl">❓ 意向确认' + (answered ? '（已填）' : '（待你选）') + legacyTagHtml(synthetic) + '</span>',
       '<span class="sl-badge" style="margin-left:auto">' + (answered ? '已提交' : '待确认') + '</span>')
-  if (!open) return html + '</div>'
-  html += '<div class="sl-foldb">'
+  let inner = ''
   for (const q of c.questions) {
     const picked = (c.answers || []).find(function (a) { return a && a.id === q.id })
     const rec = typeof q.recommend === 'number' ? q.recommend : -1
-    html += '<div class="sl-sub" style="border:1px solid #f3e6c8;border-radius:9px;padding:8px 10px;background:#fff">' +
+    inner += '<div class="sl-sub" style="border:1px solid #f3e6c8;border-radius:9px;padding:8px 10px;background:#fff">' +
       '<div class="sl-p" style="margin-top:0">' + esc(q.question) + '</div>' +
       (q.options || []).map(function (opt, i) {
         const on = picked ? picked.chosen === opt : i === rec
@@ -503,8 +566,8 @@ function confirmSectionHtml(c, round, isCurrent) {
       }).join('') +
       (q.why ? '<div class="sl-meta">理由：' + esc(q.why) + '</div>' : '') + '</div>'
   }
-  if (!answered) html += '<button class="sl-btn" data-act="submit-intent">提交给流程</button>'
-  return html + '</div></div>'
+  if (!answered) inner += '<button class="sl-btn" data-act="submit-intent">提交给流程</button>'
+  return html + foldBodyHtml(open, inner) + '</div>'
 }
 
 function interruptsSectionHtml(list, round) {
@@ -521,7 +584,7 @@ function interruptsSectionHtml(list, round) {
   return '<div class="sl-card amber">' +
     foldHeadHtml(key, open, '<span class="sl-ttl">💬 吐槽</span>',
       '<span class="sl-badge" style="margin-left:auto">' + items.length + ' 条</span>') +
-    (open ? '<div class="sl-foldb"><div class="sl-trace">' + body + '</div></div>' : '') + '</div>'
+    foldBodyHtml(open, '<div class="sl-trace">' + body + '</div>') + '</div>'
 }
 
 function planSectionHtml(g, isCurrent, state) {
@@ -531,25 +594,24 @@ function planSectionHtml(g, isCurrent, state) {
   if (!plan && !intent && !research) return ''
   const key = 'p' + g.round
   const open = foldOpen(key, true)
-  let html = '<div class="sl-card blue">' +
+  const html = '<div class="sl-card blue">' +
     foldHeadHtml(key, open, '<span class="sl-ttl">🔍 调查与转译</span>',
       (plan && plan.executor ? '<span class="sl-meta" style="margin-left:auto">执行 ' + esc(plan.executor) + '</span>' : ''))
-  if (!open) return html + '</div>'
-  html += '<div class="sl-foldb">'
+  let inner = ''
   if (intent) {
-    html += '<div class="sl-p"><b>转译</b> · ' + esc(intent.restate) + '</div>' +
+    inner += '<div class="sl-p"><b>转译</b> · ' + esc(intent.restate) + '</div>' +
       '<div class="sl-meta">判据 ' + intent.criteria + ' 条（数值 ' + intent.numeric + ' / 人判 ' + intent.human + '）</div>'
   }
   if (research) {
-    html += '<div class="sl-meta">调查 ' + research.total + ' 条 · 带 URL ' + research.withUrl + ' · 用于决策 ' + research.used +
+    inner += '<div class="sl-meta">调查 ' + research.total + ' 条 · 带 URL ' + research.withUrl + ' · 用于决策 ' + research.used +
       (research.top && research.top[0] ? ' · 关键：' + esc(String(research.top[0]).slice(0, 60)) : '') + '</div>'
   }
   if (plan && plan.orders.length) {
-    html += '<div style="margin-top:6px">' + plan.orders.map(function (o) {
+    inner += '<div style="margin-top:6px">' + plan.orders.map(function (o) {
       return '<div class="sl-row"><span class="k">🗂 ' + esc(o.id) + '</span><span>' + esc(o.task) + '</span></div>'
     }).join('') + '</div>'
   }
-  return html + '</div></div>'
+  return html + foldBodyHtml(open, inner) + '</div>'
 }
 
 function verifySectionHtml(g) {
@@ -560,17 +622,16 @@ function verifySectionHtml(g) {
   const open = foldOpen(key, true)
   const failed = !!(v && v.fail.length) || !!(rv && /不合格|不过|fail/i.test(String(rv.verdict || '')))
   const ttl = failed ? '⚠️ 验收 · 有不过的' : '✅ 验收'
-  let html = '<div class="sl-card ' + (failed ? 'red' : 'green') + '">' +
+  const html = '<div class="sl-card ' + (failed ? 'red' : 'green') + '">' +
     foldHeadHtml(key, open, '<span class="sl-ttl">' + ttl + '</span>',
       rv && rv.verdict ? '<span class="sl-badge" style="margin-left:auto">评审 ' + esc(rv.verdict) + '</span>' : '')
-  if (!open) return html + '</div>'
-  html += '<div class="sl-foldb">'
+  let inner = ''
   if (v) {
-    html += '<div class="sl-p"><span style="color:#2e9e5b">过 ' + v.pass.length + '</span> · <span style="color:#c0392b">不过 ' + v.fail.length + '</span></div>'
-    if (v.fail.length) html += '<div class="sl-meta">' + v.fail.slice(0, 4).map(function (x) { return '❌ ' + esc(x) }).join(' · ') + '</div>'
-    if (v.measuredBy) html += '<div class="sl-meta">量法：' + esc(v.measuredBy) + '</div>'
+    inner += '<div class="sl-p"><span style="color:#2e9e5b">过 ' + v.pass.length + '</span> · <span style="color:#c0392b">不过 ' + v.fail.length + '</span></div>'
+    if (v.fail.length) inner += '<div class="sl-meta">' + v.fail.slice(0, 4).map(function (x) { return '❌ ' + esc(x) }).join(' · ') + '</div>'
+    if (v.measuredBy) inner += '<div class="sl-meta">量法：' + esc(v.measuredBy) + '</div>'
   }
-  return html + '</div></div>'
+  return html + foldBodyHtml(open, inner) + '</div>'
 }
 
 function decideSectionHtml(d) {
@@ -579,16 +640,15 @@ function decideSectionHtml(d) {
   const next = d.nextRoundOrders || []
   const key = 'd' + (next.length + '-' + (d.action || ''))
   const open = foldOpen(key, false)
-  let html = '<div class="sl-card gray">' +
+  const html = '<div class="sl-card gray">' +
     foldHeadHtml(key, open, '<span class="sl-ttl">🔁 决定' + (d.action ? ' · ' + esc(d.action) : '') + '</span>',
       '<span class="sl-badge" style="margin-left:auto">' + (next.length ? '下一轮 ' + next.length + ' 张工单' : '无下一轮工单') + '</span>')
-  if (!open) return html + '</div>'
-  html += '<div class="sl-foldb">'
-  if (gaps.length) html += '<div class="sl-meta">要补的：' + gaps.slice(0, 6).map(function (x) { return '· ' + esc(String(x).slice(0, 60)) }).join(' ') + '</div>'
-  if (next.length) html += next.map(function (o) {
+  let inner = ''
+  if (gaps.length) inner += '<div class="sl-meta">要补的：' + gaps.slice(0, 6).map(function (x) { return '· ' + esc(String(x).slice(0, 60)) }).join(' ') + '</div>'
+  if (next.length) inner += next.map(function (o) {
     return '<div class="sl-row"><span class="k">🗂 ' + esc(o.id || '') + '</span><span>' + esc(o.task || '') + '</span></div>'
   }).join('')
-  return html + '</div></div>'
+  return html + foldBodyHtml(open, inner) + '</div>'
 }
 
 function roundGroupHtml(g, isCurrent, state) {
@@ -603,14 +663,13 @@ function roundGroupHtml(g, isCurrent, state) {
     '<span class="cv" style="color:#8a8f98;font-size:11px;width:10px">' + (open ? '▾' : '▸') + '</span>' +
     '<span class="sl-ttl">🔄 第 ' + esc(g.round) + ' 轮' + (isCurrent ? ' · 当前' : '') + '</span>' +
     (badge ? '<span class="sl-badge" style="margin-left:auto">' + badge + '</span>' : '') + '</div>'
-  if (!open) return html + '</div>'
-  html += '<div class="bd">' +
-    confirmSectionHtml(g.confirm, g.round, isCurrent) +
+  const inner = confirmSectionHtml(g.confirm, g.round, isCurrent, !!g.synthetic) +
     interruptsSectionHtml(g.interrupts, g.round) +
     planSectionHtml(g, isCurrent, state) +
     verifySectionHtml(g) +
-    decideSectionHtml(g.decide) + '</div></div>'
-  return html
+    decideSectionHtml(g.decide)
+  // ㉛：轮次内容容器同样 min-width:0，长任务名不会把卡片顶出面板
+  return html + foldBodyHtml(open, '<div class="bd" style="min-width:0;overflow-wrap:anywhere">' + inner + '</div>') + '</div>'
 }
 
 /** 面板主视图：状态卡 → 需求原文 → 参考与产物 → 按轮分组 */
@@ -702,7 +761,7 @@ function panelHtml(tab, stateOverride, winOverride) {
     '<div class="sl-tab ' + (tab !== 'flow' ? 'on' : '') + '" data-tab="auto">肥鱼接单</div>' +
     '<div class="sl-tab ' + (tab === 'flow' ? 'on' : '') + '" data-tab="flow">流转状态</div>' +
     '<span class="sl-title">' + orderBarHtml(state) + '</span></div>' +
-    '<div class="sl-body">' + body + '</div>' + ventFooterHtml(state, win) + newOrderFooterHtml(state)
+    '<div class="sl-body" style="min-width:0;overflow-wrap:anywhere">' + body + '</div>' + ventFooterHtml(state, win) + newOrderFooterHtml(state)
 }
 
 /* ------------------------------------------------------------------ *
@@ -909,7 +968,7 @@ let modeEl = null
 let modeRefs = []
 let modeHost = null
 let modeHostPrev = ''
-const modeForm = { req: '', title: '', research: 'high', rounds: 3, researchModel: '', execModel: '' }
+const modeForm = { req: '', title: '', research: 'high', rounds: 3, researchModel: '', execModel: '', researchEffort: EFFORT_DEFAULT, execEffort: EFFORT_DEFAULT }
 
 /**
  * 从胶囊往上找「真实输入框容器」：最近一个包含 textarea / contenteditable 的祖先。
@@ -989,8 +1048,11 @@ function ensureMode() {
   })
   modeEl.addEventListener('change', function (ev) {
     const t = ev.target
-    if (matches(t, '[data-research-model]')) modeForm.researchModel = t.value
-    else if (matches(t, '[data-exec-model]')) modeForm.execModel = t.value
+    // 换模型要重画：可选的努力档、禁用态、提示都跟着模型走
+    if (matches(t, '[data-research-model]')) { modeForm.researchModel = t.value; drawMode(); return }
+    if (matches(t, '[data-exec-model]')) { modeForm.execModel = t.value; drawMode(); return }
+    if (matches(t, '[data-research-effort]')) modeForm.researchEffort = t.value
+    else if (matches(t, '[data-exec-effort]')) modeForm.execEffort = t.value
     else if (matches(t, '[data-research]')) modeForm.research = t.value
     else if (matches(t, '[data-rounds]')) modeForm.rounds = t.value
   })
@@ -1017,7 +1079,9 @@ function modeHtml(state) {
     '<textarea class="req" data-req rows="1" placeholder="要做什么？一句话描述目标，例如：把这个特效调成参考片的样子">' + esc(modeForm.req) + '</textarea>' +
     '<div class="mfoot">' +
       '<span class="mf-lb">调查模型</span>' + modelSelectHtml('research-model', modeForm.researchModel, models) +
+      '<span class="mf-lb">努力程度 · 调查</span>' + effortHtml('research-effort', modeForm.researchEffort, models, modeForm.researchModel) +
       '<span class="mf-lb">执行模型</span>' + modelSelectHtml('exec-model', modeForm.execModel, models) +
+      '<span class="mf-lb">努力程度 · 执行</span>' + effortHtml('exec-effort', modeForm.execEffort, models, modeForm.execModel) +
       '<span class="sl-meta" title="live=从宿主 llm 服务实时拉取；fallback=插件内置清单，可能少了你新装的模型">' + (models.source === 'live' ? '🟢 实时' : '🟡 兜底') + '</span>' +
       '<span class="mf-lb">调研</span><select class="sl-sel" data-research>' + research + '</select>' +
       '<span class="mf-lb">轮数</span><select class="sl-sel" data-rounds>' + rounds + '</select>' +
@@ -1039,6 +1103,9 @@ function buildStartBody(req, refs, form) {
     budget: { research: f.research || 'high', maxRounds: Number(f.rounds || 3) },
     researchModel: parseModel(f.researchModel),
     execModel: parseModel(f.execModel),
+    // ⑱⑳：努力程度跟着两个模型各走一份（后端落进 order.json）
+    researchEffort: effortValue(f.researchEffort),
+    execEffort: effortValue(f.execEffort),
     session: sessionKey() || null,
   }
   const title = String(f.title || '').trim()
@@ -1126,6 +1193,8 @@ async function submitMode() {
     modeForm.title = ''
     modeForm.researchModel = ''
     modeForm.execModel = ''
+    modeForm.researchEffort = EFFORT_DEFAULT
+    modeForm.execEffort = EFFORT_DEFAULT
     toggleComposerMode(false)
     await refresh()
     flash('已下单：' + (r.data.run || '') + (refs.length ? '（' + refs.length + ' 个参考）' : '') + (gifSkipped ? ' · GIF 未能拆帧，可能量不了' : ''))
@@ -1227,6 +1296,9 @@ exports.__ui = {
   modelSelectHtml: modelSelectHtml,
   buildStartBody: buildStartBody,
   parseModel: parseModel,
+  modelEfforts: modelEfforts,
+  setModeForm: function (patch) { Object.assign(modeForm, patch || {}) },
+  modeForm: function () { return Object.assign({}, modeForm) },
   groupRounds: groupRounds,
   currentRound: currentRound,
   foldOpen: foldOpen,

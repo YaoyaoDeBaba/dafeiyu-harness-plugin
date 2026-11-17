@@ -78,7 +78,10 @@ function fixture(over) {
         verify: { pass: ['厚度'], fail: ['边缘过硬'] },
         review: { verdict: '不合格' },
         decide: { action: 'next', gapsForNextRound: ['边缘软化'], nextRoundOrders: [{ id: 'T2', task: '软化边缘' }] } },
-      { round: 2, plan: { orders: [{ id: 'T3', task: '云改 ParticleSystem' }], executor: 'mimo-v2.6-pro' } },
+      { round: 2,
+        // 第二轮**自己的**意向确认（㉝ 之后只认 rounds[].confirm，顶层 confirm 不再顶替当前轮）
+        confirm: { questions: [{ id: 'q2', question: '第二轮云底色？', options: ['冷灰', '暖'], recommend: 0 }], answers: [] },
+        plan: { orders: [{ id: 'T3', task: '云改 ParticleSystem' }], executor: 'mimo-v2.6-pro' } },
     ],
     models: MODELS,
     confirm: { questions: [{ id: 'q1', question: '这一轮云底色选哪个？', options: ['冷灰', '折中', '暖'], recommend: 2, why: '参考片偏冷' }], answered: [] },
@@ -190,6 +193,8 @@ test('老订单没有 rounds 时，用顶层字段合成一轮', () => {
   assert.ok(html.includes('第 2 轮 · 当前'), '应把 plan.round 当成当前轮')
   assert.ok(html.includes('意向确认'), '顶层 confirm 要挂到当前轮上')
   assert.ok(html.includes('提交给流程'), '没答完时要能提交')
+  // 合成的老单必须自报家门，别让人以为是归档里的意向确认
+  assert.ok(html.includes('阶段 1 · 旧单，无归档'), '老单合成的轮没标「（阶段 1 · 旧单，无归档）」')
 })
 
 /* ---------------- 5. 吐槽框：重绘不丢字 + 输入中 2s 不重绘 ---------------- */
@@ -279,4 +284,128 @@ test('订单下拉只显示任务标题（不显示状态）', () => {
   assert.ok(menu.includes('雷云优化'), '下拉里没有标题')
   assert.ok(!menu.includes('sl-menu .it') && !/class="it[^"]*"[^>]*>[\s\S]{0,40}<span class="st">/.test(html), '下拉别再渲染状态')
   assert.ok(!html.includes('/>sl-雷云<' + 'span'), '下拉不该用目录名当标签')
+})
+
+/* ---------------- 8. ㉛ 布局：内容容器 min-width:0 + 折叠态不占高 ---------------- */
+test('㉛ 内容容器带 min-width:0，长串不把卡片顶破', () => {
+  ui.resetFold()
+  const html = ui.panelHtml('auto', fixture(), { open: true })
+  assert.ok(/class="sl-body" style="[^"]*min-width:0/.test(html), '面板内容容器（sl-body）缺 min-width:0')
+  assert.ok(/class="bd" style="[^"]*min-width:0/.test(html), '轮次内容容器（bd）缺 min-width:0')
+  assert.ok(/style="min-width:0;overflow-wrap:anywhere"/.test(html), '内容容器没有同时带上 overflow-wrap:anywhere')
+  // CSS 侧也要兜住：卡片 / 正文 / 折叠体三处都不能被长串撑开
+  assert.match(bundle, /\.sl-body\{[^}]*min-width:0/, '.sl-body 的 CSS 缺 min-width:0')
+  assert.match(bundle, /\.sl-card\{[^}]*min-width:0[^}]*overflow-wrap:anywhere/, '.sl-card 的 CSS 缺 min-width:0 + overflow-wrap')
+  assert.match(bundle, /\.sl-p\{[^}]*min-width:0/, '.sl-p 的 CSS 缺 min-width:0')
+})
+
+test('㉛ 折叠态是 display:none / max-height:0 的空壳，不占高度', () => {
+  ui.resetFold()
+  const html = ui.panelHtml('auto', fixture(), { open: true })
+  const shells = html.match(/<div class="sl-foldb folded"[^>]*><\/div>/g) || []
+  // 需求原文 + 第 1 轮（历史轮）默认折叠
+  assert.ok(shells.length >= 2, '折叠态没输出空壳节点（实际 ' + shells.length + ' 个）')
+  for (const s of shells) {
+    const style = (s.match(/style="([^"]*)"/) || [])[1] || ''
+    assert.ok(/display:none|max-height:0/.test(style), '折叠态节点的 style 既没 display:none 也没 max-height:0：' + s)
+  }
+  // 折叠头后面紧跟的就是这块空壳（不是「内容照渲染只是看不见」）
+  assert.ok(/data-fold="r1" data-open="0"[\s\S]{0,240}?<div class="sl-foldb folded"/.test(html), '第 1 轮折叠后没有紧跟折叠空壳')
+  // 展开态必须有内容容器
+  assert.ok(/<div class="sl-foldb" style="min-width:0/.test(html), '展开态缺内容容器')
+  assert.match(bundle, /\.sl-foldb\.folded\{[^}]*max-height:0/, 'CSS 里折叠体缺 max-height:0')
+})
+
+/* ---------------- 9. ㉝ 意向确认归属：顶层 confirm 不再挂当前轮 ---------------- */
+test('㉝ 无归档的轮显示「本轮无意向确认」，顶层 confirm 不许顶替', () => {
+  ui.resetFold()
+  const state = fixture()
+  // r1 有归档的 confirm；r2 故意没有；顶层还留着一条（老数据）——它不许出现在任何一轮里
+  state.rounds = [state.rounds[0], { round: 2, plan: state.rounds[1].plan }]
+  assert.ok(state.confirm && state.confirm.questions.length, '夹具应保留顶层 confirm 才能验证不串轮')
+  const html = ui.panelHtml('auto', state, { open: true })
+  const at = html.indexOf('data-fold="r2"')
+  assert.ok(at > 0, '没渲染出第 2 轮')
+  const r2 = html.slice(at)
+  assert.ok(!r2.includes('❓ 意向确认'), 'r2 组里冒出了别的轮次的意向确认标题')
+  assert.ok(!r2.includes('这一轮云底色选哪个'), 'r2 组里出现了顶层 confirm 的问题（被挂到当前轮了）')
+  assert.ok(r2.includes('本轮无意向确认'), '空轮没说明「本轮无意向确认」')
+  // 有 rounds（哪怕是 r2）就严格按归档：不许再出现老单标记
+  assert.ok(!html.includes('阶段 1 · 旧单，无归档'), '有 rounds 时不许出现老单标记')
+  // r1 自己归档的那份还在（已答过的确认默认折起，这里手动展开看内容）
+  ui.setFold('r1', true)
+  ui.setFold('c1', true)
+  const opened = ui.panelHtml('auto', state, { open: true })
+  assert.ok(opened.includes('第一轮色温？'), 'r1 自己的意向确认丢了')
+  assert.ok(!opened.includes('这一轮云底色选哪个'), '顶层 confirm 不该被渲染进任何一轮')
+  ui.resetFold()
+})
+
+/* ---------------- 10. A2 状态卡：子代理进度 + 静默告警 ---------------- */
+test('A2 状态卡显示「已返回 2/3」，stale 时红字报「已静默 X 分钟」', () => {
+  ui.resetFold()
+  const html = ui.panelHtml('auto', fixture({
+    status: { text: '等待子代理执行', node: '2.2-exec-r2', agents: [], returned: 2, total: 3, stale: true, silentForMs: 660000 },
+  }), { open: true })
+  assert.ok(html.includes('2/3'), '缺「已返回 2/3」')
+  assert.ok(html.includes('已返回'), '缺「已返回」字样')
+  assert.ok(html.includes('已静默'), '缺静默告警')
+  assert.ok(html.includes('11 分钟'), '静默时长不对（660000ms 应为 11 分钟）')
+  assert.ok(/class="sl-stale"/.test(html), '静默告警没有红色样式')
+  assert.ok(/sl-lamp red/.test(html), '静默时指示灯没转红')
+  const calm = ui.panelHtml('auto', fixture({
+    status: { text: '等待子代理执行', node: '2.2-exec-r2', agents: [], returned: 2, total: 3, stale: false, silentForMs: 0 },
+  }), { open: true })
+  assert.ok(calm.includes('2/3'), '正常态也要显示进度')
+  assert.ok(!calm.includes('已静默'), '没 stale 不该报静默')
+})
+
+/* ---------------- 11. ⑱⑳ 努力程度下拉 ---------------- */
+const MODELS_EFFORT = {
+  default: '由主 Agent 分配',
+  options: [
+    { provider: 'haituo', model: 'mimo-v2.6-pro', label: 'mimo-v2.6-pro', efforts: ['low', 'high', 'max'] },
+    { provider: 'haituo', model: 'kimi-k3.1-pro', label: 'kimi-k3.1-pro', efforts: [] },
+    { provider: 'haituo', model: 'deepseek-v4-pro', label: 'deepseek-v4-pro' },
+  ],
+}
+
+test('⑱ 下单表单有努力程度下拉，默认 max，档位来自 models.options[].efforts', () => {
+  ui.setModeForm({ researchModel: '', execModel: '', researchEffort: 'max', execEffort: 'max' })
+  const html = ui.modeHtml(fixture({ models: MODELS_EFFORT }))
+  assert.ok(html.includes('data-research-effort'), '缺调查努力程度下拉')
+  assert.ok(html.includes('data-exec-effort'), '缺执行努力程度下拉')
+  assert.ok(html.includes('努力程度'), '下拉没有「努力程度」标签')
+  // 没选模型（由主 Agent 分配）→ 不禁用，用标准三档
+  assert.ok(/<select class="sl-sel" data-research-effort>/.test(html), '没选模型时不该禁用')
+  assert.ok(/<option value="max" selected>/.test(html), '默认不是 max')
+  assert.ok(html.includes('value="low"') && html.includes('value="high"'), '缺 low/high 档')
+  // 选中宣告了 efforts 的模型 → 用它给的档位；没宣告 efforts 字段 → 回落标准三档且不禁用
+  ui.setModeForm({ researchModel: 'haituo|mimo-v2.6-pro', execModel: 'haituo|deepseek-v4-pro' })
+  const picked = ui.modeHtml(fixture({ models: MODELS_EFFORT }))
+  assert.ok(/<select class="sl-sel" data-research-effort><option value="low">/.test(picked), '调查努力没按 models.options[].efforts 出档')
+  assert.ok(/<select class="sl-sel" data-exec-effort>/.test(picked), '没宣告 efforts 的模型不该禁用')
+  assert.ok(!picked.includes('该模型不支持设定努力程度'), '支持却报了不支持')
+})
+
+test('⑳ 选中不宣告 effort 的模型 → 该下拉禁用并提示', () => {
+  ui.setModeForm({ researchModel: 'haituo|mimo-v2.6-pro', execModel: 'haituo|kimi-k3.1-pro' })
+  const html = ui.modeHtml(fixture({ models: MODELS_EFFORT }))
+  assert.ok(/<select class="sl-sel" data-exec-effort disabled>/.test(html), '执行努力程度没禁用')
+  assert.ok(html.includes('该模型不支持设定努力程度'), '缺禁用理由')
+  assert.ok(/<select class="sl-sel" data-research-effort>/.test(html), '别的模型被连坐禁用了')
+  // 模型自己也不宣告努力程度
+  assert.equal(ui.modelEfforts(MODELS_EFFORT, 'haituo|kimi-k3.1-pro').supported, false)
+  assert.equal(ui.modelEfforts(MODELS_EFFORT, 'haituo|deepseek-v4-pro').supported, true)
+  assert.deepEqual(ui.modelEfforts(MODELS_EFFORT, 'haituo|mimo-v2.6-pro').levels, ['low', 'high', 'max'])
+  ui.setModeForm({ researchModel: '', execModel: '', researchEffort: 'max', execEffort: 'max' })
+})
+
+test('⑱ /start 请求体带 researchEffort / execEffort，缺省 max', () => {
+  const body = ui.buildStartBody('把雷云调厚一点，边缘要碎', [], { research: 'high', rounds: 3, researchEffort: 'low', execEffort: 'high' })
+  assert.equal(body.researchEffort, 'low')
+  assert.equal(body.execEffort, 'high')
+  const def = ui.buildStartBody('把雷云调厚一点，边缘要碎', [], {})
+  assert.equal(def.researchEffort, 'max', '调查努力程度默认应为 max')
+  assert.equal(def.execEffort, 'max', '执行努力程度默认应为 max')
 })
