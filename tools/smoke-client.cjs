@@ -43,9 +43,10 @@ globalThis.__ModuleLoader__ = {
 require('../dist/client.cjs')
 check(seen.includes('conversation.composer.dock'), '没往 composer.dock 注册')
 check(seen.includes('conversation.session.header.actions'), '没往 header.actions 注册')
-check(registered.length === 2, '槽位注册数量应为 2，实际 ' + registered.length)
+check(registered.length === 3, '槽位注册数量应为 3（胶囊/标题栏/发起按钮），实际 ' + registered.length)
 check(registered.some((r) => r.endsWith('-chip')), '缺胶囊槽位 id')
 check(registered.some((r) => r.endsWith('-header')), '缺标题栏槽位 id')
+check(registered.some((r) => r.endsWith('-new')), '缺发起按钮槽位 id')
 if (failures) {
   process.exit(1)
 }

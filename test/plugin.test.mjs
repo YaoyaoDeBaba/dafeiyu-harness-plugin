@@ -565,12 +565,13 @@ test('Cordis 式 ctx.inject：tools / skills / webServer 各订阅一次，回�
   assert.equal(tools.length, 2)
   assert.equal(skills.length, 1)
   assert.equal(skills[0].name, 'selfloop')
-  // 五条路由：state / window / intent-answers / interrupt / shot（0.26.2 加图片），全是 exact
-  assert.equal(routes.length, 5)
+  // 六条路由：state / window / intent-answers / interrupt / shot / start（0.26.4 加下单），全是 exact
+  assert.equal(routes.length, 6)
   assert.deepEqual(routes.map((r) => r.path).sort(), [
     '/plugins/dsh-selfloop/intent-answers',
     '/plugins/dsh-selfloop/interrupt',
     '/plugins/dsh-selfloop/shot',
+    '/plugins/dsh-selfloop/start',
     '/plugins/dsh-selfloop/state',
     '/plugins/dsh-selfloop/window',
   ])
