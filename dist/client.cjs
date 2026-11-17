@@ -23,6 +23,7 @@ const STATE_ROUTE = '/plugins/dsh-selfloop/state'
 const WINDOW_ROUTE = '/plugins/dsh-selfloop/window'
 const INTERRUPT_ROUTE = '/plugins/dsh-selfloop/interrupt'
 const ANSWERS_ROUTE = '/plugins/dsh-selfloop/intent-answers'
+const SHOT_ROUTE = '/plugins/dsh-selfloop/shot'
 
 const PLUGIN_ID = 'dsh-selfloop'
 const STYLE_ID = 'dsh-selfloop/ui.css'
@@ -78,6 +79,12 @@ const CSS = [
 '.sl-node.run .tx{color:#1a73e8;font-weight:600}',
 '.sl-ta{width:100%;min-height:132px;border:1px solid #e3e3e8;border-radius:9px;padding:10px 12px;font:inherit;font-size:13px;line-height:1.6;resize:vertical;margin-top:10px;box-sizing:border-box}',
 '.sl-meta{display:flex;gap:8px;align-items:center;margin-top:6px;font-size:11px;color:#9aa0a6}',
+'.sl-foot{border-top:1px solid #f0f0f2;padding:10px 12px;background:#fcfcfd}',
+'.sl-foot .row1{display:flex;align-items:center;gap:8px;font-size:11.5px;color:#8a8f98;margin-bottom:6px}',
+'.sl-foot .st{font-weight:600}',
+'.sl-foot .open{color:#1a73e8}.sl-foot .closed{color:#c0392b}',
+'.sl-thumb{width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:6px;background:#eef0f3;display:block}',
+'.sl-btn:disabled{background:#dadce0;color:#fff;cursor:not-allowed}',
 '.sl-trace{border:1px solid #eee;border-radius:10px;overflow:hidden}',
 '.sl-tr{padding:8px 10px;border-bottom:1px solid #f4f4f6}',
 '.sl-tr:last-child{border-bottom:0}',
@@ -180,7 +187,7 @@ function autonomyHtml(state, win) {
   else if (win && win.open && win.reason === 'human') cta = '<div class=\"sl-cta\"><div class=\"t\">这一步需要你</div><div class=\"d\">' + esc(cur.title) + ' 在等你，填完流程自动往下走。</div></div>'
   else if (win && win.open) cta = '<div class=\"sl-cta warn\"><div class=\"t\">吐槽窗口开放中</div><div class=\"d\">现在说会进下一轮工单；本环节一交付就关，过期只顺延不打断。</div></div>'
   else cta = '<div class=\"sl-cta\"><div class=\"t\">' + esc(cur.title) + ' 正在跑</div><div class=\"d\">不需要你动手，出结果我会在这里更新。</div></div>'
-  let html = '<div class=\"sl-sec\">' + cta + '</div>'
+  let html = '<div class=\"sl-sec\">' + cta + '</div>' + intentFormHtml(state) + thumbsHtml(state)
   const intent = state.intent
   if (intent) html += '<div class=\"sl-sec\"><div class=\"sl-h\">意图分析<div class=\"ln\"></div></div><div class=\"sl-txt\">' + esc(intent.restate) + '</div><div class=\"sl-meta\">判据 ' + intent.criteria + ' 条（数值 ' + intent.numeric + ' / 人判 ' + intent.human + '）</div></div>'
   if (state.plan) html += '<div class=\"sl-sec\"><div class=\"sl-h\">任务规划<div class=\"ln\"></div><span class=\"sl-badge\">第 ' + esc(state.plan.round || 1) + ' 轮</span></div><div class=\"sl-txt\">' + (state.plan.orders || []).map(function (o) { return esc(o.id) + ' ' + esc(o.task) }).join('<br>') + '</div></div>'
@@ -197,6 +204,53 @@ function autonomyHtml(state, win) {
   return html
 }
 
+function thumbsHtml(state) {
+  const refs = (state.refs || []).slice(0, 8)
+  const shots = (state.shots || []).slice(0, 4)
+  if (!refs.length && !shots.length) return ''
+  const cell = (name, tag) =>
+    '<div><img class="sl-thumb" loading="lazy" src="' + SHOT_ROUTE + '?name=' + encodeURIComponent(name) + '" alt=""><div style="font-size:10px;color:#9aa0a6;margin-top:2px">' + esc(tag) + '</div></div>'
+  let html = '<div class="sl-sec"><div class="sl-h">参考与产物<div class="ln"></div><span class="sl-badge">' + (refs.length + shots.length) + '</span></div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">'
+  for (const s of shots) html += cell(s, s.split('/').pop().replace('.png', ''))
+  for (const r of refs) html += cell(r, r.split('/').pop().replace('.png', ''))
+  return html + '</div></div>'
+}
+
+function intentFormHtml(state) {
+  const c = state.confirm
+  if (!c || !c.questions.length) return ''
+  const answered = (c.answered || []).length > 0
+  let html = '<div class="sl-sec"><div class="sl-h">意向确认<div class="ln"></div>' + (answered ? '<span class="sl-badge">已提交</span>' : '<span class="sl-badge">待确认</span>') + '</div>'
+  for (const q of c.questions) {
+    const picked = (c.answered || []).find((a) => a && a.id === q.id)
+    const rec = typeof q.recommend === 'number' ? q.recommend : -1
+    html += '<div style="border:1px solid #eee;border-radius:9px;padding:9px 11px;margin-bottom:9px">' +
+      '<div style="font-size:12.5px;margin-bottom:6px">' + esc(q.question) + '</div>' +
+      (q.options || []).map(function (opt, i) {
+        const on = picked ? picked.chosen === opt : i === rec
+        return '<label style="display:flex;gap:7px;align-items:flex-start;padding:4px 6px;border-radius:6px;cursor:pointer">' +
+          '<input type="radio" name="' + esc(q.id) + '" value="' + esc(opt) + '"' + (on ? ' checked' : '') + (answered ? ' disabled' : '') + '>' +
+          '<span style="font-size:12.5px">' + esc(opt) + (i === rec ? '<span class="sl-badge" style="color:#1a73e8;border-color:#cfe0fd;margin-left:5px">推荐</span>' : '') + '</span></label>'
+      }).join('') +
+      (q.why ? '<div style="font-size:11.5px;color:#8a8f98;margin-top:5px">理由：' + esc(q.why) + '</div>' : '') +
+      '</div>'
+  }
+  if (!answered) html += '<button class="sl-btn" data-act="submit-intent">提交给流程</button>'
+  return html + '</div>'
+}
+
+function ventFooter(state, win) {
+  const open = !!(win && win.open)
+  const stage = (win && win.stage) || (state.currentNode && state.currentNode.id) || ''
+  return '<div class="sl-foot">' +
+    '<div class="row1"><span class="st ' + (open ? 'open' : 'closed') + '">' + (open ? '● 吐槽窗口开放中' : '● 窗口已关闭') + '</span>' +
+    '<span>' + (open ? '现在说进下一轮工单' : '仍可写，会标 expired 顺延下一轮') + '</span></div>' +
+    '<textarea class="sl-ta" data-vent placeholder="想到什么说什么——比如：多股电弧像 3 道平行线、缺根须分叉"></textarea>' +
+    '<div class="row1" style="margin-top:6px"><span>Ctrl+Enter 发送</span><span style="margin-left:auto"><span data-count>0</span> / 500</span></div>' +
+    '<button class="sl-btn" data-act="send-vent">发送到 selfloop' + (stage ? '（' + esc(stage) + '）' : '') + '</button>' +
+    '</div>'
+}
+
 function panelRoundLabel() {
   const plan = store.state && store.state.plan
   const round = plan && plan.round ? plan.round : 1
@@ -209,11 +263,63 @@ function panelHtml(tab) {
     '<div class=\"sl-tab ' + (tab === 'auto' ? 'on' : '') + '\" data-tab=\"auto\">肥鱼自治</div>' +
     '<div class=\"sl-tab ' + (tab === 'flow' ? 'on' : '') + '\" data-tab=\"flow\">流转状态</div>' +
     '<span class=\"sl-title\">' + (panelRoundLabel()) + '</span></div>' +
-    '<div class=\"sl-body\">' + body + '</div>'
+    '<div class=\"sl-body\">' + body + '</div>' + ventFooter(store.state, store.window)
 }
 
 let panelEl = null
 let panelTab = 'auto'
+
+async function postJson(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-selfloop': '1' },
+    body: JSON.stringify(body || {}),
+  })
+  let data
+  try { data = await res.json() } catch (e) { data = { ok: false, error: 'bad-json' } }
+  return { status: res.status, data }
+}
+
+function flash(message) {
+  if (!panelEl) return
+  const bar = document.createElement('div')
+  bar.textContent = message
+  bar.style.cssText = 'position:absolute;left:12px;right:12px;bottom:12px;background:#1a73e8;color:#fff;border-radius:8px;padding:8px 12px;font-size:12.5px;box-shadow:0 6px 18px rgba(0,0,0,.18);z-index:5'
+  panelEl.appendChild(bar)
+  setTimeout(function () { try { bar.remove() } catch (e) { /* 已经没了 */ } }, 2600)
+}
+
+async function sendVent() {
+  const ta = panelEl && panelEl.querySelector('[data-vent]')
+  if (!ta) return
+  const text = String(ta.value || '').trim()
+  if (!text) { flash('先写点什么'); return }
+  const stage = (store.window && store.window.stage) || (store.state && store.state.currentNode && store.state.currentNode.id) || ''
+  const r = await postJson(INTERRUPT_ROUTE, { text: text, stage: stage })
+  if (r.status === 200 || r.status === 409) {
+    ta.value = ''
+    const cnt = panelEl.querySelector('[data-count]')
+    if (cnt) cnt.textContent = '0'
+    await refresh()
+    flash(r.status === 409 ? '窗口已关：这条标 expired，顺延下一轮' : '已收到，会进下一轮工单')
+  } else {
+    flash('没发出去：' + ((r.data && r.data.error) || r.status))
+  }
+}
+
+async function submitIntent() {
+  if (!panelEl) return
+  const qs = (store.state && store.state.confirm && store.state.confirm.questions) || []
+  const answers = []
+  for (const q of qs) {
+    const el = panelEl.querySelector('input[name="' + q.id + '"]:checked')
+    if (el) answers.push({ id: q.id, chosen: el.value })
+  }
+  if (!answers.length) { flash('还没选'); return }
+  const r = await postJson(ANSWERS_ROUTE, { answers: answers })
+  if (r.status === 200) { await refresh(); flash('已提交 ' + answers.length + ' 条选择') }
+  else flash('提交失败：' + ((r.data && r.data.error) || r.status))
+}
 
 function ensurePanel() {
   if (panelEl && panelEl.isConnected) return panelEl
@@ -227,8 +333,20 @@ function ensurePanel() {
     const tab = ev.target.closest('[data-tab]')
     if (tab) { panelTab = tab.getAttribute('data-tab'); drawPanel(); return }
     if (ev.target.closest('[data-act=\"close\"]')) { panelEl.classList.remove('on'); return }
+    if (ev.target.closest('[data-act=\"send-vent\"]')) { sendVent(); return }
+    if (ev.target.closest('[data-act=\"submit-intent\"]')) { submitIntent(); return }
   })
   listeners.add(function () { if (panelEl.classList.contains('on')) drawPanel() })
+  panelEl.addEventListener('input', function (ev) {
+    const ta = ev.target && ev.target.closest ? ev.target.closest('[data-vent]') : null
+    if (!ta) return
+    const counter = panelEl.querySelector('[data-count]')
+    if (counter) counter.textContent = String(String(ta.value || '').length)
+  })
+  panelEl.addEventListener('keydown', function (ev) {
+    const ta = ev.target && ev.target.closest ? ev.target.closest('[data-vent]') : null
+    if (ta && ev.key === 'Enter' && ev.ctrlKey) { ev.preventDefault(); sendVent() }
+  })
   return panelEl
 }
 
