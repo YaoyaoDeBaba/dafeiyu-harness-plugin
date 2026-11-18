@@ -271,12 +271,13 @@ export const checks = {
       // 目标不是数值而是一条参考序列 + 一个相关下限。图像只是首个实现，别的领域照同样的形状写提取器。
       if (String((c && c.kind) || '') === 'profile') {
         const metric = String((c && (c.metric || c.id)) || '')
-        const minCorr = Number(c && c.minCorr)
-        if (!Number.isFinite(minCorr) || minCorr <= 0 || minCorr > 1) {
-          out.push(id + '：profile 型判据要写 minCorr（0~1，例如 0.75）'); return
-        }
         const ref = ext.find((e) => e && e.what === metric && e.kind === 'profile' && Array.isArray(e.value))
         if (!ref) { out.push(id + '：research.extracted 里没有 kind=profile 的 ' + metric + '（先 preflight 量参考）'); return }
+        // minCorr 没写就用 preflight 按留一法算出来的建议值（阈值来自分布，别拍肚子）
+        const minCorr = Number.isFinite(Number(c && c.minCorr)) ? Number(c.minCorr) : Number(ref.minCorrHint)
+        if (!Number.isFinite(minCorr) || minCorr <= 0 || minCorr > 1) {
+          out.push(id + '：profile 型判据要写 minCorr（0~1）；若参考 ≥3 帧，preflight 会给出 minCorrHint 可直接抄'); return
+        }
         if (ref.value.length < 8) { out.push(id + '：参考 ' + metric + ' 只有 ' + ref.value.length + ' 个桶，太粗（≥8）'); return }
         return
       }
@@ -412,7 +413,8 @@ export const checks = {
             const ref = (rj.extracted || []).find((e) => e && e.what === metric && Array.isArray(e.value))
             if (!ref) continue
             const corr = profileCorr(ref.value, cand)
-            const need = Number(c.minCorr)
+            // 与 checks.intent 同口径：没写 minCorr 就用留一法建议值
+            const need = Number.isFinite(Number(c.minCorr)) ? Number(c.minCorr) : Number(ref.minCorrHint)
             if (!(corr >= need)) {
               out.push('结构与参考不像：' + metric + ' 相关 ' + corr.toFixed(3) + ' < 下限 ' + need
                 + '（参考带 ' + need + '~1；剖面越长越像，' + corr.toFixed(2) + ' 通常意味着主体位置/铺展跟参考不是一回事）')

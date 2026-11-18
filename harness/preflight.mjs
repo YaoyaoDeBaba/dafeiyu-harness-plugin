@@ -18,7 +18,7 @@
 import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync, readdirSync } from 'node:fs'
 import { join, resolve, basename } from 'node:path'
 import { probeFile, summarize } from './ref-probe.mjs'
-import { profileFromFile, scalarsFromFile, medianProfile } from './composition.mjs'
+import { profileFromFile, scalarsFromFile, medianProfile, calibrateMinCorr } from './composition.mjs'
 
 function arg(name, def) { const i = process.argv.indexOf('--' + name); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : def }
 
@@ -76,6 +76,9 @@ if (measured && measured.profiles && measured.profiles.length) {
   const src = measured.count === 1 ? measured.sample : measured.count + ' 帧'
   const prof = { what: 'rowProfile', kind: 'profile', value: medianProfile(measured.profiles), source: src }
   if (measured.count === 1) prof.singleFrame = true
+  // 阈值来自分布：留一法给一个 minCorr 建议值，写判据时直接抄（>=3 帧才算得出来）
+  const cal = calibrateMinCorr(measured.profiles)
+  if (cal) { prof.minCorrHint = cal.suggested; prof.loo = { min: cal.min, p25: cal.p25, med: cal.med, max: cal.max } }
   const hitP = research.extracted.find((e) => e.what === 'rowProfile')
   if (hitP) Object.assign(hitP, prof); else research.extracted.push(prof)
 
@@ -132,7 +135,9 @@ console.log('=== preflight: ' + dir + ' ===')
 console.log('参考量测: ' + (measured ? measured.count + ' 张，写进 extracted ' + extracted.length + ' 条' : '未提供 --ref（跳过）'))
 if (measured && measured.profiles && measured.profiles.length) {
   const st = measured.structs[0] || {}
+  const hintCal = calibrateMinCorr(measured.profiles)
   console.log('结构指纹: 行剖面 ' + measured.profiles[0].length + ' 桶 · 质心y ' + (st.centroidY || 0).toFixed(3) + ' · 上部覆盖 ' + (st.topCoverage || 0).toFixed(3) + ' · 留白 ' + (st.skyExposure || 0).toFixed(3))
+  if (hintCal) console.log('  minCorr 建议 ' + hintCal.suggested + '（留一法：min ' + hintCal.min + ' / med ' + hintCal.med + '；阈值来自参考自身离散，别拍脑袋）')
 }
 if (measured && measured.count === 1) {
   console.log('  ⚠ 只量了 1 张。若参考是序列（refs/ 里有多张），先把目录指给 --ref 量分布：')

@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { readFileSync as readB } from 'node:fs'
-import { profileFromFile, profileCorr, medianProfile } from '../harness/composition.mjs'
+import { profileFromFile, profileCorr, medianProfile, calibrateMinCorr } from '../harness/composition.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const PIPE = join(ROOT, 'harness', 'pipeline.mjs')
@@ -125,7 +125,7 @@ function reachedVerify(dir, minCorr, refProfile) {
   writeFileSync(rjPath, JSON.stringify(rj, null, 2))
   writeFileSync(join(dir, 'intent.json'), JSON.stringify({
     restate: '测试', confirmed: true, anchors: [{ kind: 'text', ref: 'icon', why: 'x' }],
-    criteria: [{ id: 'C1', kind: 'profile', metric: 'rowProfile', minCorr }],
+    criteria: [{ id: 'C1', kind: 'profile', metric: 'rowProfile', ...(minCorr === undefined ? {} : { minCorr }) }],
   }))
   writeFileSync(join(dir, 'verify.json'), JSON.stringify({ runs: true, visible: true, shots: ['refs/ref.png'] }))
   mkdirSync(join(dir, 'forms'), { recursive: true })
@@ -182,4 +182,40 @@ test('⑦ profile 判据缺 minCorr → 1.10 挡住并说清', () => {
   const r = run('done', '--run', dir, '--stage', '1.10-translate3')
   assert.equal(r.status, 1, r.stdout)
   assert.match(r.stdout, /minCorr/)
+})
+
+
+// ───────── 阈值来自分布（留一法校准）─────────
+test('⑧ calibrateMinCorr：同族剖面 → 建议值高；互相不相关 → 建议值贴近下限 0.5', () => {
+  const base = Array.from({ length: 32 }, (_, i) => Math.sin(i / 3) * 0.2 + 0.4)
+  const near = [base, base.map((v, i) => v + (i % 2 ? 0.01 : -0.01)), base.map((v, i) => v + (i % 3 ? 0.005 : -0.005))]
+  const good = calibrateMinCorr(near)
+  assert.ok(good && good.suggested >= 0.9, '同族应给出 ≥0.9 的建议：' + JSON.stringify(good))
+
+  const rnd = (seed) => Array.from({ length: 32 }, (_, i) => Math.sin((i * i + seed * 13) / 1.7) * 0.5 + 0.5)
+  const bad = calibrateMinCorr([rnd(1), rnd(2), rnd(3)])
+  assert.ok(bad && bad.suggested <= 0.6, '互不相关应贴近下限：' + JSON.stringify(bad))
+  assert.equal(calibrateMinCorr([base, base]), null, '少于 3 帧不算')
+})
+
+test('⑨ preflight：≥3 帧时写 minCorrHint + loo，并打印建议值', () => {
+  const dir = makeRun()
+  for (const n of ['b.png', 'c.png']) writeFileSync(join(dir, 'refs', n), syntheticFrame(64, 64))
+  const out = pre('--run', dir, '--ref', join(dir, 'refs'))
+  assert.match(out.stdout + out.stderr, /minCorr 建议/)
+  const rj = JSON.parse(readFileSync(join(dir, 'research.json'), 'utf8'))
+  const prof = rj.extracted.find((e) => e.what === 'rowProfile')
+  assert.ok(Number.isFinite(prof.minCorrHint), '缺 minCorrHint：' + JSON.stringify(prof).slice(0, 200))
+  assert.ok(prof.loo && Number.isFinite(prof.loo.min), '缺 loo 分布')
+})
+
+test('⑩ profile 判据不写 minCorr → 自动用留一法建议值（能过）', () => {
+  const dir = makeRun()
+  for (const n of ['b.png', 'c.png']) writeFileSync(join(dir, 'refs', n), syntheticFrame(64, 64))
+  pre('--run', dir, '--ref', join(dir, 'refs'))
+  const rj = JSON.parse(readFileSync(join(dir, 'research.json'), 'utf8'))
+  const prof = rj.extracted.find((e) => e.what === 'rowProfile')
+  reachedVerify(dir, undefined, prof.value)   // 不传 minCorr → 走 hint；参考剖面 = 自身 → 相关≈1
+  const r = run('done', '--run', dir, '--stage', '2.3-verify-r1')
+  assert.equal(r.status, 0, r.stdout + r.stderr)
 })

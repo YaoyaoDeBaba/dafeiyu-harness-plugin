@@ -125,6 +125,29 @@ export function profileCorr(a, b) {
   return num / Math.sqrt(da * db)
 }
 
+/**
+ * 用「留一法」校准 minCorr：每张参考帧 vs 其余帧的中位剖面。
+ * 这样得到的是**同一构图族内部**的自然离散度——阈值必须从这个分布来，不许拍脑袋。
+ * 建议值 = 下限 - 0.05 余量，且不低于 0.5。
+ */
+export function calibrateMinCorr(profiles, margin = 0.05) {
+  if (!Array.isArray(profiles) || profiles.length < 3) return null
+  const loo = profiles.map((p, i) => {
+    const others = profiles.filter((_, j) => j !== i)
+    return profileCorr(medianProfile(others), p)
+  }).sort((a, b) => a - b)
+  const q = (t) => loo[Math.min(loo.length - 1, Math.max(0, Math.round((loo.length - 1) * t)))]
+  const round2 = (v) => Math.round(v * 100) / 100
+  return {
+    n: loo.length,
+    min: round2(loo[0]),
+    p25: round2(q(0.25)),
+    med: round2(q(0.5)),
+    max: round2(loo[loo.length - 1]),
+    suggested: Math.max(0.5, round2(loo[0] - margin)),
+  }
+}
+
 /** 多帧聚合成一条参考剖面（逐桶取中位） */
 export function medianProfile(list) {
   if (!list.length) return []

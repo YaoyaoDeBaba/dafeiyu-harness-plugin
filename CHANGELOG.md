@@ -4,6 +4,23 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.32.1（未发布）· minCorr 不再拍脑袋：留一法自动给建议值
+
+> 回灌上游原件：否。
+> 触发：0.32.0 里 `minCorr` 必须手填，而「填多少」只能靠猜（0.5 太松、0.95 太紧）。
+
+- `composition.calibrateMinCorr(profiles)`：对参考帧做**留一法**（每张 vs 其余帧的中位剖面），
+  给出 `{min,p25,med,max,suggested}`；`suggested = 下限 − 0.05`，且不低于 0.5。
+- `preflight` 在参考 ≥3 帧时把结果写进 `extracted.rowProfile`（`minCorrHint` + `loo`），并打印：
+  `minCorr 建议 0.9（留一法：min 0.951 / med 0.990；阈值来自参考自身离散，别拍脑袋）`。
+- `checks.intent` / `checks.verified` 同口径：**判据没写 `minCorr` 就自动用 hint**；一帧参考（算不出留一法）时才要求手填。
+- `intent.md` 新增 §1.2b：profile 判据怎么写、阈值为什么必须来自分布、以及「像素误差低 ≠ 构图对」的实测。
+
+### 判据
+`node --test` = **419 / 419**（composition 10 例：留一法校准、hint 落盘、自动取默认值）。
+
+---
+
 ## 0.32.0（未发布）· 结构指纹：给判据补上「排列」（L1 基座 + L2 图像实现）
 
 > 回灌上游原件：否。
