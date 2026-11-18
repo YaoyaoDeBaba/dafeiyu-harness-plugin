@@ -463,3 +463,30 @@ test('㊴ 流转信号灯：上游/可流转/唤醒次数都要显示（用户�
   assert.match(html, /可流转/)
   assert.match(html, /已唤醒 3 次/)
 })
+
+test('㊵ 窗口没开时，吐槽输入框整块不许出现（用户第 1 条）', () => {
+  const state = fixture()
+  const closedWin = { open: false, reason: 'waiting-first-delivery', stage: '1.1-preflight' }
+  const html = ui.panelHtml('auto', state, closedWin)
+  assert.equal(html.includes('data-vent'), false, '窗口没开时不许有 textarea')
+  assert.equal(html.includes('data-act="send-vent"'), false, '窗口没开时不许有发送按钮')
+  assert.match(html, /第一轮交付之后/)
+  const openWin = { open: true, stage: '2.3-verify-r1' }
+  const html2 = ui.panelHtml('auto', state, openWin)
+  assert.equal(html2.includes('data-vent'), true, '窗口开了才给输入框')
+})
+
+// ── 跨对话隔离（用户反复提）：会话键永远非空，且不同对话得到不同键 ──
+test('㊶ sessionKey 永远非空（以前返回空串 → 服务端回落全局指针 → 跨对话串单）', () => {
+  const k = ui.sessionKey()
+  assert.ok(typeof k === 'string' && k.length > 0, '必须非空，实测 ' + JSON.stringify(k))
+})
+
+test('㊷ 宿主 boot 里的会话 id 优先被采用', () => {
+  const g = globalThis
+  const saved = g.__DSH_BOOT__
+  g.__DSH_BOOT__ = { sessionId: 'sess-abc-123' }
+  try {
+    assert.equal(client.__ui.sessionKey(), 'sess-abc-123')
+  } finally { g.__DSH_BOOT__ = saved }
+})

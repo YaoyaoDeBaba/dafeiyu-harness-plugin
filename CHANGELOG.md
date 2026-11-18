@@ -4,6 +4,36 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.45.2（未发布）· 跨对话串单的根因：sessionKey 返回空串
+
+> 回灌上游原件：否。用户第二次反馈"跨对话的问题也还在"。查清根因在客户端：
+> `sessionKey()` 探测失败就 `return ''`，于是 `/state`、`/start` 全都不带 session →
+> 服务端按老逻辑回落到"全局指针 / 最近被动过的 run" → **两个对话看到同一个单**。
+
+加固后 `sessionKey()` **永远返回非空**，探测顺序：
+宿主 `__DSH_BOOT__`（sessionId / sessionKey / threadId / conversationId / session.id / conversation.id）
+→ `window.__DSH_SESSION__` → DOM 上的 `[data-session-id|data-conversation-id|data-thread-id|data-session]`
+→ URL 里的 session/conversation/thread/chat 片段 → 路径末段 `url-<seg>` → localStorage 持久随机 `solo-<rand>`。
+
+### 判据
+`node --test` = **479 / 479**（新增 ㊶ 键非空、㊷ boot.sessionId 优先；此前的 ㊵ 覆盖"窗口没开不许渲染输入框"）。
+
+---
+
+## 0.45.1（未发布）· 吐槽框：窗口没开就整块不渲染
+
+> 回灌上游原件：否。用户重启后仍看到吐槽框 —— 查清是**客户端**的问题，不是服务端：
+> `windowState` 早就返回 `open:false / waiting-first-delivery`，但 `ventFooterHtml` 只把状态字改成
+> "● 窗口已关闭"，**textarea 与发送按钮照样渲染**。所以看上去"窗口还在"。
+
+现在：窗口没开 → 整块只留一行说明（"第一轮交付之后才会出现吐槽框" / "等这一轮做完、到验收那一步再吐槽" /
+"这一单已经结束"），**没有输入框、没有发送按钮**。
+
+### 判据
+`node --test` = **477 / 477**（新增 ㊵：窗口没开时 `data-vent` 与发送按钮都不许出现）。
+
+---
+
 ## 0.45.0（未发布）· 用户反复提的三条（吐槽时机 / 会话隔离 / 程序驱动流转）
 
 > 回灌上游原件：否。这三条被拖了很久，今天按原话落地。

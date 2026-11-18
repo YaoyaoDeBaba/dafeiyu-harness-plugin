@@ -27,20 +27,46 @@ const ANSWERS_ROUTE = '/plugins/dsh-selfloop/intent-answers'
 const SHOT_ROUTE = '/plugins/dsh-selfloop/shot'
 const START_ROUTE = '/plugins/dsh-selfloop/start'
 
-/** 会话键：一个 DSH 会话一个订单（用户规则）。探测顺序：全局钩子 → DOM 属性 → URL → global。 */
+/**
+ * 会话键：一个 DSH 会话一个订单（用户规则：每个顶层对话一个「肥鱼接单」实例，互不影响）。
+ * 探测顺序（2026-11-18 加固）：宿主 boot → window 上的会话钩子 → DOM 属性 → URL → 本地持久随机键。
+ * **必须永远返回非空**：以前探测失败就返回 ''，于是 /state 不带 session，服务端回落到全局指针/最近 run，
+ * 两个对话就互相串单——"跨对话的问题也还在"就是这么来的。
+ */
 function sessionKey() {
   try {
     const g = typeof window !== 'undefined' ? window : undefined
-    const boot = g && g.__DSH_BOOT__
-    const guess = (boot && (boot.sessionId || (boot.session && boot.session.id))) ||
-      (g && g.__DSH_SESSION__ && g.__DSH_SESSION__.id)
-    if (guess) return String(guess)
-    const el = document.querySelector('[data-session-id]')
-    if (el) return String(el.getAttribute('data-session-id'))
-    const m = String(location.pathname + location.hash).match(/session[\/=-]([0-9a-fA-F-]{8,})/)
+    const boot = (g && g.__DSH_BOOT__) || {}
+    const cand = [
+      boot.sessionId, boot.sessionKey, boot.threadId, boot.conversationId,
+      boot.session && boot.session.id, boot.conversation && boot.conversation.id,
+      g && g.__DSH_SESSION__ && g.__DSH_SESSION__.id,
+      g && g.__DSH_SESSION_ID__,
+    ].find((x) => typeof x === 'string' && x.trim())
+    if (cand) return String(cand).trim()
+    const doc = g && g.document
+    const sels = ['[data-session-id]', '[data-conversation-id]', '[data-thread-id]', '[data-session]', 'body[data-session-id]']
+    for (const sel of sels) {
+      const el = doc && doc.querySelector ? doc.querySelector(sel) : null
+      const v = el && (el.getAttribute('data-session-id') || el.getAttribute('data-conversation-id') || el.getAttribute('data-thread-id') || el.getAttribute('data-session'))
+      if (v && String(v).trim()) return String(v).trim()
+    }
+    const where = String((g && g.location && (g.location.pathname + g.location.hash)) || '')
+    const m = where.match(/(?:session|conversation|thread|chat)[\/=-]([A-Za-z0-9-]{4,})/)
     if (m) return m[1]
-  } catch (e) { /* 探测失败就用 global */ }
-  return ''
+    // 最后兜底：本页 URL 路径本身就是对话级标识；再不行就用持久随机键（按浏览器/标签页隔离）
+    const seg = where.split(/[?#]/)[0].replace(/\/+$/, '').split('/').filter(Boolean).pop()
+    if (seg && seg !== 'index.html' && seg !== 'chat') return 'url-' + seg.slice(0, 40)
+    try {
+      const ls = g && g.localStorage
+      if (ls) {
+        let k = ls.getItem('dsh-selfloop-scope')
+        if (!k) { k = 'solo-' + Math.random().toString(36).slice(2, 10); ls.setItem('dsh-selfloop-scope', k) }
+        return k
+      }
+    } catch (e) { /* 私有模式 / 无 localStorage */ }
+  } catch (e) { /* 探测失败继续往下 */ }
+  return 'solo-default'
 }
 
 const PLUGIN_ID = 'dsh-selfloop'
@@ -759,6 +785,16 @@ function orderBarHtml(state) {
 function ventFooterHtml(state, win) {
   const open = !!(win && win.open)
   const stage = (win && win.stage) || (state && state.currentNode && state.currentNode.id) || ''
+  // 窗口没开 → 整块不出现（用户反复提的"吐槽窗口过早出现"）。
+  // 以前这里只是把状态文字改成"● 窗口已关闭"，输入框照样在，看起来就是"窗口还在"。
+  if (!open) {
+    const why = win && win.reason
+    const hint = why === 'waiting-first-delivery' ? '第一轮交付之后才会出现吐槽框'
+      : why === 'not-vent-stage' ? '等这一轮做完、到验收那一步再吐槽'
+      : why === 'done' ? '这一单已经结束'
+      : why ? '现在还不该吐槽' : '还没有窗口'
+    return '<div class="sl-foot"><div class="row1"><span class="st closed">● 窗口未开</span><span>' + esc(hint) + '</span></div></div>'
+  }
   return '<div class="sl-foot">' +
     '<div class="row1"><span class="st ' + (open ? 'open' : 'closed') + '">' + (open ? '● 吐槽窗口开放中' : '● 窗口已关闭') + '</span>' +
     '<span>' + (open ? '现在说进下一轮工单' : '仍可写，会标 expired 顺延下一轮') + '</span></div>' +
@@ -1336,6 +1372,7 @@ exports.__ui = {
   parseModel: parseModel,
   modelEfforts: modelEfforts,
   startErrorText: startErrorText,
+  sessionKey: sessionKey,
   setModeForm: function (patch) { Object.assign(modeForm, patch || {}) },
   modeForm: function () { return Object.assign({}, modeForm) },
   groupRounds: groupRounds,
