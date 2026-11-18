@@ -13,7 +13,7 @@
 //   2. 坐标扫描（一次只动一个参数），每次抓帧后立刻量测、算 err、写 <run>/trace.jsonl；
 //   3. err==0 或预算用完即停，把最优参数写 <run>/quick/best.json 与 <run>/verify.json。
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { probeFile } from './ref-probe.mjs'
 import { profileFromFile, profileCorr, medianProfile, scalarsFromFile, toneFractions } from './composition.mjs'
@@ -38,7 +38,18 @@ const research = existsSync(join(runDir, 'research.json')) ? JSON.parse(readFile
 const band = new Map((research.extracted || []).filter((e) => e && e.what && Number.isFinite(e.min) && Number.isFinite(e.max)).map((e) => [e.what, [e.min, e.max]]))
 const refs = refDir && existsSync(refDir) ? readdirPng(refDir) : []
 const refProf = refs.length ? medianProfile(refs.map((f) => profileFromFile(f, 64))) : null
-function readdirPng(d) { const out = []; const walk = (p) => { for (const e of require('node:fs').readdirSync(p, { withFileTypes: true })) { const q = join(p, e.name); if (e.isDirectory()) walk(q); else if (e.name.toLowerCase().endsWith('.png')) out.push(q) } }; walk(d); return out }
+function readdirPng(d) {
+  const out = []
+  const walk = (p) => {
+    for (const e of readdirSync(p, { withFileTypes: true })) {
+      const q = join(p, e.name)
+      if (e.isDirectory()) walk(q)
+      else if (e.name.toLowerCase().endsWith('.png')) out.push(q)
+    }
+  }
+  walk(d)
+  return out
+}
 
 const MEASURERS = {
   cloudDarkFrac: (f) => toneFractions(decodePng(readFileSync(f))).cloudDarkFrac,
