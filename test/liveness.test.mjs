@@ -6,12 +6,47 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { deflateSync } from 'node:zlib'
 import { withParam } from '../harness/liveness-core.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const PIPE = join(ROOT, 'harness', 'pipeline.mjs')
 const LIVE = join(ROOT, 'harness', 'liveness.mjs')
 const ICON = join(ROOT, 'icon.png')
+
+/** 合成一张有梯度和噪声的 PNG（纯色图会被崩坏自检挡掉） */
+function synthPng(path, w = 64, h = 64) {
+  const raw = []
+  for (let y = 0; y < h; y += 1) {
+    raw.push(0)
+    for (let x = 0; x < w; x += 1) {
+      const n = ((x * 7 + y * 13) % 17) / 17
+      const v = Math.round(40 + 150 * (x / w) * (y / h) + 20 * n)
+      raw.push(v, v, Math.min(255, v + 12))
+    }
+  }
+  const idat = deflateSync(Buffer.from(raw))
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length)
+    const td = Buffer.concat([Buffer.from(type), data])
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(td) >>> 0)
+    return Buffer.concat([len, td, crc])
+  }
+  let table = null
+  function crc32(buf) {
+    if (!table) {
+      table = new Int32Array(256)
+      for (let n = 0; n < 256; n += 1) { let c = n; for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; table[n] = c }
+    }
+    let c = -1
+    for (const b of buf) c = table[(c ^ b) & 0xff] ^ (c >>> 8)
+    return c ^ -1
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 2
+  writeFileSync(path, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', Buffer.alloc(0))]))
+  return path
+}
 const run = (...a) => spawnSync(process.execPath, [PIPE, ...a], { encoding: 'utf8' })
 const live = (...a) => spawnSync(process.execPath, [LIVE, ...a], { encoding: 'utf8' })
 
@@ -181,6 +216,44 @@ test('⑩ budget.requireSnapshot=false → 老 run 退路', () => {
     { id: 'runsEvidence', type: 'text', value: 'ok' }, { id: 'visibleEvidence', type: 'text', value: 'ok' },
     { id: 'caveat', type: 'list', value: ['无'] }, { id: 'notVerified', type: 'list', value: ['无'] },
   ] }))
+  const r = run('done', '--run', dir, '--stage', '2.3-verify-r1')
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+})
+
+// ── 标量判据也进 2.3 闸（回放测试暴露：灰雾云暗部 0.039 却通过）──
+function verifyRun(band) {
+  const dir = mkdtempSync(join(tmpdir(), 'sl-scalar-'))
+  for (const d of ['stages', 'rounds', 'forms']) mkdirSync(join(dir, d), { recursive: true })
+  const snap = join(dir, 'rounds', 'r1', 'snapshot')
+  mkdirSync(join(snap, 'code'), { recursive: true })
+  writeFileSync(join(snap, 'scene-params.json'), '{}')
+  writeFileSync(join(snap, 'params.md'), '# s\n')
+  writeFileSync(join(snap, 'code', 'a.js'), '//\n')
+  writeFileSync(join(join(dir, 'rounds'), '01.json'), JSON.stringify({ changes: ['x'], shot: 'a.png' }))
+  writeFileSync(join(dir, 'requirement.md'), '# r\n')
+  writeFileSync(join(dir, 'budget.json'), JSON.stringify({ research: 'low', maxRounds: 1, useCritic: false, resupply: false, probe: false }))
+  writeFileSync(join(dir, 'research.json'), JSON.stringify({ findings: [], extracted: [{ what: 'mean', value: (band[0] + band[1]) / 2, min: band[0], max: band[1] }] }))
+  writeFileSync(join(dir, 'intent.json'), JSON.stringify({ restate: 'r', confirmed: true, anchors: [{ kind: 'image', ref: 'x', why: 'x' }], criteria: [{ id: 'C1', metric: 'mean', target: (band[0] + band[1]) / 2, dir: 'two-sided' }] }))
+  writeFileSync(join(dir, 'forms', '2.3-verify-r1.json'), JSON.stringify({ stage: '2.3-verify-r1', fields: [
+    { id: 'runsEvidence', type: 'text', value: 'ok' }, { id: 'visibleEvidence', type: 'text', value: 'ok' },
+    { id: 'caveat', type: 'list', value: ['无'] }, { id: 'notVerified', type: 'list', value: ['无'] }] }))
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1', '2.2-exec-r1']) {
+    writeFileSync(join(dir, 'stages', id + '.json'), JSON.stringify({ stage: id, status: 'done' }))
+  }
+  const shot = synthPng(join(dir, 'shot.png'))
+  writeFileSync(join(dir, 'verify.json'), JSON.stringify({ runs: true, visible: true, shots: [shot] }))
+  return dir
+}
+
+test('⑪ 标量判据出带 → 2.3 拦（灰雾云那个洞）', () => {
+  const dir = verifyRun([0.95, 1.0])      // 图标明显不在这个亮度带里
+  const r = run('done', '--run', dir, '--stage', '2.3-verify-r1')
+  assert.equal(r.status, 1, r.stdout)
+  assert.match(r.stdout, /判据 C1 出带/)
+})
+
+test('⑫ 标量判据在带内 → 放行', () => {
+  const dir = verifyRun([0.0, 1.0])
   const r = run('done', '--run', dir, '--stage', '2.3-verify-r1')
   assert.equal(r.status, 0, r.stdout + r.stderr)
 })

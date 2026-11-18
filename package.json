@@ -1,6 +1,6 @@
 {
   "name": "dsh-selfloop",
-  "version": "0.37.0",
+  "version": "0.38.0",
   "private": true,
   "description": "Selfloop（权臣）—— 自主闭环引擎插件：任意可测目标 + 可调参数，都能用「观测 → 判定 → 搜索」把参数自动调到接近目标，并产出可复验的证据包。注册 selfloop_probe / selfloop_list_adapters 两个只读工具，包内带执行器 harness（iter.ps1 等 8 件跑一轮的必需件）、自带静态服、首个领域 vfx-render 的 3 份适配器，以及 selfloop 技能。Windows 优先。",
   "type": "module",

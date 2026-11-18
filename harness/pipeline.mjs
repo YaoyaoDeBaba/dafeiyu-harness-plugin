@@ -24,7 +24,8 @@ import { hasForm, writeBlankForm, checkForm } from './forms.mjs'
 import { missingPieces as snapshotMissing } from './snapshot.mjs'
 import { crashCheck } from './crash-check.mjs'
 import { capabilityPrecheck } from './intent.mjs'
-import { profileFromFile, profileCorr } from './composition.mjs'
+import { profileFromFile, profileCorr, medianProfile, scalarsFromFile, toneFractions } from './composition.mjs'
+import { probeFile, decodePng } from './ref-probe.mjs'
 
 const STAGE_DIR = 'stages'
 const TICKET_DIR = 'tickets'
@@ -564,6 +565,50 @@ export const checks = {
         if (!(corr >= need)) {
           out.push('排列与参考不像：' + metric + ' 相关 ' + corr.toFixed(3) + ' < 下限 ' + need
             + '（参考带 ' + need + '~1；总量对得上但"摆法"不对，这条就是抓这个的）')
+        }
+      }
+    }
+    // ── 标量判据也进闸（2026-11-18 回放测试暴露的洞）：
+    // 灰雾云（cloudDarkFrac 0.039，靶 0.2532）在 2.3 被**放行**，因为 verify 只查了 profile 与崩坏。
+    // 结论：判据只要写进了 intent，就必须在交付前被真的量一遍 —— 否则"判据缺项"会变成"判据摆设"。
+    const intentV = readJson(j(dir, 'intent.json')) || {}
+    const researchV = readJson(j(dir, 'research.json')) || {}
+    const bandsV = new Map()
+    for (const e of (Array.isArray(researchV.extracted) ? researchV.extracted : [])) {
+      if (e && e.what && Number.isFinite(Number(e.min)) && Number.isFinite(Number(e.max))) bandsV.set(String(e.what), [Number(e.min), Number(e.max)])
+    }
+    const MEASURE_V = {
+      cloudDarkFrac: (f) => toneFractions(decodePng(readFileSync(f))).cloudDarkFrac,
+      cloudBrightFrac: (f) => toneFractions(decodePng(readFileSync(f))).cloudBrightFrac,
+      cloudMeanLuma: (f) => toneFractions(decodePng(readFileSync(f))).cloudMeanLuma,
+      topCoverage: (f) => scalarsFromFile(f).topCoverage,
+      centroidY: (f) => scalarsFromFile(f).centroidY,
+      subjectFrac: (f) => scalarsFromFile(f).subjectFrac,
+      skyExposure: (f) => scalarsFromFile(f).skyExposure,
+      bboxAspect: (f) => scalarsFromFile(f).bboxAspect,
+      mean: (f) => probeFile(f).mean,
+      p50: (f) => probeFile(f).p50,
+      p95: (f) => probeFile(f).p95,
+      p99: (f) => probeFile(f).p99,
+      glowFrac: (f) => probeFile(f).glowFrac,
+      brightFrac: (f) => probeFile(f).brightFrac,
+    }
+    const shotV = shots.map((x) => String(x || '').trim()).filter(Boolean).map((n) => (isAbsolute(n) ? n : j(dir, n))).find((f) => existsSync(f))
+    if (shotV) {
+      for (const c of (Array.isArray(intentV.criteria) ? intentV.criteria : [])) {
+        if (!c || String(c.kind || '') === 'profile') continue
+        const metric = String(c.metric || c.id || '')
+        const fn = MEASURE_V[metric]
+        const band = bandsV.get(metric)
+        if (!fn || !band) continue
+        let v
+        try { v = Number(fn(shotV)) } catch { continue }
+        if (!Number.isFinite(v)) continue
+        const [lo, hi] = band
+        const dirn = String(c.dir || 'two-sided')
+        const ok = dirn === 'lower' ? v <= hi : dirn === 'upper' ? v >= lo : (v >= lo && v <= hi)
+        if (!ok) {
+          out.push('判据 ' + String(c.id || metric) + ' 出带：' + metric + '=' + v.toFixed(4) + '（参考带 ' + lo + ' ~ ' + hi + '，方向 ' + dirn + '）')
         }
       }
     }
