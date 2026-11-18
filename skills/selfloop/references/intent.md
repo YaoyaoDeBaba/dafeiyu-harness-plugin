@@ -118,6 +118,18 @@
   **不写 `minCorr` 就自动用它**——别拍脑袋填 0.5 或 0.95；
 - 没进带内时 `2.3-verify` 会打印实际相关值并挡下：`结构与参考不像：rowProfile 相关 0.108 < 下限 0.90`。
 
+**非图像领域（日志 / 接口 / UI）**：引擎不替你写提取器，但也**不需要改引擎**——把候选剖面写进 `verify.json`：
+
+```json
+{ "runs": true, "visible": true, "shots": [], "profiles": { "logBurst": [0,0,1,0.8,…], "latency": […] } }
+```
+
+提取器照 `harness/signatures.mjs` 的形状写（`f(观测) → 定长数组 0~1`，已有 `logBurstProfile` / `latencyProfile` 两个样例）。
+`2.3-verify` **优先读 `verify.profiles[metric]`**；只有 `rowProfile` 才会回退到「量第一张帧」。
+
+> 为什么值当：`logBurst` 的两个对照「同样 40 条错误，扎堆 vs 均匀」——**条数判据完全分不出**，剖面相关 0.1 左右；
+> 时延「冷启 vs 抖动」均值只差 30ms、形状相关 <0.5。**总量一致而排列不同，就是这类判据存在的理由。**
+
 > 实测参考：24 帧留一法 min 0.951 / med 0.990；而「像素误差最低」的那条臂只有 0.546 —— **像素误差低 ≠ 构图对**。
 
 ### 1.3 一条填好的小例子（命令链路、`examples/command-echo.json` 的指标）

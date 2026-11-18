@@ -395,39 +395,44 @@ export const checks = {
     if (v.runs !== true) out.push('没有确认能跑（编译/加载通过）')
     if (v.visible !== true) out.push('没有确认能看（有图或入口）')
 
-    // 结构指纹验收（L1+L2，2026-11-18）：intent 里有 profile 判据时，自动量第一张帧的行剖面并比相关。
-    // 为什么自动：这一层正是"分布判据全绿、构图全错"的漏网处；靠人自觉去量等于没做。
+    // 结构指纹验收（L1+L2/L3，2026-11-18）：intent 里有 profile 判据时自动量候选剖面并比相关。
+    // **候选剖面的来源与领域解耦**：
+    //   ① verify.profiles[<metric>] —— 任意领域自己写的提取器（日志/时延/树形…），最通用；
+    //   ② 没给 profiles 且 metric==='rowProfile' 时，回退到"量第一张帧"（图像实现）。
+    // 为什么必须解耦：这一层正是"分布判据全绿、构图/排列全错"的漏网处，而渲染只是它的第一个使用者。
     const it = readJson(j(dir, 'intent.json'))
     const profCrit = it && Array.isArray(it.criteria) ? it.criteria.filter((c) => c && String(c.kind) === 'profile') : []
     if (profCrit.length) {
       const rj = readJson(j(dir, 'research.json')) || { extracted: [] }
+      const provided = v.profiles && typeof v.profiles === 'object' ? v.profiles : {}
       const shot = (Array.isArray(v.shots) ? v.shots : []).map(String).find((x) => x.trim())
-      if (!shot) out.push('有结构指纹判据但没有 verify.shots[0]：无法量结构')
-      else {
-        const file = isAbsolute(shot) ? shot : j(dir, shot)
-        let cand = null
-        try { cand = profileFromFile(file, 64) } catch (e) { out.push('结构指纹：读不了 ' + shot + '（' + (e && e.message) + '）') }
-        if (cand) {
-          for (const c of profCrit) {
-            const metric = String(c.metric || c.id)
-            const ref = (rj.extracted || []).find((e) => e && e.what === metric && Array.isArray(e.value))
-            if (!ref) continue
-            const corr = profileCorr(ref.value, cand)
-            // 与 checks.intent 同口径：没写 minCorr 就用留一法建议值
-            const need = Number.isFinite(Number(c.minCorr)) ? Number(c.minCorr) : Number(ref.minCorrHint)
-            if (!(corr >= need)) {
-              out.push('结构与参考不像：' + metric + ' 相关 ' + corr.toFixed(3) + ' < 下限 ' + need
-                + '（参考带 ' + need + '~1；剖面越长越像，' + corr.toFixed(2) + ' 通常意味着主体位置/铺展跟参考不是一回事）')
-            }
-          }
+      let imageProfile = null
+      const needImage = profCrit.some((c) => String(c.metric || c.id) === 'rowProfile' && !Array.isArray(provided.rowProfile))
+      if (needImage) {
+        if (!shot) out.push('有 rowProfile 判据但没有 verify.shots[0]，也没在 verify.profiles 里给剖面：无法量结构')
+        else {
+          const file = isAbsolute(shot) ? shot : j(dir, shot)
+          try { imageProfile = profileFromFile(file, 64) } catch (e) { out.push('结构指纹：读不了 ' + shot + '（' + (e && e.message) + '）') }
+        }
+      }
+      for (const c of profCrit) {
+        const metric = String(c.metric || c.id)
+        const ref = (rj.extracted || []).find((e) => e && e.what === metric && Array.isArray(e.value))
+        if (!ref) continue
+        const candProf = Array.isArray(provided[metric]) ? provided[metric] : (metric === 'rowProfile' ? imageProfile : null)
+        if (!Array.isArray(candProf)) { out.push('结构指纹 ' + metric + '：既没在 verify.profiles 里给，也不是可自动抽取的 rowProfile'); continue }
+        const corr = profileCorr(ref.value, candProf)
+        // 与 checks.intent 同口径：没写 minCorr 就用留一法建议值
+        const need = Number.isFinite(Number(c.minCorr)) ? Number(c.minCorr) : Number(ref.minCorrHint)
+        if (!(corr >= need)) {
+          out.push('排列与参考不像：' + metric + ' 相关 ' + corr.toFixed(3) + ' < 下限 ' + need
+            + '（参考带 ' + need + '~1；总量对得上但"摆法"不对，这条就是抓这个的）')
         }
       }
     }
     return out
   },
   // 拆分票（P3，2026-11-18）：把一个大工单派成 N 张窄票，每张自带上下文与验收。
-  // 为什么：A/B 实测——范围窄、自包含的子代理 24 分钟就做出 0.074 误差的活；
-  // 一个「全能执行员」被塞满技能文档后，70 分钟做出 0.352。宽度是要花钱的。
   split(dir) {
     const sp = readJson(j(dir, 'split.json'))
     if (!sp) return ['缺 split.json（拆分票：tasks[] 每张写 goal / files / accept / contextBudget）']
@@ -442,7 +447,7 @@ export const checks = {
       if (accept.length === 0) out.push(id + '：缺 accept[]（这张票自己的验收，1~3 条）')
       accept.forEach((c) => {
         if (!c || !c.id) out.push(id + '：有验收项没写 id')
-        else if (!['lower', 'upper', 'two-sided'].includes(String(c.dir || ''))) out.push(id + '：验收 ' + c.id + ' 缺 dir（lower/upper/two-sided）')
+        else if (String(c.kind || '') !== 'profile' && !['lower', 'upper', 'two-sided'].includes(String(c.dir || ''))) out.push(id + '：验收 ' + c.id + ' 缺 dir（lower/upper/two-sided）')
       })
     })
     return out

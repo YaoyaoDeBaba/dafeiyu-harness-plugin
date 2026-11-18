@@ -148,7 +148,7 @@ test('⑤ 结构指纹不达标 → 2.3-verify 挡住（能红）', () => {
   reachedVerify(dir, 0.9, wrong)
   const r = run('done', '--run', dir, '--stage', '2.3-verify-r1')
   assert.equal(r.status, 1, r.stdout)
-  assert.match(r.stdout, /结构与参考不像/)
+  assert.match(r.stdout, /排列与参考不像/)
   assert.match(r.stdout, /rowProfile 相关 -?[0-9.]+ < 下限 0.9/)
 })
 
