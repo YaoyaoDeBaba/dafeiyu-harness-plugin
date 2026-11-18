@@ -24,6 +24,7 @@ import { hasForm, writeBlankForm, checkForm } from './forms.mjs'
 import { missingPieces as snapshotMissing } from './snapshot.mjs'
 import { crashCheck } from './crash-check.mjs'
 import { capabilityPrecheck } from './intent.mjs'
+import { profileFromFile, profileCorr } from './composition.mjs'
 
 const STAGE_DIR = 'stages'
 const TICKET_DIR = 'tickets'
@@ -266,6 +267,19 @@ export const checks = {
       const id = c && c.id ? c.id : '(无id)'
       const meas = String((c && (c.howMeasured || c.how)) || '')
       if (c && c.noMetric === true) { if (!meas.trim()) out.push(id + '：标了 noMetric 却没写理由'); return }
+      // L1（2026-11-18）：profile 型判据——比"排列"而不是"总量"（行剖面/时间序列/树形……）
+      // 目标不是数值而是一条参考序列 + 一个相关下限。图像只是首个实现，别的领域照同样的形状写提取器。
+      if (String((c && c.kind) || '') === 'profile') {
+        const metric = String((c && (c.metric || c.id)) || '')
+        const minCorr = Number(c && c.minCorr)
+        if (!Number.isFinite(minCorr) || minCorr <= 0 || minCorr > 1) {
+          out.push(id + '：profile 型判据要写 minCorr（0~1，例如 0.75）'); return
+        }
+        const ref = ext.find((e) => e && e.what === metric && e.kind === 'profile' && Array.isArray(e.value))
+        if (!ref) { out.push(id + '：research.extracted 里没有 kind=profile 的 ' + metric + '（先 preflight 量参考）'); return }
+        if (ref.value.length < 8) { out.push(id + '：参考 ' + metric + ' 只有 ' + ref.value.length + ' 个桶，太粗（≥8）'); return }
+        return
+      }
       const target = Number(c && c.target)
       if (!Number.isFinite(target)) { out.push(id + '：没有数值 target（阈值要来自实测，或显式 noMetric）'); return }
       // dir（2026-11-18）：**判据方向必须显式写**，不许把「参考实测的近似区间」当双侧门。
@@ -379,6 +393,34 @@ export const checks = {
     const out = crash
     if (v.runs !== true) out.push('没有确认能跑（编译/加载通过）')
     if (v.visible !== true) out.push('没有确认能看（有图或入口）')
+
+    // 结构指纹验收（L1+L2，2026-11-18）：intent 里有 profile 判据时，自动量第一张帧的行剖面并比相关。
+    // 为什么自动：这一层正是"分布判据全绿、构图全错"的漏网处；靠人自觉去量等于没做。
+    const it = readJson(j(dir, 'intent.json'))
+    const profCrit = it && Array.isArray(it.criteria) ? it.criteria.filter((c) => c && String(c.kind) === 'profile') : []
+    if (profCrit.length) {
+      const rj = readJson(j(dir, 'research.json')) || { extracted: [] }
+      const shot = (Array.isArray(v.shots) ? v.shots : []).map(String).find((x) => x.trim())
+      if (!shot) out.push('有结构指纹判据但没有 verify.shots[0]：无法量结构')
+      else {
+        const file = isAbsolute(shot) ? shot : j(dir, shot)
+        let cand = null
+        try { cand = profileFromFile(file, 64) } catch (e) { out.push('结构指纹：读不了 ' + shot + '（' + (e && e.message) + '）') }
+        if (cand) {
+          for (const c of profCrit) {
+            const metric = String(c.metric || c.id)
+            const ref = (rj.extracted || []).find((e) => e && e.what === metric && Array.isArray(e.value))
+            if (!ref) continue
+            const corr = profileCorr(ref.value, cand)
+            const need = Number(c.minCorr)
+            if (!(corr >= need)) {
+              out.push('结构与参考不像：' + metric + ' 相关 ' + corr.toFixed(3) + ' < 下限 ' + need
+                + '（参考带 ' + need + '~1；剖面越长越像，' + corr.toFixed(2) + ' 通常意味着主体位置/铺展跟参考不是一回事）')
+            }
+          }
+        }
+      }
+    }
     return out
   },
   // 拆分票（P3，2026-11-18）：把一个大工单派成 N 张窄票，每张自带上下文与验收。

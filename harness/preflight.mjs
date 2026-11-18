@@ -18,6 +18,7 @@
 import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync, readdirSync } from 'node:fs'
 import { join, resolve, basename } from 'node:path'
 import { probeFile, summarize } from './ref-probe.mjs'
+import { profileFromFile, scalarsFromFile, medianProfile } from './composition.mjs'
 
 function arg(name, def) { const i = process.argv.indexOf('--' + name); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : def }
 
@@ -42,8 +43,14 @@ if (refArg && !checkOnly) {
       : [refPath]
   } catch { files = [] }
   const rows = []
-  for (const f of files) { try { rows.push(probeFile(f, { top })) } catch { /* 跳过非 8bit/非 PNG */ } }
-  if (rows.length) measured = { count: rows.length, sum: summarize(rows), sample: basename(files[0]) }
+  const profiles = []
+  const structs = []
+  for (const f of files) {
+    try { rows.push(probeFile(f, { top })) } catch { /* 跳过非 8bit/非 PNG */ }
+    // 结构指纹（L2）：行剖面是 profile 型；质心/留白/bbox 是标量型
+    try { profiles.push(profileFromFile(f, 64)); structs.push(scalarsFromFile(f)) } catch { /* 解不了就跳过 */ }
+  }
+  if (rows.length) measured = { count: rows.length, sum: summarize(rows), sample: basename(files[0]), profiles, structs }
 }
 
 // ── 2) research.json 骨架（已有就补 extracted，不覆盖 findings）
@@ -64,6 +71,28 @@ if (measured) {
     if (hit) Object.assign(hit, item); else research.extracted.push(item)
   }
 }
+// 结构指纹：行剖面（profile 型）+ 质心/上部覆盖率/留白/bbox（标量型）
+if (measured && measured.profiles && measured.profiles.length) {
+  const src = measured.count === 1 ? measured.sample : measured.count + ' 帧'
+  const prof = { what: 'rowProfile', kind: 'profile', value: medianProfile(measured.profiles), source: src }
+  if (measured.count === 1) prof.singleFrame = true
+  const hitP = research.extracted.find((e) => e.what === 'rowProfile')
+  if (hitP) Object.assign(hitP, prof); else research.extracted.push(prof)
+
+  const keys = ['centroidY', 'topCoverage', 'skyExposure', 'bboxAspect', 'subjectFrac']
+  for (const k of keys) {
+    const vals = measured.structs.map((s) => s[k]).filter((v) => Number.isFinite(v))
+    if (!vals.length) continue
+    const sorted = vals.slice().sort((a, b) => a - b)
+    const mid = sorted.length >> 1
+    const med = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+    const item = { what: k, value: med, min: sorted[0], max: sorted[sorted.length - 1], source: src, structure: true }
+    if (measured.count === 1) item.singleFrame = true
+    const hit = research.extracted.find((e) => e.what === k)
+    if (hit) Object.assign(hit, item); else research.extracted.push(item)
+  }
+}
+
 // 量的是分布就把单帧标整体摘掉（有些键的值恰为 0 会被上面的 continue 跳过，留着旧标会误报）
 if (measured && measured.count > 1) research.extracted.forEach((e) => { if (e) delete e.singleFrame })
 if (!checkOnly) writeFileSync(researchPath, JSON.stringify(research, null, 2), 'utf8')
@@ -101,6 +130,10 @@ const intentReady = Boolean(intent && intent.confirmed === true && (intent.crite
 
 console.log('=== preflight: ' + dir + ' ===')
 console.log('参考量测: ' + (measured ? measured.count + ' 张，写进 extracted ' + extracted.length + ' 条' : '未提供 --ref（跳过）'))
+if (measured && measured.profiles && measured.profiles.length) {
+  const st = measured.structs[0] || {}
+  console.log('结构指纹: 行剖面 ' + measured.profiles[0].length + ' 桶 · 质心y ' + (st.centroidY || 0).toFixed(3) + ' · 上部覆盖 ' + (st.topCoverage || 0).toFixed(3) + ' · 留白 ' + (st.skyExposure || 0).toFixed(3))
+}
 if (measured && measured.count === 1) {
   console.log('  ⚠ 只量了 1 张。若参考是序列（refs/ 里有多张），先把目录指给 --ref 量分布：')
   console.log('    node harness/preflight.mjs --run <run> --ref <refs 目录>  —— 否则阈值会被锁死在这一帧上')
