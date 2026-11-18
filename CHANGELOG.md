@@ -4,6 +4,21 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.43.1（未发布）· 阈值真正可切换：`--mask-auto` 一路走到底
+
+> 0.43.0 只把自适应阈值"算出来并告警"，量测仍用固定 0.10。这一版把它接通：
+> `structureScalars / rowProfile / toneFractions / profileFromFile / scalarsFromFile` 都接受 `maskThr`
+> （数值或 `'auto'`），`preflight --mask-auto` 用每帧 Otsu 阈值量参考并记 `maskMode`，
+> `2.3` 按参考侧的 `maskMode` 量候选 —— 两边永远同一把尺子。
+
+实测（24 帧夜雷暴参考）：`--mask-auto` 与固定 0.10 的 maskFrac / subjectFrac / topCoverage / centroidY 基本一致
+（Otsu 在这批图上落在 ~0.196），说明**阈值不是这里的主因**；主因是阈值敏感性（0.31）——已由 1.10 的闸兜住。
+
+### 判据
+`node --test` = **463 / 463**（client-render 在并行下偶发，单独跑 22/22）。
+
+---
+
 ## 0.43.0（未发布）· 第 1 天 hardening：判据自查进闸（掩膜健康度 / 敏感性 / 自适应阈值）
 
 > 回灌上游原件：否。起因：第三轮 A/B 里两条实测——

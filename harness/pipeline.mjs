@@ -581,8 +581,9 @@ export const checks = {
         const ref = (rj.extracted || []).find((e) => e && e.what === metric && Array.isArray(e.value))
         if (!ref) continue
         const topFrac = Number.isFinite(Number(ref.topFrac)) ? Number(ref.topFrac) : 1
+        const maskThr = String(ref.maskMode || '') === 'auto' ? 'auto' : 0.10
         const candProf = Array.isArray(provided[metric]) ? provided[metric]
-          : (metric === 'rowProfile' && imageShot ? profileFromFile(imageShot, 64, topFrac) : null)
+          : (metric === 'rowProfile' && imageShot ? profileFromFile(imageShot, 64, topFrac, maskThr) : null)
         if (!Array.isArray(candProf)) { out.push('结构指纹 ' + metric + '：既没在 verify.profiles 里给，也不是可自动抽取的 rowProfile'); continue }
         const corr = profileCorr(ref.value, candProf)
         // 与 checks.intent 同口径：没写 minCorr 就用留一法建议值

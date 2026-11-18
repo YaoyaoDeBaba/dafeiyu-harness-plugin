@@ -110,8 +110,8 @@ function maskOf(img, thr = 0.10) {
  * 行覆盖率剖面（默认 64 桶）：每行「有多少比例是主体」。
  * 这是最能区分「一团紧凑主体」与「横贯画面的天花板」的量。
  */
-export function rowProfile(img, bins = 64, topFrac = 1) {
-  const { m, width, height } = maskOf(img)
+export function rowProfile(img, bins = 64, topFrac = 1, maskThr = 0.10) {
+  const { m, width, height } = maskOf(img, maskThr)
   // topFrac<1 时只取画面上部（云区）。原因：整幅剖面可以被"地平线亮带 / 地面雾"垫平，
   // 那样 0.9 的相关并不代表云摆得像参考。第二轮 A/B 里 B 臂就是这么拿到 0.958 的。
   const y1All = Math.max(1, Math.round(height * Math.max(0.05, Math.min(1, topFrac))))
@@ -133,7 +133,7 @@ export function rowProfile(img, bins = 64, topFrac = 1) {
 }
 
 /** 其余结构标量：质心 y、上部覆盖率、两侧留白、bbox 宽高比、主体占比 */
-export function structureScalars(img) {
+export function structureScalars(img, maskThr = 0.10) {
   const { m, width, height } = maskOf(img)
   let tot = 0, sy = 0, sx = 0
   let minX = width, maxX = -1, minY = height, maxY = -1
@@ -169,14 +169,14 @@ export function structureScalars(img) {
   }
 }
 
-export function profileFromFile(file, bins = 64, topFrac = 1) {
+export function profileFromFile(file, bins = 64, topFrac = 1, maskThr = 0.10) {
   // topFrac 必须一路传下去 —— 第三轮 A/B 就是这个参数在中间被丢掉，导致
   // "preflight 记着 topFrac 0.45、value 却是整幅剖面"，掩膜化整轮空转（A 臂自己查出来的）。
-  return rowProfile(decodePng(readFileSync(file)), bins, topFrac)
+  return rowProfile(decodePng(readFileSync(file)), bins, topFrac, maskThr)
 }
 
-export function scalarsFromFile(file) {
-  return structureScalars(decodePng(readFileSync(file)))
+export function scalarsFromFile(file, maskThr = 0.10) {
+  return structureScalars(decodePng(readFileSync(file)), maskThr)
 }
 
 /** 皮尔逊相关；任一序列方差为 0 时返回 0（别把常量当"完美匹配"） */
@@ -223,9 +223,9 @@ export function calibrateMinCorr(profiles, margin = 0.05) {
  * 为什么单列：整幅 mean/p50 看不出"云是暗体还是灰雾"——实测我们 3.9% 暗部 vs 参考 25.5%，
  * 整幅指标全绿，肉眼却一眼假。这两个数是「云像不像云」的主判别量。
  */
-export function toneFractions(img, darkThr = 0.25, brightThr = 0.6) {
+export function toneFractions(img, darkThr = 0.25, brightThr = 0.6, maskThr = 0.10) {
   const { lum, width, height } = lumaOf(img)
-  const { m } = maskOf(img)
+  const { m } = maskOf(img, maskThr)
   let n = 0, dark = 0, bright = 0, sum = 0
   for (let i = 0; i < m.length; i += 1) {
     if (!m[i]) continue
@@ -324,8 +324,8 @@ export function foamComponents(img, thr = 0.75) {
  * 真正的"主体"是云底那条亮带。于是 topCoverage/centroidY/subjectFrac 量的不是云。
  * 返回：maskFrac（主体占比）、rowBandMax（最集中的 20% 高度带里占了多少主体像素）、verdict。
  */
-export function maskHealth(img) {
-  const { m, width, height } = maskOf(img)
+export function maskHealth(img, maskThr = 0.10) {
+  const { m, width, height } = maskOf(img, maskThr)
   let total = 0
   const rows = new Float64Array(height)
   for (let y = 0; y < height; y += 1) {
