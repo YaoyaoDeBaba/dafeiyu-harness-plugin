@@ -59,7 +59,8 @@ function fillForm(dir, stageId) {
 const PHASE1_LOW = ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3']
 
 test('① 2.1-plan-r1 交活后出现 rounds/r1/plan.json', () => {
-  const dir = fixture({ maxRounds: 1 })
+  // 2026-11-18：2.1 现在还要过活性扫描闸；本用例只测归档，用 probe:false 跳过
+  const dir = fixture({ maxRounds: 1, probe: false })
   markDone(dir, PHASE1_LOW)
   writeFileSync(join(dir, 'plan.json'), JSON.stringify({ round: 1, orders: [{ id: 'A', task: '改云生成' }], executor: { model: 'deepseek-v4-pro' } }))
   fillForm(dir, '2.1-plan-r1')

@@ -4,6 +4,39 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.36.0（未发布）· 活性扫描成为闸门（试刀当场踩到）
+
+> 回灌上游原件：否。
+> 试刀现场：按配方把 `lightSteps` 6→1，抓出来的帧**逐字节相同**（SHA 一致）——20 张候选里有一批在死参数上空转。
+> SKILL 里早写着「没扫活性不许搜索」，但**pipeline 里没有任何程序闸**。这次把它变成节点。
+
+### `harness/liveness.mjs`（观测通道无关）
+```
+node harness/liveness.mjs --run <run> --probe probe.json
+# probe.json: { capture: "node shoot.mjs --out {out} --query '{params}'", baseline: "a=1&b=2",
+#               params: { sigma: ["0.02","0.15"], lightSteps: ["1","8"] } }
+```
+对每根轴取「低 / 高」两端各拍一张，与 baseline 比：
+- **两端都逐字节相同** → `dead`（exit 3）；
+- 有差异但亮度均值差 < 0.004 → `weak`；
+- 否则 `live`。
+产出 `<run>/params-liveness.json`（含每根的 sha 与 lumaDiff 证据）。
+
+### `checks.plan`（2.1）
+`budget.probe` 默认开：
+- 缺 `params-liveness.json` → 挡，并打印补救命令；
+- `plan.variables` 里出现 **dead** 参数 → 挡（"这些变量是死参数，别放进 variables"）；
+- 变量没扫过 → 挡；
+- 一个活轴都没有 → 挡；
+- `params-liveness.json` 没记 `capture` 命令（无法证明真跑过）→ 挡。
+老 run 用 `budget.probe: false` 退。
+
+### 判据
+`node --test` = **448 / 448**（新增 `test/liveness.test.mjs` 6 例：活/死判定、缺文件被挡、死轴进 variables 被挡、
+未扫变量被挡、全活放行、`probe:false` 退路）。
+
+---
+
 ## 0.35.0（未发布）· 可落地配方 + 抄一遍基线 + 配方库检索（复盘 R1/R4/R5/S5）
 
 > 回灌上游原件：否。承接 0.34.0 的「先验 + 卡片」，把复盘里剩下的四条也落完。

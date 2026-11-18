@@ -29,6 +29,8 @@ description: 通用闭环引擎——任意可测目标 + 可调参数 → 观�
 ## 五条硬规则
 
 - **① 没做参数活性扫描，不许开始搜索**：参数表 ≠ 生效参数，改了逐字节相同的就是没通电。
+  工具：`node harness/liveness.mjs --run <run> --probe probe.json` 出 `params-liveness.json`；
+  `plan.json` 的 `variables` 必须是扫过的**活轴**，死轴进了 variables 会被 `2.1` 直接挡（`budget.probe:false` 可关）。
 - **② 对比必须锁「绝对毫秒 + seed」**，不锁「第 N 帧」——同版本不同时刻的差常比版本间还大。
 - **③ 判据只认数字**，图只用于给人看；冲突以数字为准，再查图为什么不对。
 - **④ 闸门新增断言必须验「故意弄坏能红」**——只 log 不阻断等于没加。

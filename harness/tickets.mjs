@@ -85,6 +85,7 @@ const ROUND = {
     '读 requirement.md / research.json / intent.json' + (r > 1 ? '、上一轮 rounds/' + String(r - 1).padStart(2, '0') + '.json、decide.json 与 **nextRoundBrief.json**（下一轮需求就写在里面）' : '') + '。',
     '格式：{ round, orders:[{id, task, done_when}], executor:{model, why} }。',
     'executor.model 写你打算用来干这一轮的具体模型名。',
+    '⚠ 先扫活性再列 variables：node harness/liveness.mjs --run ' + dir + ' --probe probe.json（死参数不许进 variables）。',
     doneLine(dir, id)
   ].join('\n'),
   // S3：票面字段化、去掉散文——契约与停止条件已经在上面的「执行员卡片」里，这里只写"做什么"

@@ -28,7 +28,7 @@ import { profileFromFile, profileCorr } from './composition.mjs'
 
 const STAGE_DIR = 'stages'
 const TICKET_DIR = 'tickets'
-const DEFAULT_BUDGET = { research: 'high', maxRounds: 1, useCritic: false, userReview: false, resupply: true, split: false }
+const DEFAULT_BUDGET = { research: 'high', maxRounds: 1, useCritic: false, userReview: false, resupply: true, split: false, probe: true }
 
 // ── 执行员的工作量下限 + 上下文上限（2026-11-18，P1/P2）
 // 为什么加：A/B 实测里，两条臂都只拍 10~12 帧就交（预算 40），因为「多试几个想法」从来不是通过条件。
@@ -54,7 +54,8 @@ export function getBudget(dir) {
   const resupply = b.resupply === undefined ? DEFAULT_BUDGET.resupply : Boolean(b.resupply)
   // exec 是执行员契约（P1/P2）的覆盖口；只有写了才透传，免得老 budget 的形状变
   const split = b.split === undefined ? Boolean(DEFAULT_BUDGET.split) : Boolean(b.split)
-  return Object.assign({ research, maxRounds, useCritic, userReview, resupply, split }, b.exec && typeof b.exec === 'object' ? { exec: b.exec } : {})
+  const probe = b.probe === undefined ? Boolean(DEFAULT_BUDGET.probe) : Boolean(b.probe)
+  return Object.assign({ research, maxRounds, useCritic, userReview, resupply, split, probe }, b.exec && typeof b.exec === 'object' ? { exec: b.exec } : {})
 }
 
 // ── 面板吐槽（user-interrupt.jsonl）的消费 ───────────────────────────────
@@ -377,7 +378,9 @@ export const checks = {
             + '）——要么改靶，要么写 priorException 说明为什么这次要破例')
         }
       }
-      const missing = Object.keys(prior).filter((k) => !covered.has(k) && !waived.has(k))
+      // 只有「判别量」必须有判据；「参数」（sigma/ambient/lightSteps…）是旋钮，不该逼人写判据
+      const discriminators = Object.keys(prior).filter((k) => (prior[k] && prior[k].role) === 'discriminator')
+      const missing = discriminators.filter((k) => !covered.has(k) && !waived.has(k))
       if (missing.length) {
         out.push('先验里有判别量没有对应判据：' + missing.join('、')
           + '（加上判据；真不测就写 priorWaived 说明为什么不测——这一条就是治「判据缺项」的）')
@@ -391,6 +394,27 @@ export const checks = {
     const out = []
     if (!Array.isArray(p.orders) || p.orders.length === 0) out.push('orders 为空')
     if (!p.executor || !p.executor.model) out.push('没配执行员模型')
+
+    // ── 活性扫描（2026-11-18 试刀教训）：没证明旋钮会动，不许开搜
+    // 现场：按配方把 lightSteps 6→1，抓出来的帧逐字节相同；20 张候选里有 5 张死在空转。
+    const budget = getBudget(dir)
+    if (budget.probe !== false) {
+      const lv = readJson(j(dir, 'params-liveness.json'))
+      if (!lv) {
+        out.push('缺 params-liveness.json —— 先扫活性：node harness/liveness.mjs --run ' + dir + ' --probe probe.json')
+      } else {
+        const vars = (Array.isArray(p.variables) ? p.variables : []).map(String)
+        if (vars.length === 0) out.push('plan.variables 为空（这一轮打算动哪几根轴？）')
+        const table = new Map((Array.isArray(lv.params) ? lv.params : []).map((x) => [String(x && x.name), x && x.status]))
+        const unknown = vars.filter((v) => !table.has(v))
+        if (unknown.length) out.push('这些变量没做过活性扫描：' + unknown.join('、') + '（在 probe.json 的 params 里补上）')
+        const dead = vars.filter((v) => table.get(v) === 'dead')
+        if (dead.length) out.push('这些变量是死参数（改了逐字节相同），别放进 variables：' + dead.join('、'))
+        const live = vars.filter((v) => table.get(v) === 'live' || table.get(v) === 'weak')
+        if (vars.length && live.length === 0) out.push('variables 里没有一根活轴——先找一根会动的参数再开搜')
+        if (!lv.capture) out.push('params-liveness.json 没记 capture 命令（无法证明是真跑出来的）')
+      }
+    }
     return out
   },
   executed(dir, node) {
