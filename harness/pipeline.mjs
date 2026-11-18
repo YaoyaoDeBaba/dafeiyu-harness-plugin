@@ -362,6 +362,26 @@ export const checks = {
       }
     })
 
+    // ── 判据自查（第 1 天 hardening，2026-11-18）：量错了对象 / 换个阈值结论就翻 —— 不许开工
+    {
+      const rj = readJson(j(dir, 'research.json')) || { extracted: [] }
+      const get = (what) => {
+        const e = (Array.isArray(rj.extracted) ? rj.extracted : []).find((x) => x && x.what === what)
+        return e && Number.isFinite(Number(e.value)) ? Number(e.value) : null
+      }
+      const bandMax = get('maskRowBandMax')
+      const sens = get('maskSensitivity')
+      const accepted = i && i.maskAccepted === true
+      if (!accepted && bandMax !== null && bandMax > 0.6) {
+        out.push('掩膜健康度不过：主体有 ' + (bandMax * 100).toFixed(0) + '% 集中在 20% 高度带里 —— 判据很可能只量到了一条亮带（不是主体）。'
+          + '先换阈值重测（preflight 会给出 maskThrAuto），或写 intent.maskAccepted=true 承认这次就是要量那条带')
+      }
+      if (!accepted && sens !== null && sens > 0.25) {
+        out.push('掩膜敏感性不过：阈值上下浮动 40% 时主体占比变化 ' + (sens * 100).toFixed(0) + '% —— 换个阈值结论就翻的判据不该拿去验收。'
+          + '先固定阈值/换自适应阈值重测，或写 intent.maskAccepted=true 说明已知风险')
+      }
+    }
+
     // ── 领域先验（R2，2026-11-18）：靶必须落在「合理量级」里，且先验里每条判别量都要有判据
     const domain = String(i.domain || '')
     const prior = domain && PRIORS[domain] ? PRIORS[domain] : null

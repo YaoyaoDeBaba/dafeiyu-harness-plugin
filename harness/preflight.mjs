@@ -20,7 +20,7 @@ import { join, resolve, basename } from 'node:path'
 import { probeFile, summarize } from './ref-probe.mjs'
 function argVal(k, d) { const i = process.argv.indexOf('--' + k); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d }
 
-import { profileFromFile, scalarsFromFile, medianProfile, calibrateMinCorr, toneFractions, speckleRatio, foamComponents, maskHealth } from './composition.mjs'
+import { profileFromFile, scalarsFromFile, medianProfile, calibrateMinCorr, toneFractions, speckleRatio, foamComponents, maskHealth, maskSensitivity, autoMaskThr } from './composition.mjs'
 import { decodePng } from './ref-probe.mjs'
 
 function arg(name, def) { const i = process.argv.indexOf('--' + name); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : def }
@@ -58,6 +58,11 @@ if (refArg && !checkOnly) {
       Object.assign(sc, toneFractions(decoded))                      // 云内明暗结构
       sc.speckleRatio = speckleRatio(decoded)                        // 高频噪点率（回放暴露的缺项）
       const mh = maskHealth(decoded)                                  // 掩膜健康度：是不是只罩住一条亮带
+      const sens = maskSensitivity(decoded)                           // 阈值敏感性：一动阈值结论就翻 = 判据靠不住
+      const aThr = autoMaskThr(decoded)                               // Otsu 自适应阈值（与固定 0.10 对照）
+      sc.maskThrAuto = aThr
+      sc.maskSensitivity = sens.delta
+      sc.maskFracAuto = maskHealth({ width: decoded.width, height: decoded.height, channels: decoded.channels, data: decoded.data }, aThr).maskFrac
       sc.maskFrac = mh.maskFrac
       sc.maskRowBandMax = mh.rowBandMax
       Object.assign(sc, foamComponents(decoded))                     // 白沫连通性
@@ -96,7 +101,7 @@ if (measured && measured.profiles && measured.profiles.length) {
   const hitP = research.extracted.find((e) => e.what === 'rowProfile')
   if (hitP) Object.assign(hitP, prof); else research.extracted.push(prof)
 
-  const keys = ['centroidY', 'topCoverage', 'skyExposure', 'bboxAspect', 'subjectFrac', 'cloudDarkFrac', 'cloudBrightFrac', 'cloudMeanLuma', 'speckleRatio', 'foamShare', 'foamMeanComp', 'foamMaxShare', 'maskFrac', 'maskRowBandMax']
+  const keys = ['centroidY', 'topCoverage', 'skyExposure', 'bboxAspect', 'subjectFrac', 'cloudDarkFrac', 'cloudBrightFrac', 'cloudMeanLuma', 'speckleRatio', 'foamShare', 'foamMeanComp', 'foamMaxShare', 'maskFrac', 'maskRowBandMax', 'maskThrAuto', 'maskSensitivity', 'maskFracAuto']
   for (const k of keys) {
     const vals = measured.structs.map((s) => s[k]).filter((v) => Number.isFinite(v))
     if (!vals.length) continue
@@ -154,6 +159,9 @@ if (measured && measured.profiles && measured.profiles.length) {
     const bandMax = measured.structs.map((s) => s.maskRowBandMax).filter((v) => Number.isFinite(v)).sort((a, b) => a - b)
     const med = bandMax.length ? bandMax[bandMax.length >> 1] : 0
     if (med > 0.6) console.log('⚠ 掩膜健康度：主体有 ' + (med * 100).toFixed(0) + '% 集中在 20% 高度带里 —— 掩膜可能只罩住了一条亮带（不是主体），topCoverage/centroidY/subjectFrac 可能量错了对象')
+    const sensMed = measured.structs.map((s) => s.maskSensitivity).filter((v) => Number.isFinite(v)).sort((a, b) => a - b)
+    const sens = sensMed.length ? sensMed[sensMed.length >> 1] : 0
+    if (sens > 0.25) console.log('⚠ 掩膜敏感性：阈值上下浮动 40% 时主体占比变化 ' + (sens * 100).toFixed(0) + '% —— 这张图上的判据靠不住（换个阈值结论就翻）')
   }
   console.log('结构指纹: 行剖面 ' + measured.profiles[0].length + ' 桶 · 质心y ' + (st.centroidY || 0).toFixed(3) + ' · 上部覆盖 ' + (st.topCoverage || 0).toFixed(3) + ' · 留白 ' + (st.skyExposure || 0).toFixed(3))
   if (hintCal) console.log('  minCorr 建议 ' + hintCal.suggested + '（留一法：min ' + hintCal.min + ' / med ' + hintCal.med + '；阈值来自参考自身离散，别拍脑袋）')

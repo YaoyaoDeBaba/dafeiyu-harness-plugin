@@ -41,7 +41,48 @@ function quantile(arr, q) {
  * 实测翻车过：云团半径 1800→1400、coverage 0.34→0.30，topCoverage 只从 0.726 动到 0.717。
  * 结构指纹要抓的是「排列 + 多少」，所以掩膜必须锚在背景上，而不是锚在自己的直方图上。
  */
+export function autoMaskThr(img, lo = 0.02, hi = 0.20) {
+  const { rgb, width, height } = lumaOf(img)
+  const corner = []
+  const push = (cx, cy) => {
+    for (let y = cy; y < Math.min(cy + 8, height); y += 1) {
+      for (let x = cx; x < Math.min(cx + 8, width); x += 1) corner.push(rgb[(y * width + x) * 3], rgb[(y * width + x) * 3 + 1], rgb[(y * width + x) * 3 + 2])
+    }
+  }
+  push(0, 0); push(Math.max(0, width - 8), 0); push(0, Math.max(0, height - 8)); push(Math.max(0, width - 8), Math.max(0, height - 8))
+  const med = (ch) => { const a = []; for (let i = ch; i < corner.length; i += 3) a.push(corner[i]); a.sort((x, y) => x - y); return a.length ? a[a.length >> 1] : 0 }
+  const br = med(0), bg = med(1), bb = med(2)
+  const BINS = 128
+  const hist = new Float64Array(BINS)
+  for (let i = 0; i < width * height; i += 1) {
+    const d = Math.abs(rgb[i * 3] - br) + Math.abs(rgb[i * 3 + 1] - bg) + Math.abs(rgb[i * 3 + 2] - bb)
+    const b = Math.max(0, Math.min(BINS - 1, Math.floor((d / 0.6) * BINS)))
+    hist[b] += 1
+  }
+  // Otsu：在 [lo,hi] 对应的 bin 范围内找类间方差最大的阈值
+  const binOf = (v) => Math.max(0, Math.min(BINS - 1, Math.round((v / 0.6) * BINS)))
+  const i0 = binOf(lo), i1 = binOf(hi)
+  let total = 0, sum = 0
+  for (let i = 0; i < BINS; i += 1) { total += hist[i]; sum += i * hist[i] }
+  let wB = 0, sumB = 0, best = -1, bestT = binOf(0.10)
+  for (let i = 0; i < BINS; i += 1) {
+    wB += hist[i]; if (!wB) continue
+    const wF = total - wB; if (!wF) break
+    sumB += i * hist[i]
+    const mB = sumB / wB, mF = (sum - sumB) / wF
+    const between = wB * wF * (mB - mF) * (mB - mF)
+    if (i >= i0 && i <= i1 && between > best) { best = between; bestT = i }
+  }
+  return (bestT / BINS) * 0.6
+}
+
+/**
+ * 掩膜：默认阈值 0.10（历史口径，band 都按它标定）；传 'auto' 用 Otsu 自适应。
+ * 夜场景里暗云与四角背景的通道差只有 0.088 —— 固定 0.10 会把云漏在外面，
+ * 于是 topCoverage/centroidY/subjectFrac 量的是"云底那条亮带"。auto 就是为这个准备的。
+ */
 function maskOf(img, thr = 0.10) {
+  if (thr === 'auto') thr = autoMaskThr(img)
   const { lum, width, height, rgb } = lumaOf(img)
   const corners = []
   const push = (cx, cy) => {
@@ -306,4 +347,22 @@ export function maskHealth(img) {
     rowBandMax,
     verdict: rowBandMax > 0.6 ? 'band-dominated' : 'ok',
   }
+}
+
+
+/**
+ * 掩膜敏感性（第 1 天 hardening）：同一帧在阈值上下浮动 40% 时，主体占比变化多少。
+ * 变化大 = 这个判据在这张图上"靠不住"（阈值一动结论就翻），不该拿去验收。
+ */
+export function maskSensitivity(img, thr = 0.10) {
+  const base = thr === 'auto' ? autoMaskThr(img) : thr
+  const at = (t) => {
+    const { m, width, height } = maskOf(img, t)
+    let hit = 0
+    for (let i = 0; i < m.length; i += 1) hit += m[i]
+    return hit / (width * height)
+  }
+  const lo = at(base * 0.6), mid = at(base), hi = at(base * 1.4)
+  const delta = Math.max(Math.abs(lo - mid), Math.abs(hi - mid)) / Math.max(1e-6, mid)
+  return { thr: base, fracLo: lo, fracMid: mid, fracHi: hi, delta }
 }

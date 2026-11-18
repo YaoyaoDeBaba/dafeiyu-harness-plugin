@@ -274,3 +274,49 @@ test('⑬ lite 模式：节点表只剩必须的闸', async () => {
   assert.ok(rb.includes('2.3-verify-r1'), 'lite 仍必须保留验收闸')
   assert.ok(rb.includes('2.2-exec-r1'), 'lite 仍必须保留执行节点')
 })
+
+// ── 判据自查闸：掩膜只罩亮带 / 阈值敏感 → 1.10 不许过 ──
+function intentRun(extracted, intentExtra = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'sl-maskgate-'))
+  mkdirSync(join(dir, 'stages'), { recursive: true })
+  writeFileSync(join(dir, 'requirement.md'), '# r\n')
+  writeFileSync(join(dir, 'budget.json'), JSON.stringify({ research: 'low', maxRounds: 1, useCritic: false, resupply: false, probe: false }))
+  writeFileSync(join(dir, 'research.json'), JSON.stringify({ findings: [], extracted }))
+  writeFileSync(join(dir, 'intent.json'), JSON.stringify(Object.assign({ restate: 'r', confirmed: true,
+    anchors: [{ kind: 'image', ref: 'x', why: 'x' }], criteria: [{ id: 'C1', metric: 'topCoverage', target: 0.7, dir: 'two-sided' }] }, intentExtra)))
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm']) {
+    writeFileSync(join(dir, 'stages', id + '.json'), JSON.stringify({ stage: id, status: 'done' }))
+  }
+  // 让 step 生成空白表单，再按字段类型填满（字段名以 forms.mjs 为准，别硬编码）
+  run('step', '--run', dir)
+  const fp = join(dir, 'forms', '1.10-translate3.json')
+  if (existsSync(fp)) {
+    const f = JSON.parse(readFileSync(fp, 'utf8'))
+    for (const x of (f.fields || [])) x.value = x.type === 'list' ? ['x', 'y'] : 'x'
+    writeFileSync(fp, JSON.stringify(f))
+  }
+  return dir
+}
+
+test('⑭ 掩膜只罩住亮带（bandMax 0.9）→ 1.10 挡住', () => {
+  const dir = intentRun([{ what: 'topCoverage', value: 0.7, min: 0.6, max: 0.8 },
+    { what: 'maskRowBandMax', value: 0.9 }, { what: 'maskSensitivity', value: 0.1 }])
+  const r = run('done', '--run', dir, '--stage', '1.10-translate3')
+  assert.equal(r.status, 1, r.stdout)
+  assert.match(r.stdout, /掩膜健康度不过/)
+})
+
+test('⑮ 掩膜太敏感（换阈值结论就翻）→ 1.10 挡住', () => {
+  const dir = intentRun([{ what: 'topCoverage', value: 0.7, min: 0.6, max: 0.8 },
+    { what: 'maskRowBandMax', value: 0.2 }, { what: 'maskSensitivity', value: 0.4 }])
+  const r = run('done', '--run', dir, '--stage', '1.10-translate3')
+  assert.equal(r.status, 1, r.stdout)
+  assert.match(r.stdout, /掩膜敏感性不过/)
+})
+
+test('⑯ 写 maskAccepted 承认风险 → 放行', () => {
+  const dir = intentRun([{ what: 'topCoverage', value: 0.7, min: 0.6, max: 0.8 },
+    { what: 'maskRowBandMax', value: 0.9 }, { what: 'maskSensitivity', value: 0.4 }], { maskAccepted: true })
+  const r = run('done', '--run', dir, '--stage', '1.10-translate3')
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+})
