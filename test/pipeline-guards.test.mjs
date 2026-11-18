@@ -200,3 +200,138 @@ test('⑭ decide=stop 时不动 3.1/3.2（收尾照常）', () => {
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.doesNotMatch(r.stdout, /旧信号作废/)
 })
+
+
+// ───────────── ④ 执行员契约（P1）与反早停硬闸（P2）─────────────
+test('⑮ 2.2-exec 出票自带契约：contextBudget / mustProduce / 票面写清下限', () => {
+  const dir = makeRun()
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1']) signal(dir, id)
+  run('step', '--run', dir)
+  const t = JSON.parse(readFileSync(join(dir, 'tickets', '2.2-exec-r1.json'), 'utf8'))
+  assert.deepEqual(t.mustProduce, { variants: 3, abFrames: 1 })
+  assert.deepEqual(t.contextBudget, { docs: 2, images: 1 })
+  assert.match(t.prompt, /本轮契约/)
+  assert.match(t.prompt, /至少 3 个变体/)
+  assert.match(t.prompt, /上下文上限/)
+})
+
+test('⑯ 交活不带 variants[] → 被反早停闸挡住', () => {
+  const dir = makeRun()
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1']) signal(dir, id)
+  mkdirSync(join(dir, 'rounds'), { recursive: true })
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['改了 A'], shot: 'shots/a.png' }))
+  const r = run('done', '--run', dir, '--stage', '2.2-exec-r1')
+  assert.equal(r.status, 1, r.stdout)
+  assert.match(r.stdout, /缺 variants/)
+})
+
+test('⑰ 变体数量不足 → 挡住并说清下限', () => {
+  const dir = makeRun()
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1']) signal(dir, id)
+  mkdirSync(join(dir, 'rounds'), { recursive: true })
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['改了 A'], shot: 'shots/a.png', variants: [{ name: 'v1', shot: 'shots/v1.png' }], abShots: ['shots/ab.png'] }))
+  const r = run('done', '--run', dir, '--stage', '2.2-exec-r1')
+  assert.equal(r.status, 1, r.stdout)
+  assert.match(r.stdout, /少于本轮下限 3/)
+})
+
+test('⑱ 变体够 + A/B 帧够 → 放行', () => {
+  const dir = makeRun()
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1']) signal(dir, id)
+  mkdirSync(join(dir, 'rounds'), { recursive: true })
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({
+    changes: ['改了 A'], shot: 'shots/a.png',
+    variants: [{ name: 'v1', shot: 'shots/v1.png' }, { name: 'v2', shot: 'shots/v2.png' }, { name: 'v3', shot: 'shots/v3.png' }],
+    abShots: ['shots/ab_bite.png'],
+  }))
+  const r = run('done', '--run', dir, '--stage', '2.2-exec-r1')
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+})
+
+test('⑲ budget.exec 关掉下限 → 老形状的 round 文件仍能过（向后兼容）', () => {
+  const dir = makeRun({ research: 'low', maxRounds: 1, useCritic: false, resupply: false, exec: { minVariants: 0, requireAB: false } })
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1']) signal(dir, id)
+  mkdirSync(join(dir, 'rounds'), { recursive: true })
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['改了 A'], shot: 'shots/a.png' }))
+  const r = run('done', '--run', dir, '--stage', '2.2-exec-r1')
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+})
+
+
+// ───────────── ⑤ 判据靶必须来自分布（P4）─────────────
+test('⑳ 单帧量测 → extracted 打 singleFrame 标，preflight 打提示', () => {
+  const dir = makeRun()
+  const rj = JSON.parse(readFileSync(join(dir, 'research.json'), 'utf8'))
+  assert.ok(rj.extracted.length > 0, '要先有量测')
+  assert.ok(rj.extracted.every((e) => e.singleFrame === true), '单帧量测必须打标：' + JSON.stringify(rj.extracted[0]))
+  const out = pre('--run', dir, '--ref', join(dir, 'refs', 'ref.png'))
+  assert.match(out.stdout + out.stderr, /只量了 1 张/)
+})
+
+test('㉑ 参考目录量测 → extracted 有 min/max 且不打单帧标', () => {
+  const dir = makeRun()
+  for (const n of ['b.png', 'c.png']) copyFileSync(ICON, join(dir, 'refs', n))   // 目录里要有 >1 张才算分布
+  const r = pre('--run', dir, '--ref', join(dir, 'refs'))
+  assert.ok(existsSync(join(dir, 'research.json')))
+  const rj = JSON.parse(readFileSync(join(dir, 'research.json'), 'utf8'))
+  assert.ok(rj.extracted.length > 0)
+  assert.ok(rj.extracted.every((e) => e.singleFrame !== true), '目录量测不该打单帧标')
+  // 三张同图 → min==max；这里断言「来源写了 N 帧」，即确实按分布量的（不是只量一张）
+  assert.ok(rj.extracted.some((e) => /[0-9]+ 帧/.test(String(e.source))), '来源要写「N 帧」：' + JSON.stringify(rj.extracted[0]))
+})
+
+test('㉒ refs/ 有多张帧但只量了 1 张 → 1.1 就卡住，并给出补救命令', () => {
+  const dir = makeRun()                       // makeRun 用单帧 preflight → extracted 全 singleFrame
+  for (const n of ['b.png', 'c.png']) copyFileSync(ICON, join(dir, 'refs', n))
+  const r = run('step', '--run', dir)
+  assert.equal(r.status, 1, r.stdout)
+  assert.match(r.stdout, /全部来自 1 张/)
+  assert.match(r.stdout, /--ref .*refs/)
+})
+
+
+// ───────────── ⑥ 拆窄票 / 合并选优（P3）─────────────
+test('㉓ budget.split=true → 节点表里出现 2.2a-split 与 2.4m-merge，且顺序对', () => {
+  const dir = makeRun({ research: 'low', maxRounds: 1, useCritic: false, resupply: false, split: true })
+  const out = run('status', '--run', dir).stdout
+  const order = (out.match(/\[..\] (\S+)/g) || []).map((x) => x.split(' ')[1])
+  const iPlan = order.indexOf('2.1-plan-r1')
+  const iSplit = order.indexOf('2.2a-split-r1')
+  const iExec = order.indexOf('2.2-exec-r1')
+  const iMerge = order.indexOf('2.4m-merge-r1')
+  const iVerify = order.indexOf('2.3-verify-r1')
+  assert.ok(iSplit > iPlan && iExec > iSplit && iMerge > iExec && iVerify > iMerge, '顺序应为 plan→split→exec→merge→verify：' + order.join(','))
+})
+
+test('㉔ 没写 split.json → 2.2a-split 卡住', () => {
+  const dir = makeRun({ research: 'low', maxRounds: 1, useCritic: false, resupply: false, split: true })
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1']) signal(dir, id)
+  const r = run('done', '--run', dir, '--stage', '2.2a-split-r1')
+  assert.equal(r.status, 1, r.stdout)
+  assert.match(r.stdout, /缺 split\.json/)
+})
+
+test('㉕ split.json 只有 1 张票 / 验收缺 dir → 卡住；补全 → 放行', () => {
+  const dir = makeRun({ research: 'low', maxRounds: 1, useCritic: false, resupply: false, split: true })
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1']) signal(dir, id)
+  writeFileSync(join(dir, 'split.json'), JSON.stringify({ tasks: [{ id: 'T1', goal: '只改云剪影', files: ['src/cloud.js'], accept: [{ id: 'topCoverage', target: 0.72 }] }] }))
+  const r1 = run('done', '--run', dir, '--stage', '2.2a-split-r1')
+  assert.equal(r1.status, 1, r1.stdout)
+  assert.match(r1.stdout, /少于 2 张/)
+  writeFileSync(join(dir, 'split.json'), JSON.stringify({ tasks: [
+    { id: 'T1', goal: '只改云剪影', files: ['src/cloud.js'], accept: [{ id: 'topCoverage', target: 0.72, dir: 'two-sided' }], contextBudget: { docs: 0, images: 1 } },
+    { id: 'T2', goal: '只改闪电辉光', files: ['src/bolt.js'], accept: [{ id: 'p99', target: 0.70, dir: 'two-sided' }] }
+  ] }))
+  const r2 = run('done', '--run', dir, '--stage', '2.2a-split-r1')
+  assert.equal(r2.status, 0, r2.stdout + r2.stderr)
+})
+
+test('㉖ merge.json 缺 chosen / evidence → 卡住', () => {
+  const dir = makeRun({ research: 'low', maxRounds: 1, useCritic: false, resupply: false, split: true })
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1', '2.2a-split-r1', '2.2-exec-r1']) signal(dir, id)
+  writeFileSync(join(dir, 'merge.json'), JSON.stringify({ why: '短' }))
+  const r = run('done', '--run', dir, '--stage', '2.4m-merge-r1')
+  assert.equal(r.status, 1, r.stdout)
+  assert.match(r.stdout, /chosen/)
+  assert.match(r.stdout, /evidence/)
+})

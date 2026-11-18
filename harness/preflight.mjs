@@ -56,10 +56,16 @@ if (measured) {
     const v = measured.sum[k]
     if (!v) continue
     const hit = research.extracted.find((e) => e.what === k)
+    // 单帧量测打标（2026-11-18）：参考是序列时只量 1 帧 = 把阈值锁死在单帧上。
+    // 实测代价：一整轮都在追一张偏亮帧的数（g001 mean 0.327 vs 24 帧中位 0.280）。
     const item = { what: k, value: v.med, min: v.min, max: v.max, source: measured.count === 1 ? measured.sample : measured.count + ' 帧' }
+    if (measured.count === 1) item.singleFrame = true
+    else delete item.singleFrame      // 改成量分布之后要把单帧标摘掉
     if (hit) Object.assign(hit, item); else research.extracted.push(item)
   }
 }
+// 量的是分布就把单帧标整体摘掉（有些键的值恰为 0 会被上面的 continue 跳过，留着旧标会误报）
+if (measured && measured.count > 1) research.extracted.forEach((e) => { if (e) delete e.singleFrame })
 if (!checkOnly) writeFileSync(researchPath, JSON.stringify(research, null, 2), 'utf8')
 
 // ── 3) intent 骨架（只建空模板，不替人拍判据）
@@ -95,6 +101,10 @@ const intentReady = Boolean(intent && intent.confirmed === true && (intent.crite
 
 console.log('=== preflight: ' + dir + ' ===')
 console.log('参考量测: ' + (measured ? measured.count + ' 张，写进 extracted ' + extracted.length + ' 条' : '未提供 --ref（跳过）'))
+if (measured && measured.count === 1) {
+  console.log('  ⚠ 只量了 1 张。若参考是序列（refs/ 里有多张），先把目录指给 --ref 量分布：')
+  console.log('    node harness/preflight.mjs --run <run> --ref <refs 目录>  —— 否则阈值会被锁死在这一帧上')
+}
 console.log('调研: findings ' + f.length + ' / 带URL ' + url.length + ' / used ' + used.length + ' / 可核(opensource·paper) ' + verified.length)
 console.log('intent: ' + (intentReady ? '已确认，可开工' : '未完成（restate / criteria / anchors / confirmed）'))
 console.log('预算: budget.json（research / maxRounds / useCritic）')

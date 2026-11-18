@@ -27,7 +27,14 @@ import { capabilityPrecheck } from './intent.mjs'
 
 const STAGE_DIR = 'stages'
 const TICKET_DIR = 'tickets'
-const DEFAULT_BUDGET = { research: 'high', maxRounds: 1, useCritic: false, userReview: false, resupply: true }
+const DEFAULT_BUDGET = { research: 'high', maxRounds: 1, useCritic: false, userReview: false, resupply: true, split: false }
+
+// ── 执行员的工作量下限 + 上下文上限（2026-11-18，P1/P2）
+// 为什么加：A/B 实测里，两条臂都只拍 10~12 帧就交（预算 40），因为「多试几个想法」从来不是通过条件。
+// 模型会优先花预算在「离它最近的可测目标」上——那就把这个目标写进票面并**硬校验**。
+// budget.exec 可覆盖（minVariants: 0 / requireAB: false 可关掉）。
+const DEFAULT_EXEC = { minVariants: 3, requireAB: true, maxDocs: 2, maxImages: 1 }
+const execRules = (budget) => Object.assign({}, DEFAULT_EXEC, (budget && budget.exec) || {})
 const TIER = { low: 0, mid: 1, high: 2, max: 3 }
 const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')) } catch { return null } }
 const j = (...a) => join(...a)
@@ -40,7 +47,9 @@ export function getBudget(dir) {
   const useCritic = b.useCritic === undefined ? DEFAULT_BUDGET.useCritic : Boolean(b.useCritic)
   const userReview = b.userReview === undefined ? DEFAULT_BUDGET.userReview : Boolean(b.userReview)
   const resupply = b.resupply === undefined ? DEFAULT_BUDGET.resupply : Boolean(b.resupply)
-  return { research, maxRounds, useCritic, userReview, resupply }
+  // exec 是执行员契约（P1/P2）的覆盖口；只有写了才透传，免得老 budget 的形状变
+  const split = b.split === undefined ? Boolean(DEFAULT_BUDGET.split) : Boolean(b.split)
+  return Object.assign({ research, maxRounds, useCritic, userReview, resupply, split }, b.exec && typeof b.exec === 'object' ? { exec: b.exec } : {})
 }
 
 // ── 面板吐槽（user-interrupt.jsonl）的消费 ───────────────────────────────
@@ -193,7 +202,21 @@ export const checks = {
   measured(dir) {
     const r = readJson(j(dir, 'research.json'))
     if (!r) return ['缺 research.json —— 先跑 node harness/preflight.mjs --run ' + dir + ' --ref <参考素材>']
-    return (Array.isArray(r.extracted) && r.extracted.length > 0) ? [] : ['extracted[] 为空（参考没量过）']
+    const ext = Array.isArray(r.extracted) ? r.extracted : []
+    if (ext.length === 0) return ['extracted[] 为空（参考没量过）']
+    // 参考是序列却只量了 1 帧 → 阈值会被锁死在单帧上（2026-11-18 实测：一整轮追错数）
+    let refs = []
+    try { refs = readdirSync(j(dir, 'refs')).filter((f) => /\.png$/i.test(f)) } catch { refs = [] }
+    const numeric = ext.filter((e) => e && Number.isFinite(Number(e.value)))
+    const single = numeric.filter((e) => e.singleFrame === true || /[.]png$/i.test(String(e.source || '')))
+    if (refs.length > 1 && numeric.length > 0 && single.length === numeric.length) {
+      return [
+        'refs/ 里有 ' + refs.length + ' 张帧，但 extracted[] 全部来自 1 张（' + String(single[0].source || '单帧') + '）',
+        '→ 先量分布再定阈值：node harness/preflight.mjs --run ' + dir + ' --ref ' + j(dir, 'refs'),
+        '（只量单帧会把整轮锁死在那一帧的亮度上：实测 g001 mean 0.327 / 24 帧中位 0.280）'
+      ]
+    }
+    return []
   },
   loaded(dir) {
     const out = []
@@ -295,6 +318,23 @@ export const checks = {
     const out = []
     if (!last.shot && !last.preview) out.push('没有截图或可运行入口')
     if (!Array.isArray(last.changes) || last.changes.length === 0) out.push('没写改了什么')
+    // 反早停硬闸（2026-11-18）：工作量下限。实测两条臂都只拍 10~12 帧就跑，
+    // 因为「多试」从来没被校验过。这里把它变成通过条件（budget.exec 可关）。
+    const rules = execRules(getBudget(dir))
+    if (rules.minVariants > 0) {
+      const variants = Array.isArray(last.variants) ? last.variants : null
+      if (!variants) out.push('rounds/' + name + ' 缺 variants[]（本轮至少 ' + rules.minVariants + ' 个变体，每个写 name + 抓帧）')
+      else if (variants.length < rules.minVariants) {
+        out.push('变体只有 ' + variants.length + ' 个，少于本轮下限 ' + rules.minVariants + ' 个（凑数不如多试：预算没用完就别交活）')
+      } else {
+        const noShot = variants.filter((v) => !v || !(v.shot || v.png))
+        if (noShot.length) out.push(noShot.length + ' 个变体没写抓帧（variants[].shot）')
+      }
+    }
+    if (rules.requireAB) {
+      const ab = Array.isArray(last.abShots) ? last.abShots : []
+      if (ab.length === 0) out.push('缺 abShots[]：至少要 1 张单变量 A/B 判别帧（只动一个变量、命名带 _ab_<变量>）')
+    }
     return out
   },
   verified(dir) {
@@ -318,6 +358,38 @@ export const checks = {
     const out = crash
     if (v.runs !== true) out.push('没有确认能跑（编译/加载通过）')
     if (v.visible !== true) out.push('没有确认能看（有图或入口）')
+    return out
+  },
+  // 拆分票（P3，2026-11-18）：把一个大工单派成 N 张窄票，每张自带上下文与验收。
+  // 为什么：A/B 实测——范围窄、自包含的子代理 24 分钟就做出 0.074 误差的活；
+  // 一个「全能执行员」被塞满技能文档后，70 分钟做出 0.352。宽度是要花钱的。
+  split(dir) {
+    const sp = readJson(j(dir, 'split.json'))
+    if (!sp) return ['缺 split.json（拆分票：tasks[] 每张写 goal / files / accept / contextBudget）']
+    const out = []
+    const tasks = Array.isArray(sp.tasks) ? sp.tasks : []
+    if (tasks.length < 2) out.push('tasks 少于 2 张（不拆就别开 split 节点；拆就至少 2 张窄票）')
+    tasks.forEach((t, i) => {
+      const id = (t && (t.id || '#' + (i + 1))) || ('#' + (i + 1))
+      if (!t || !String(t.goal || '').trim()) out.push(id + '：缺 goal（这张票要改哪一块、算做完是什么）')
+      if (!Array.isArray(t && t.files) || t.files.length === 0) out.push(id + '：缺 files[]（只许动这几个文件，冲突面才小）')
+      const accept = Array.isArray(t && t.accept) ? t.accept : []
+      if (accept.length === 0) out.push(id + '：缺 accept[]（这张票自己的验收，1~3 条）')
+      accept.forEach((c) => {
+        if (!c || !c.id) out.push(id + '：有验收项没写 id')
+        else if (!['lower', 'upper', 'two-sided'].includes(String(c.dir || ''))) out.push(id + '：验收 ' + c.id + ' 缺 dir（lower/upper/two-sided）')
+      })
+    })
+    return out
+  },
+  // 合并选优（P3）：合并员只拿各张票的产物 + 验收表，不拿任何一方的代码
+  mergedTickets(dir) {
+    const m = readJson(j(dir, 'merge.json'))
+    if (!m) return ['缺 merge.json（{ chosen, why, evidence[] }）']
+    const out = []
+    if (!String(m.chosen || '').trim()) out.push('没写 chosen（选了哪个变体/哪张票的结果）')
+    if (!Array.isArray(m.evidence) || m.evidence.length === 0) out.push('缺 evidence[]（凭什么选它：数值/图/对照）')
+    if (String(m.why || '').trim().length < 8) out.push('why 太短：要说清「为什么是它，不是别的」')
     return out
   },
   critiqued(dir) {
@@ -378,10 +450,13 @@ export function phase1Nodes(budget) {
 
 export function roundNodes(r, budget) {
   const n = [
-    { id: '2.1-plan-r' + r, kind: 'manager', title: '列工单 + 配执行员', check: 'plan' },
-    { id: '2.2-exec-r' + r, kind: 'worker', title: '按工单执行', check: 'executed' },
-    { id: '2.3-verify-r' + r, kind: 'manager', title: '验收：能跑 / 能看', check: 'verified' }
+    { id: '2.1-plan-r' + r, kind: 'manager', title: '列工单 + 配执行员', check: 'plan' }
   ]
+  // budget.split：把一个大工单拆成 N 张窄票（每张自带上下文与验收），再各自派窄执行员
+  pushIf(n, budget.split, { id: '2.2a-split-r' + r, kind: 'manager', title: '拆窄票：每张只带自己的文件/参考切片/验收', check: 'split' })
+  n.push({ id: '2.2-exec-r' + r, kind: 'worker', title: '按工单执行', check: 'executed' })
+  pushIf(n, budget.split, { id: '2.4m-merge-r' + r, kind: 'manager', title: '合并选优：只拿产物与验收表，不拿代码', check: 'mergedTickets' })
+  n.push({ id: '2.3-verify-r' + r, kind: 'manager', title: '验收：能跑 / 能看', check: 'verified' })
   pushIf(n, budget.useCritic, { id: '2.4-critique-r' + r, kind: 'worker', title: '观察员：逐条对判据评审', check: 'critiqued' })
   pushIf(n, budget.userReview, { id: '2.4b-userreview-r' + r, kind: 'human', title: '用户评审（等人给意见）', check: 'userReview' })
   n.push({ id: '2.5-decide-r' + r, kind: 'manager', title: '判断是否下一轮（吸收观察员/用户意见）', check: 'decided' })
@@ -679,13 +754,33 @@ function hintsFor(dir, node) {
       if (!Array.isArray(last.changes) || last.changes.length === 0) problems.push('changes 要是数组且至少 1 条（改了什么）')
     }
     if (problems.length) out.push('rounds/' + name + '：' + problems.join('；'))
-    out.push('本轮至少拍一组单变量 A/B 判别帧（只动一个变量、命名带 _ab_<变量>）—— 否则主指标变化归因不了（executor-brief 五-7）')
+
   }
   if (id === '1.10-translate3') {
     const it = readJson(j(dir, 'intent.json'))
     if (it) for (const w of capabilityPrecheck(it.criteria)) out.push(w)
   }
   return out
+}
+
+/**
+ * 票面契约（P1，2026-11-18）：执行员的上下文**只有这张票**。
+ * 所以票里必须写清「能读什么、必须交几个变体、怎么算没偷懒」——
+ * 不写，模型就会拿预算去读文档、然后交 1 个变体回来（A/B 实测：12/40 张就交活）。
+ */
+function contractLines(contract) {
+  if (!contract || !contract.mustProduce) return ''
+  const mp = contract.mustProduce
+  const cb = contract.contextBudget || {}
+  const lines = [
+    '【本轮契约·票面就是全部上下文，不必去读技能文档】',
+    '· 工作量下限：至少 ' + mp.variants + ' 个变体（每个都要抓帧，写进 variants[]）'
+      + (mp.abFrames ? '；另加 ' + mp.abFrames + ' 张单变量 A/B 判别帧（命名 *_ab_<变量>）' : ''),
+    '· 上下文上限：额外文档 ≤' + (cb.docs ?? 0) + ' 篇、参考图 ≤' + (cb.images ?? 0) + ' 张；交活时在 readDocs[] 里列出你真读过的文件',
+    '· 交活被挡的常见原因（都是自动校验）：缺 variants[]、变体不足、缺 abShots[]、changes 不是数组、没有 shot',
+    ''
+  ]
+  return lines.join('\n')
 }
 
 function step(dir) {
@@ -708,7 +803,15 @@ function step(dir) {
       console.log('交活前自查（不拦，但交活时会被挡）：')
       for (const h of hints) console.log('  · ' + h)
     }
-    const ticket = { stage: node.id, kind: node.kind, title: node.title, check: node.check, ...(node.kind === 'manager' && hasForm(node.id) ? { form: j(dir, 'forms', node.id + '.json') } : {}), prompt: ticketFor(dir, node) }
+    const rules = execRules(getBudget(dir))
+    const isExec = node.kind === 'worker' && String(node.id).startsWith('2.2-exec')
+    const contract = isExec
+      ? {
+          contextBudget: { docs: rules.maxDocs, images: rules.maxImages },
+          mustProduce: { variants: rules.minVariants, abFrames: rules.requireAB ? 1 : 0 },
+        }
+      : {}
+    const ticket = { stage: node.id, kind: node.kind, title: node.title, check: node.check, ...(node.kind === 'manager' && hasForm(node.id) ? { form: j(dir, 'forms', node.id + '.json') } : {}), prompt: contractLines(contract) + ticketFor(dir, node), ...contract }
     mkdirSync(j(dir, TICKET_DIR), { recursive: true })
     touchActive(dir, node.id, node.kind)
     const p = j(dir, TICKET_DIR, node.id + '.json')

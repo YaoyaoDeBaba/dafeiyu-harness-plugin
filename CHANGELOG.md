@@ -4,6 +4,43 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.31.0（未发布）· 窄票 + 反早停 + 靶必须来自分布（A/B 实测驱动）
+
+> 回灌上游原件：**否**（引擎自身的执行契约与校验）。
+> 背景：一次干净的双臂对照（同一任务、同一模型、同一抓帧器；一臂走全流水线，一臂纯手搓）——
+> **流水线臂**：70 分钟、12/40 抓帧、89 个流程文件、11 次闸门打回、对参考的归一化误差 **0.352**；
+> **手搓臂**：24 分钟、10 张、0 文件、0 打回、误差 **0.074**。
+> 复盘出三条硬伤，全部落码：执行员的"多试几个"从来不是通过条件；参考是序列时只量 1 帧就把阈值锁死；技能包 184KB 让执行员动手前就烧掉 2~5 万 token。
+
+### P1 票面契约（`harness/pipeline.mjs`）
+出 `2.2-exec` 票时附带并写进票面文本：
+`contextBudget: { docs: 2, images: 1 }`、`mustProduce: { variants: 3, abFrames: 1 }`。
+票面即全部上下文——**执行员不必读技能包**。`budget.exec` 可改/可关。
+
+### P2 反早停硬闸（`checks.executed`）
+`done 2.2-exec-rN` 现在硬校验：`variants[] ≥ minVariants`（每个带抓帧）、`abShots[] ≥ 1`。
+不满足直接打回，措辞直白：「预算没用完就别交活」。`budget.exec = {minVariants:0, requireAB:false}` 可退。
+
+### P3 拆窄票 / 合并选优（`budget.split`）
+新增节点 `2.2a-split-rN`（check `split`：`split.json.tasks[] ≥2`，每张写 goal/files/accept(dir)/contextBudget）
+与 `2.4m-merge-rN`（check `mergedTickets`：`merge.json` 的 chosen/why/evidence）。
+合并员只拿产物与验收表，不拿任何一方的代码。
+
+### P4 判据靶必须来自分布（`preflight` + `checks.measured`）
+- `preflight` 单帧量测会给 `extracted[].singleFrame = true`，并直接打印「若参考是序列就 --ref 目录」；
+- `checks.measured`（1.1 处）硬拦：`refs/` 有多张帧、但 `extracted` 全来自 1 张 → 卡住并给出补救命令。
+> 实测代价：上一单把阈值锁在单张参考帧上（g001 mean 0.327 vs 24 帧中位 0.280），整轮追错数。
+
+### P5 技能包瘦身 + 术语收敛（`skills/selfloop/SKILL.md`）
+9,838B → **4,798B**（-51%），术语统一成**观测 / 判据 / 搜索 / 台账**四个词；
+`budget.exec`、`budget.split`、票面契约写进主文件；`executor-brief` 补「工作量下限」；
+`workflow` 补拆窄票一节。新增判据 `test/skill-guard.test.mjs`：篇幅上限 + references 索引不许漏、不许点空。
+
+### 判据
+`node --test` = **407 tests / 407 pass / 0 fail**（新增 `pipeline-guards` 12 例 + `skill-guard` 3 例）。
+
+---
+
 ## 0.30.0（未发布）· 判据方向与字段纪律落进程序（N4 四条 + 3 个顺带修的）
 
 > 回灌上游原件：**否**（都是引擎自身的程序约束与校验，案例 A 侧不需要跟改）。

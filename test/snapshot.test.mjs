@@ -38,7 +38,14 @@ function reachedExec(dir) {
   }
   mkdirSync(join(dir, 'shots'), { recursive: true })
   writeFileSync(join(dir, 'shots', 'r1.png'), 'fake-png')
-  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ shot: 'shots/r1.png', changes: [{ path: 'Assets/Cloud.cs' }], params: [{ name: 'cloudCoverage', from: 0.6, to: 0.88, why: '参考片更厚' }] }))
+  // 2026-11-18：执行员交活现在有「工作量下限」（variants ≥3 + 1 张 A/B 帧），夹具按契约补齐
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({
+    shot: 'shots/r1.png',
+    changes: [{ path: 'Assets/Cloud.cs' }],
+    params: [{ name: 'cloudCoverage', from: 0.6, to: 0.88, why: '参考片更厚' }],
+    variants: [{ name: 'v1', shot: 'shots/r1.png' }, { name: 'v2', shot: 'shots/r1.png' }, { name: 'v3', shot: 'shots/r1.png' }],
+    abShots: ['shots/r1.png'],
+  }))
   return dir
 }
 
