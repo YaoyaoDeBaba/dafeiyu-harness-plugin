@@ -257,3 +257,20 @@ test('⑫ 标量判据在带内 → 放行', () => {
   const r = run('done', '--run', dir, '--stage', '2.3-verify-r1')
   assert.equal(r.status, 0, r.stdout + r.stderr)
 })
+
+// ── lite 模式：标准已给全时跳过调研/吸收/二次转译（A/B 里这几步是纯开销）──
+test('⑬ lite 模式：节点表只剩必须的闸', async () => {
+  const m = await import('../harness/pipeline.mjs')
+  const full = { research: 'low', maxRounds: 1, useCritic: true, userReview: false, resupply: false, split: false, probe: true, mode: 'full' }
+  const lite = Object.assign({}, full, { mode: 'lite' })
+  const a = m.phase1Nodes(full).map((n) => n.id)
+  const b = m.phase1Nodes(lite).map((n) => n.id)
+  assert.ok(a.length > b.length, 'lite 的节点必须更少：' + a.length + ' vs ' + b.length)
+  assert.ok(!b.some((x) => x.includes('research')), 'lite 不该有调研节点：' + b.join(','))
+  assert.ok(!b.some((x) => x.includes('absorb') || x.includes('translate2')), 'lite 不该有吸收/二次转译：' + b.join(','))
+  const ra = m.roundNodes(1, full).map((n) => n.id)
+  const rb = m.roundNodes(1, lite).map((n) => n.id)
+  assert.ok(!rb.some((x) => x.includes('critique')), 'lite 跳过观察员：' + rb.join(','))
+  assert.ok(rb.includes('2.3-verify-r1'), 'lite 仍必须保留验收闸')
+  assert.ok(rb.includes('2.2-exec-r1'), 'lite 仍必须保留执行节点')
+})

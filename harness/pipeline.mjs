@@ -57,7 +57,8 @@ export function getBudget(dir) {
   const split = b.split === undefined ? Boolean(DEFAULT_BUDGET.split) : Boolean(b.split)
   const probe = b.probe === undefined ? Boolean(DEFAULT_BUDGET.probe) : Boolean(b.probe)
   const requireSnapshot = b.requireSnapshot === undefined ? true : Boolean(b.requireSnapshot)
-  return Object.assign({ research, maxRounds, useCritic, userReview, resupply, split, probe, requireSnapshot }, b.exec && typeof b.exec === 'object' ? { exec: b.exec } : {})
+  const mode = String(b.mode || 'full')
+  return Object.assign({ research, maxRounds, useCritic, userReview, resupply, split, probe, requireSnapshot, mode }, b.exec && typeof b.exec === 'object' ? { exec: b.exec } : {})
 }
 
 // ── 面板吐槽（user-interrupt.jsonl）的消费 ───────────────────────────────
@@ -708,6 +709,11 @@ export function phase1Nodes(budget) {
   const n = []
   n.push({ id: '1.1-preflight', kind: 'program', title: '量参考 / 建骨架', check: 'measured' })
   n.push({ id: '1.2-translate1', kind: 'manager', title: '初轮需求转译（只看需求+实测）', check: 'draft1' })
+  // lite：标准已给全（判据+参考+配方都现成）时，跳过调研/吸收/二轮转译/确认——A/B 里这几步纯开销
+  if (budget.mode === 'lite') {
+    n.push({ id: '1.10-translate3', kind: 'manager', title: '定稿判据（lite：跳过调研与二次转译）', check: 'intent' })
+    return n
+  }
   pushIf(n, t >= 1, { id: '1.3-research-env', kind: 'worker', title: '调查员c：环境/工具/指南' })
   pushIf(n, t >= 2, { id: '1.4-research-doc', kind: 'worker', title: '调查员a：技术文献（GitHub/论文/算法）' })
   pushIf(n, t >= 3, { id: '1.5-research-ref', kind: 'worker', title: '调查员b：参考图/参考产品/现实知识' })
@@ -728,7 +734,7 @@ export function roundNodes(r, budget) {
   n.push({ id: '2.2-exec-r' + r, kind: 'worker', title: '按工单执行', check: 'executed' })
   pushIf(n, budget.split, { id: '2.4m-merge-r' + r, kind: 'manager', title: '合并选优：只拿产物与验收表，不拿代码', check: 'mergedTickets' })
   n.push({ id: '2.3-verify-r' + r, kind: 'manager', title: '验收：能跑 / 能看', check: 'verified' })
-  pushIf(n, budget.useCritic, { id: '2.4-critique-r' + r, kind: 'worker', title: '观察员：逐条对判据评审', check: 'critiqued' })
+  pushIf(n, budget.useCritic && budget.mode !== 'lite', { id: '2.4-critique-r' + r, kind: 'worker', title: '观察员：逐条对判据评审', check: 'critiqued' })
   pushIf(n, budget.userReview, { id: '2.4b-userreview-r' + r, kind: 'human', title: '用户评审（等人给意见）', check: 'userReview' })
   n.push({ id: '2.5-decide-r' + r, kind: 'manager', title: '判断是否下一轮（吸收观察员/用户意见）', check: 'decided' })
   // 只有  决定 next 才有意义：定向补调研 + 主Agent 转成下一轮需求
