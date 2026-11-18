@@ -90,6 +90,32 @@ export const HUMAN_EYES_PATTERNS = ['暂无口径', '靠参考图对照', '靠�
 export const HUMAN_EYES_RE = new RegExp(HUMAN_EYES_PATTERNS.join('|'));
 export const HUMAN_EYES_WARNING_HEAD = '这条口径是「靠人看」，搜索不能用它当判据——考虑降权或改成可测量的量';
 
+// ════════════ 判据可测性预检（2026-11-18）════════════════════════════
+// 为什么加：上一单 C2/C6 三轮都不可测（本机位没有地平线、掩膜口径对不上），白追了三轮。
+// 判据定稿前先问一句「**本机位 / 本资产能不能测这条**」；这里把最常见的几种不可测写成提示。
+// 只返回提示字符串，**不参与 pass/fail**（判定权在主 Agent 与用户）——所以调用方只打印，不拦。
+export const CAPABILITY_HINTS = [
+  { keys: ['地平线', '天际线'], hint: '要看地平线/天际线：先确认本机位画面里真有地平线（俯角/构图），没有就换机位或标 noMetric 并写理由' },
+  { keys: ['天空亮带', '天空区域', '天光', '天空亮度'], hint: '要看天空区域：先确认机位能看到那片天（会不会被云/地板盖住），看不到就得换机位' },
+  { keys: ['背景亮度', '背景色', '背景暗', '背景比'], hint: '依赖背景亮度：先量「背景 vs 被验收对象」谁更亮——背景更亮时判据会被污染（上一单 C3/C6 就是这么废的）' },
+  { keys: ['横剖', '剖面', '灰度剖面', '横截面'], hint: '要在成品帧上量剖面：后处理（bloom）是低通、会污染剖面，先确认能拍「关后处理」的对照帧' },
+  { keys: ['自相关', '过零'], hint: '要看空间自相关：先确认实现里存在目标尺度的分档（尺度对不上时这条判据永远过不了）' },
+];
+
+export function capabilityPrecheck(criteria) {
+  const out = [];
+  const list = Array.isArray(criteria) ? criteria : [];
+  for (const c of list) {
+    const id = c && c.id ? c.id : '(无id)';
+    const text = String((c && (c.howMeasured || c.how || c.userWords)) || '');
+    if (!text.trim()) continue;
+    for (const p of CAPABILITY_HINTS) {
+      if (p.keys.some((k) => text.includes(k))) out.push(id + '：' + p.hint);
+    }
+  }
+  return out;
+}
+
 // 变异开关：**只给测试用**（证明"改动门禁后测试真的会红"），不设时行为完全正常。
 //   alwaysPass      —— 闸恒放行（没有文件也不报错）→ "无 intent 必须硬错"那条断言必红；
 //   dropSkipRecord  —— --no-intent 时不写台帐 → "skipped 必须有记录且 reason 含 --no-intent"那条断言必红；

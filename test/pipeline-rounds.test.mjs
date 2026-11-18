@@ -72,6 +72,8 @@ test('① 2.1-plan-r1 交活后出现 rounds/r1/plan.json', () => {
   writeFileSync(join(dir, 'plan.json'), JSON.stringify({ round: 2, orders: [{ id: 'B', task: '压亮度' }], executor: { model: 'deepseek-v4-pro' } }))
   markDone(dir, ['2.2-exec-r1', '2.3-verify-r1', '2.4-critique-r1', '2.4b-userreview-r1'])
   writeFileSync(join(dir, 'decide.json'), JSON.stringify({ action: 'stop' }))
+  // 2026-11-18：轮次节点的表单开始真正校验了（之前按带后缀的 id 查表永远查不到，等于没校验）
+  fillForm(dir, '2.5-decide-r1')
   cli(dir, ['done', '--stage', '2.5-decide-r1'])
   assert.deepEqual(JSON.parse(readFileSync(archived, 'utf8')).orders, [{ id: 'A', task: '改云生成' }], '第 1 轮归档不许被后来的 plan.json 覆盖')
 })

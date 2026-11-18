@@ -4,6 +4,35 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.30.0（未发布）· 判据方向与字段纪律落进程序（N4 四条 + 3 个顺带修的）
+
+> 回灌上游原件：**否**（都是引擎自身的程序约束与校验，案例 A 侧不需要跟改）。
+> 背景：上一单最大的自造坑是「判据方向写反」，其次是「字段形状错了要等交活才被告知」。本批把它们从文档层搬进代码。
+
+### ① 判据必须带方向（`harness/pipeline.mjs` checks.intent）
+带数值 `target` 的 `criteria` 现在必须有 `dir: lower | upper | two-sided`（也认别名 `direction`）：
+`lower` 只要求 target ≥ 某条实测 min，`upper` 只要求 ≤ 某条实测 max，`two-sided` 保持旧的区间判定。
+缺 `dir` / 写错值一律硬错，并在消息里点名「下限型 / 上限型」。判据：`test/pipeline-guards.test.mjs` ①~⑧。
+
+### ② 出票先自查（`step`）
+`2.2-exec-rN` 出票时先看本轮 `rounds/NN.json` 的字段形状（`changes` 要是数组、要有 `shot`/`preview`），`1.10-translate3` 出票时按判据文字做「本机位能不能测」预检（`capabilityPrecheck`，地平线/天空/背景亮度/剖面/自相关）。**只提示不拦**——错误不会等到交活才说。判据：⑨~⑪。
+
+### ③ decide=next 之后作废 phase3 旧信号（`done` + `currentNode`）
+以前要手删 `stages/3.1-summarize.json`、`3.2-deliver.json`，否则下一轮收尾直接跳过、总结还是上一轮的。
+现在 `done 2.5-decide-rN`（action=next）自动删除；`currentNode` 另加时间兜底（本轮 `2.1-plan-rN` 晚于它们就当没写），管老 run。判据：⑫~⑭。
+
+### ④ 轮次节点的表单从来没被校验（顺带修）
+表单定义按基名（`2.5-decide`）、节点 id 带轮次（`2.5-decide-r2`），`hasForm/blankForm/checkForm` 直接拿带后缀的 id 查表 → 永远查不到，`step` 还会写出一个 `null` 表单。
+新增 `formKey()` 归一；`2.1/2.3/2.5/2.7` 这些轮次节点的必办事项现在真的会卡人。`test/pipeline-rounds.test.mjs` ① 的夹具随之补填表单。
+
+### ⑤ refcode 台账补上（标杆库每个主题目录下的 `NOTES.md`）
+库里从没写过 NOTES（每天 13:00 的巡检任务却要求写）。本次补齐：volumetric-cloud 6 仓 12 条、raymarch-sdf 2 仓 4 条，每条写「做法 / 代码位置（打开核对过的行号）/ 怎么用」。
+
+### ⑥ `skills/selfloop/references/` 同步
+`intent.md` 加 `criteria[].dir` 字段与「方向别猜」说明；`pitfalls.md` 补三行（后处理污染剖面量测 / 轮次表单永不校验 / decide=next 旧信号）。
+
+---
+
 ## 0.29.0（未发布）· selfloop 硬伤修复批（今夜实战暴露的七件事）
 
 > 背景：2026-11-17 一整晚跑「雷暴第三版」，暴露出 7 个硬伤，全部落码并带判据。

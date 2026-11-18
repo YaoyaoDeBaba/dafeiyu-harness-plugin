@@ -23,6 +23,7 @@ import { ticketFor } from './tickets.mjs'
 import { hasForm, writeBlankForm, checkForm } from './forms.mjs'
 import { missingPieces as snapshotMissing } from './snapshot.mjs'
 import { crashCheck } from './crash-check.mjs'
+import { capabilityPrecheck } from './intent.mjs'
 
 const STAGE_DIR = 'stages'
 const TICKET_DIR = 'tickets'
@@ -244,15 +245,33 @@ export const checks = {
       if (c && c.noMetric === true) { if (!meas.trim()) out.push(id + '：标了 noMetric 却没写理由'); return }
       const target = Number(c && c.target)
       if (!Number.isFinite(target)) { out.push(id + '：没有数值 target（阈值要来自实测，或显式 noMetric）'); return }
+      // dir（2026-11-18）：**判据方向必须显式写**，不许把「参考实测的近似区间」当双侧门。
+      // 踩过的坑：p99 ≥0.045（下限）被写成 ≤0.0523（上限），第 3 轮为一个不存在的上限牺牲了 p50 与 C4。
+      // 语义：lower = 下限型（target 不低于某条实测 min）；upper = 上限型（不高于某条实测 max）；
+      //       two-sided = 区间型（落在某条实测 [min,max] 内，旧行为）。
+      const dir = String((c && (c.dir || c.direction)) || '').trim().toLowerCase()
+      if (!dir) { out.push(id + '：缺 dir（lower / upper / two-sided）——判据方向不能省，写反过一次，代价是一整轮'); return }
+      if (!['lower', 'upper', 'two-sided'].includes(dir)) {
+        out.push(id + '：dir=' + dir + ' 不认识（只能是 lower / upper / two-sided）'); return
+      }
       const list = ext.filter((e) => e && Number.isFinite(Number(e.value)))
       if (list.length === 0) return
       const okRange = list.some((e) => {
         const v = Number(e.value)
         const mn = Number.isFinite(Number(e.min)) ? Number(e.min) : v
         const mx = Number.isFinite(Number(e.max)) ? Number(e.max) : v
+        if (dir === 'lower') return target >= mn - 1e-9
+        if (dir === 'upper') return target <= mx + 1e-9
         return target >= mn - 1e-9 && target <= mx + 1e-9
       })
-      if (!okRange) out.push(id + '：target=' + target + ' 不在任何实测区间里')
+      if (!okRange) {
+        const why = dir === 'lower'
+          ? 'target=' + target + ' 低于所有实测 min（下限型：不许比实测的最弱者还低）'
+          : dir === 'upper'
+            ? 'target=' + target + ' 高于所有实测 max（上限型：不许比实测的最强者还高）'
+            : 'target=' + target + ' 不在任何实测区间里'
+        out.push(id + '：' + why)
+      }
     })
     return out
   },
@@ -398,9 +417,34 @@ function loadSignals(dir) {
   return out
 }
 
+/**
+ * phase3 的两个信号是「一轮跑完才写」的：decide=next 之后它们属于上一轮，必须重跑。
+ * 新版 done() 会直接删掉它们；这里用**时间兜底**，管老版本跑过的 run（文件还在，信号过期）：
+ * 只要「本轮循环」的 2.1-plan-rN（N≥2 且晚于它们）已经 done，就把 3.1/3.2 当成没写。
+ * 没有 at 字段的老测试夹具保持原行为（不判 stale）。
+ */
+function stalePhase3Signals(signals) {
+  let lastPlanAt = 0
+  for (const k of Object.keys(signals)) {
+    if (!k.startsWith('2.1-plan-r')) continue
+    const s = signals[k]
+    if (!s || s.status !== 'done') continue
+    const at = Date.parse(String(s.at || '')) || 0
+    if (at > lastPlanAt) lastPlanAt = at
+  }
+  const out = {}
+  for (const id of ['3.1-summarize', '3.2-deliver']) {
+    const s = signals[id]
+    const at = s ? (Date.parse(String(s.at || '')) || 0) : 0
+    out[id] = Boolean(s && s.status === 'done' && at > 0 && lastPlanAt > at)
+  }
+  return out
+}
+
 export function currentNode(dir) {
   const { budget, nodes } = allNodes(dir)
   const signals = loadSignals(dir)
+  const stalePhase3 = stalePhase3Signals(signals)
   let stoppedAt = 0
   Object.keys(signals).forEach((k) => {
     const m = k.match(/^2\.5-decide-r(\d+)$/)
@@ -414,7 +458,8 @@ export function currentNode(dir) {
       if (rr > stoppedAt) continue
       if (rr === stoppedAt && /^2\.(6|7)-/.test(String(n.id))) continue
     }
-    const s = signals[n.id]
+    let s = signals[n.id]
+    if (s && stalePhase3[n.id]) s = undefined
     if (!s || s.status !== 'done') return { node: n, signals, budget }
   }
   return { node: null, signals, budget }
@@ -614,6 +659,35 @@ function absorbUiArtifacts(dir, stageId) {
   return notes
 }
 
+/**
+ * 交活前自查提示（2026-11-18，只提示不拦）：
+ *   · 2.2-exec-rN：看本轮 rounds/NN.json 的字段形状（changes 数组 / shot 或 preview）；
+ *   · 1.10-translate3：看判据「本机位能不能测」（capabilityPrecheck，纯提示）。
+ * 返回字符串数组，由 step() 打印到出票那一步。
+ */
+function hintsFor(dir, node) {
+  const out = []
+  const id = String((node && node.id) || '')
+  if (id.startsWith('2.2-exec-r')) {
+    const name = String(id.slice('2.2-exec-r'.length)).padStart(2, '0') + '.json'
+    const last = readJson(j(dir, 'rounds', name))
+    const problems = []
+    if (!last) {
+      problems.push('还没写（交活必须有：changes[] / metrics / leftovers / shot 或 preview）')
+    } else {
+      if (!last.shot && !last.preview) problems.push('没有截图或可运行入口（shot / preview 二选一）')
+      if (!Array.isArray(last.changes) || last.changes.length === 0) problems.push('changes 要是数组且至少 1 条（改了什么）')
+    }
+    if (problems.length) out.push('rounds/' + name + '：' + problems.join('；'))
+    out.push('本轮至少拍一组单变量 A/B 判别帧（只动一个变量、命名带 _ab_<变量>）—— 否则主指标变化归因不了（executor-brief 五-7）')
+  }
+  if (id === '1.10-translate3') {
+    const it = readJson(j(dir, 'intent.json'))
+    if (it) for (const w of capabilityPrecheck(it.criteria)) out.push(w)
+  }
+  return out
+}
+
 function step(dir) {
   for (let guard = 0; guard < 60; guard += 1) {
     const { node } = currentNode(dir)
@@ -625,6 +699,14 @@ function step(dir) {
       writeSignal(dir, node.id, 'done')
       console.log(node.id + ' 通过')
       continue
+    }
+    // 交活前自查（2026-11-18）：把「交活才报」的字段问题提前到**出票那一刻**说，不拦。
+    // 上一单执行员被打了 3 次回票，全是 rounds/NN.json 形状不对（changes 不是数组、没 shot）——
+    // 这些在拿票的时候就该看见，不必等 done 才被告知。
+    const hints = hintsFor(dir, node)
+    if (hints.length) {
+      console.log('交活前自查（不拦，但交活时会被挡）：')
+      for (const h of hints) console.log('  · ' + h)
     }
     const ticket = { stage: node.id, kind: node.kind, title: node.title, check: node.check, ...(node.kind === 'manager' && hasForm(node.id) ? { form: j(dir, 'forms', node.id + '.json') } : {}), prompt: ticketFor(dir, node) }
     mkdirSync(j(dir, TICKET_DIR), { recursive: true })
@@ -675,6 +757,18 @@ function done(dir, stageId) {
   const dec = readJson(j(dir, 'decide.json'))
   if (/^2\.5-decide-r/.test(stageId) && dec) extra.action = dec.action
   writeSignal(dir, stageId, 'done', extra)
+  // decide=next 之后 phase3 的旧信号必须作废（2026-11-18）：
+  // 上一单实测——第 1 轮写完 3.1/3.2，决定再来一轮；走到收尾时 currentNode 看到旧 done 直接跳过，
+  // 总结还是上一轮的（当时的临时办法是手删这两个文件，见 pitfalls）。这里自动作废。
+  if (dec && stageId.startsWith('2.5-decide-r') && dec.action === 'next') {
+    for (const sid of ['3.1-summarize', '3.2-deliver']) {
+      const f = j(dir, STAGE_DIR, sid + '.json')
+      if (existsSync(f)) {
+        rmSync(f)
+        console.log('  · 旧信号作废：' + sid + '（decide=next，收尾要重跑）')
+      }
+    }
+  }
   clearActive(dir)
   // 每轮产物归档（供 UI 按轮回看；plan/verify/review/decide 每轮同名覆盖）
   if (/^2\.1-plan-r\d+$/.test(stageId)) archiveRoundArtifact(dir, stageId, 'plan.json')

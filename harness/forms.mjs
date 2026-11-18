@@ -114,12 +114,22 @@ const FORMS = {
   }
 }
 
+// 表单表里的 key **不带轮次后缀**（'2.5-decide'），而节点 id 带（'2.5-decide-r2'）。
+// 2026-11-18 修：之前 hasForm/blankForm/checkForm 直接拿带后缀的 id 去查，永远查不到 →
+// 2.1 / 2.2 / 2.3 / 2.5 / 2.7 这些轮次节点的表单**从来没被校验过**（step 还会往 forms/ 写一个 null）。
+export function formKey(nodeId) {
+  const s = String(nodeId == null ? '' : nodeId)
+  const i = s.lastIndexOf('-r')
+  if (i > 0 && /^\d+$/.test(s.slice(i + 2))) return s.slice(0, i)
+  return s
+}
+
 export function hasForm(nodeId) {
-  return Boolean(FORMS[nodeId])
+  return Boolean(FORMS[formKey(nodeId)])
 }
 
 export function blankForm(nodeId) {
-  const def = FORMS[nodeId]
+  const def = FORMS[formKey(nodeId)]
   if (!def) return null
   return {
     stage: nodeId,
@@ -136,7 +146,7 @@ export function writeBlankForm(dir, nodeId) {
 }
 
 export function checkForm(dir, nodeId) {
-  const def = FORMS[nodeId]
+  const def = FORMS[formKey(nodeId)]
   if (!def) return []
   const p = j(dir, FORM_DIR, nodeId + '.json')
   if (!existsSync(p)) return ['缺表单 forms/' + nodeId + '.json（主Agent 的必办事项没填）']
