@@ -61,5 +61,47 @@
       "why": "亮口只该是少数；超了就是「均匀发亮的雾」",
       "source": "参考 24 帧实测 2.0%"
     }
+  },
+  "ocean-surface": {
+    "speckleRatio": {
+      "role": "discriminator",
+      "range": [
+        0,
+        0.06
+      ],
+      "unit": "高频噪点像素占比",
+      "why": "超采样不足/斜视混叠会碎成雪花，整幅亮度却正常",
+      "source": "参考海 0.0004 / 干净 20° 0.056 / 噪点 0.29~0.48"
+    },
+    "foamMaxShare": {
+      "role": "discriminator",
+      "range": [
+        0.5,
+        1
+      ],
+      "unit": "最大白沫连通块占亮部比例",
+      "why": "参考的沫是顺浪脊连成一片（0.99），碎点只有 0.02",
+      "source": "参考海 0.991 / 我方 20° 0.020"
+    },
+    "foamMeanComp": {
+      "role": "discriminator",
+      "range": [
+        50,
+        5000
+      ],
+      "unit": "平均连通块像素数",
+      "why": "同上的连续量表述",
+      "source": "参考海 982.9 / 我方 4.5"
+    },
+    "waveScale": {
+      "role": "param",
+      "range": [
+        0.5,
+        4
+      ],
+      "unit": "波长放大倍数",
+      "why": "俯瞰视角要更大的涌浪，否则混叠成噪点",
+      "source": "本轮实测"
+    }
   }
 }

@@ -18,7 +18,7 @@
 import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync, readdirSync } from 'node:fs'
 import { join, resolve, basename } from 'node:path'
 import { probeFile, summarize } from './ref-probe.mjs'
-import { profileFromFile, scalarsFromFile, medianProfile, calibrateMinCorr, toneFractions } from './composition.mjs'
+import { profileFromFile, scalarsFromFile, medianProfile, calibrateMinCorr, toneFractions, speckleRatio, foamComponents } from './composition.mjs'
 import { decodePng } from './ref-probe.mjs'
 
 function arg(name, def) { const i = process.argv.indexOf('--' + name); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : def }
@@ -52,7 +52,10 @@ if (refArg && !checkOnly) {
     try {
       profiles.push(profileFromFile(f, 64))
       const sc = scalarsFromFile(f)
-      Object.assign(sc, toneFractions(decodePng(readFileSync(f))))   // 云内明暗结构
+      const decoded = decodePng(readFileSync(f))
+      Object.assign(sc, toneFractions(decoded))                      // 云内明暗结构
+      sc.speckleRatio = speckleRatio(decoded)                        // 高频噪点率（回放暴露的缺项）
+      Object.assign(sc, foamComponents(decoded))                     // 白沫连通性
       structs.push(sc)
     } catch { /* 解不了就跳过 */ }
   }
@@ -88,7 +91,7 @@ if (measured && measured.profiles && measured.profiles.length) {
   const hitP = research.extracted.find((e) => e.what === 'rowProfile')
   if (hitP) Object.assign(hitP, prof); else research.extracted.push(prof)
 
-  const keys = ['centroidY', 'topCoverage', 'skyExposure', 'bboxAspect', 'subjectFrac', 'cloudDarkFrac', 'cloudBrightFrac', 'cloudMeanLuma']
+  const keys = ['centroidY', 'topCoverage', 'skyExposure', 'bboxAspect', 'subjectFrac', 'cloudDarkFrac', 'cloudBrightFrac', 'cloudMeanLuma', 'speckleRatio', 'foamShare', 'foamMeanComp', 'foamMaxShare']
   for (const k of keys) {
     const vals = measured.structs.map((s) => s[k]).filter((v) => Number.isFinite(v))
     if (!vals.length) continue

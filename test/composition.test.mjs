@@ -9,7 +9,8 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { readFileSync as readB } from 'node:fs'
-import { profileFromFile, profileCorr, medianProfile, calibrateMinCorr, scalarsFromFile } from '../harness/composition.mjs'
+import { decodePng } from '../harness/ref-probe.mjs'
+import { profileFromFile, profileCorr, medianProfile, calibrateMinCorr, scalarsFromFile, speckleRatio, foamComponents } from '../harness/composition.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const PIPE = join(ROOT, 'harness', 'pipeline.mjs')
@@ -255,3 +256,55 @@ test('⑫ 与 ref-probe 的 topCoverage 同口径（同一张图，两者差 < 0
   const b = scalarsFromFile(f).topCoverage
   assert.ok(Math.abs(a - b) < 0.03, 'ref-probe=' + a.toFixed(3) + ' composition=' + b.toFixed(3))
 });
+
+// ── 回放暴露的两条缺项（2026-11-18）──
+function noisyFrame(w = 64, h = 64, amp = 90) {
+  const rgb = Buffer.alloc(w * h * 3)
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      // 逐像素伪随机（线性同余再用低位打散）——线性图案在 3×3 里偏差小，测不出噪点
+      let hh = ((x * 73856093) ^ (y * 19349663) ^ 0x9e3779b9) | 0
+      hh = Math.imul(hh ^ (hh >>> 13), 1274126177)
+      const n = ((hh >>> 7) & 1023) / 1023
+      const v = Math.max(0, Math.min(255, Math.round(90 + amp * (n - 0.5))))
+      const i = (y * w + x) * 3
+      rgb[i] = v; rgb[i + 1] = v; rgb[i + 2] = v
+    }
+  }
+  return encodePng(w, h, rgb)
+}
+function smoothFrame(w = 64, h = 64) {
+  const rgb = Buffer.alloc(w * h * 3)
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const v = Math.round(80 + 60 * (x / w))
+      const i = (y * w + x) * 3
+      rgb[i] = v; rgb[i + 1] = v; rgb[i + 2] = v
+    }
+  }
+  return encodePng(w, h, rgb)
+}
+
+test('⑬ speckleRatio 能分开「雪花噪点」和「平滑渐变」', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sl-spk-'))
+  const a = join(dir, 'noisy.png'), b = join(dir, 'smooth.png')
+  writeFileSync(a, noisyFrame()); writeFileSync(b, smoothFrame())
+  const s1 = speckleRatio(decodePng(readFileSync(a)))
+  const s2 = speckleRatio(decodePng(readFileSync(b)))
+  assert.ok(s1 > 0.2, '噪点帧要 >0.2，实测 ' + s1.toFixed(3))
+  assert.ok(s2 < 0.02, '平滑帧要 <0.02，实测 ' + s2.toFixed(3))
+})
+
+test('⑭ foamComponents 能分开「成片白沫」和「碎点」', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sl-foam-'))
+  const big = join(dir, 'big.png'), dust = join(dir, 'dust.png')
+  // 一大块白 vs 散点白
+  const W = 64, H = 64
+  const mk = (fn) => { const rgb = Buffer.alloc(W * H * 3); for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const v = fn(x, y) ? 250 : 20; const i = (y * W + x) * 3; rgb[i] = v; rgb[i+1] = v; rgb[i+2] = v } return encodePng(W, H, rgb) }
+  writeFileSync(big, mk((x, y) => x > 8 && x < 56 && y > 8 && y < 56))
+  writeFileSync(dust, mk((x, y) => x % 8 === 0 && y % 8 === 0))
+  const f1 = foamComponents(decodePng(readFileSync(big)))
+  const f2 = foamComponents(decodePng(readFileSync(dust)))
+  assert.ok(f1.foamMaxShare > 0.95, '整块白沫最大块占比应 >0.95，实测 ' + f1.foamMaxShare.toFixed(3))
+  assert.ok(f2.foamMeanComp < 4, '碎点平均连通块应 <4，实测 ' + f2.foamMeanComp.toFixed(2))
+})

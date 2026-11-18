@@ -208,3 +208,65 @@ export function medianProfile(list) {
   }
   return out
 }
+
+
+/**
+ * 高频噪点率（2026-11-18 回放测试暴露的缺项）：斜视/超采样不足时，画面会碎成"雪花"，
+ * 而它的**整幅亮度完全正常**——均值/分位都抓不到，肉眼一眼假（45° 海的第一版就是这样）。
+ * 口径：与 3×3 均值差 > thr 的像素占比（只在亮度中低区算，避开正常的高光边缘）。
+ */
+export function speckleRatio(img, thr = 0.12, lo = 0.02, hi = 0.85) {
+  const { lum, width, height } = lumaOf(img)
+  let n = 0, hit = 0
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const i = y * width + x
+      const v = lum[i]
+      if (v < lo || v > hi) continue
+      let s = 0
+      for (let dy = -1; dy <= 1; dy += 1) for (let dx = -1; dx <= 1; dx += 1) s += lum[i + dy * width + dx]
+      const mean = s / 9
+      n += 1
+      if (Math.abs(v - mean) > thr) hit += 1
+    }
+  }
+  return n ? hit / n : 0
+}
+
+/**
+ * 白沫连通性：亮部像素（>thr）连成片的程度。
+ * 参考里的沫是**顺浪脊的长条**（大块、少数），"糊成点"的是大量碎块。
+ * 返回 foamShare（亮部占比）、foamMeanComp（平均连通块像素数）、foamMaxShare（最大块占亮部比例）。
+ */
+export function foamComponents(img, thr = 0.75) {
+  const { lum, width, height } = lumaOf(img)
+  const seen = new Uint8Array(width * height)
+  let foam = 0, comps = 0, total = 0, maxComp = 0
+  const stack = []
+  for (let i = 0; i < lum.length; i += 1) if (lum[i] > thr) foam += 1
+  for (let i = 0; i < lum.length; i += 1) {
+    if (seen[i] || lum[i] <= thr) continue
+    comps += 1
+    let size = 0
+    stack.push(i)
+    seen[i] = 1
+    while (stack.length) {
+      const j = stack.pop()
+      size += 1
+      const x = j % width, y = (j - x) / width
+      const nb = [x > 0 ? j - 1 : -1, x < width - 1 ? j + 1 : -1, y > 0 ? j - width : -1, y < height - 1 ? j + width : -1]
+      for (const k of nb) {
+        if (k < 0 || seen[k] || lum[k] <= thr) continue
+        seen[k] = 1
+        stack.push(k)
+      }
+    }
+    total += size
+    if (size > maxComp) maxComp = size
+  }
+  return {
+    foamShare: lum.length ? foam / lum.length : 0,
+    foamMeanComp: comps ? total / comps : 0,
+    foamMaxShare: total ? maxComp / total : 0,
+  }
+}
