@@ -142,3 +142,45 @@ test('⑧ capture 支持 argv 数组（字符串走 shell 时查询串里的 & �
   const out = JSON.parse(readFileSync(join(dir, 'params-liveness.json'), 'utf8'))
   assert.equal(out.params[0].status, 'live')
 })
+
+// ── 快照必须硬拦（2026-11-18：昨晚 mimo 余额耗尽、成果没存下来，无法复原）──
+test('⑨ 2.3 验收：缺快照三件套 → 硬拦（以前只写 caveat，等于没规矩）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sl-snap-'))
+  mkdirSync(join(dir, 'stages'), { recursive: true })
+  mkdirSync(join(dir, 'rounds'), { recursive: true })
+  writeFileSync(join(dir, 'requirement.md'), '# 需求\n')
+  writeFileSync(join(dir, 'budget.json'), JSON.stringify({ research: 'low', maxRounds: 1, useCritic: false, resupply: false, probe: false }))
+  writeFileSync(join(dir, 'research.json'), JSON.stringify({ findings: [], extracted: [{ what: 'x', value: 1, min: 0.5, max: 1.5 }] }))
+  writeFileSync(join(dir, 'intent.json'), JSON.stringify({ restate: 'x', confirmed: true, anchors: [{ kind: 'text', ref: 'x', why: 'x' }], criteria: [] }))
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1', '2.2-exec-r1']) {
+    writeFileSync(join(dir, 'stages', id + '.json'), JSON.stringify({ stage: id, status: 'done' }))
+  }
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['x'], shot: 'a.png' }))
+  writeFileSync(join(dir, 'verify.json'), JSON.stringify({ runs: true, visible: true, shots: [] }))
+  const r = run('done', '--run', dir, '--stage', '2.3-verify-r1')
+  assert.equal(r.status, 1, r.stdout)
+  assert.match(r.stdout, /快照不全/)
+  assert.match(r.stdout, /snapshot\.mjs/)
+})
+
+test('⑩ budget.requireSnapshot=false → 老 run 退路', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sl-snap2-'))
+  mkdirSync(join(dir, 'stages'), { recursive: true })
+  mkdirSync(join(dir, 'rounds'), { recursive: true })
+  writeFileSync(join(dir, 'requirement.md'), '# 需求\n')
+  writeFileSync(join(dir, 'budget.json'), JSON.stringify({ research: 'low', maxRounds: 1, useCritic: false, resupply: false, probe: false, requireSnapshot: false }))
+  writeFileSync(join(dir, 'research.json'), JSON.stringify({ findings: [], extracted: [] }))
+  writeFileSync(join(dir, 'intent.json'), JSON.stringify({ restate: 'x', confirmed: true, anchors: [{ kind: 'text', ref: 'x', why: 'x' }], criteria: [] }))
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1', '2.2-exec-r1']) {
+    writeFileSync(join(dir, 'stages', id + '.json'), JSON.stringify({ stage: id, status: 'done' }))
+  }
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['x'], shot: 'a.png' }))
+  writeFileSync(join(dir, 'verify.json'), JSON.stringify({ runs: true, visible: true, shots: [] }))
+  mkdirSync(join(dir, 'forms'), { recursive: true })
+  writeFileSync(join(dir, 'forms', '2.3-verify-r1.json'), JSON.stringify({ stage: '2.3-verify-r1', fields: [
+    { id: 'runsEvidence', type: 'text', value: 'ok' }, { id: 'visibleEvidence', type: 'text', value: 'ok' },
+    { id: 'caveat', type: 'list', value: ['无'] }, { id: 'notVerified', type: 'list', value: ['无'] },
+  ] }))
+  const r = run('done', '--run', dir, '--stage', '2.3-verify-r1')
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+})

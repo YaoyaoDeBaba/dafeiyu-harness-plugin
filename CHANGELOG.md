@@ -4,6 +4,35 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.37.0（未发布）· 快照从"留痕"变成"硬拦" + 实验室级快照 + 拍帧 sidecar
+
+> 回灌上游原件：否。
+> 触发：用户指出——「昨晚 mimo 余额耗尽、成果没存下来、无法复原；今天又差点重演；存档的规矩不是加进 selfloop 了吗？」
+> 查了：规矩在，但**三个洞**让它没生效。
+
+### 洞 1：规矩只在 pipeline 里（探索期根本没有快照）
+`交活即快照三件套` 挂在 2.2-exec 上，只有走 pipeline 才触发；而探索期在 `_exp/<lab>` 里直接改页面，不在任何 run 下。
+→ 新增 `harness/lab-snapshot.mjs`：
+```
+node harness/lab-snapshot.mjs --lab <实验目录> --tag v1 [--frame <png>] [--params <probe.json>]
+```
+把整份源码拷进 `<lab>/_versions/<tag>-<时间>/`，写 `MANIFEST.json`（每个文件 sha256）+ `params.json` + `frame.png`，
+并在 `<lab>/_versions/INDEX.md` 追加一行（tag / 时间 / 文件数 / 帧 / 怎么恢复）。
+
+### 洞 2：缺快照只写 caveat，不拦人
+`checks.verified`（2.3）以前把缺件写进 `verify.caveat` 就放行 —— 留痕不解决问题。
+**现在硬拦**：只要 `rounds/NN.json` 存在而 `rounds/rN/snapshot/` 缺件，2.3 直接挡，并打印补救命令。
+`budget.requireSnapshot: false` 给老 run 留退路。
+
+### 洞 3：拍出来的帧不知道当时用了什么参数
+`capture.mjs` 现在每张图旁边写 `<out>.json` sidecar：完整 URL、argv、耗时、sha256、页面报错。
+没 sidecar 就只能靠肉眼回忆参数 —— 昨天就是这么丢的。
+
+### 判据
+`node --test` = **452 / 452**（新增 ⑨ 缺快照被拦、⑩ `requireSnapshot:false` 退路）。
+
+---
+
 ## 0.36.1（未发布）· 修活性扫描自身的两个量具 bug
 
 > 回灌上游原件：否。两个 bug 都是「在真实 run 里量出来的」，不是想出来的。

@@ -55,7 +55,8 @@ export function getBudget(dir) {
   // exec 是执行员契约（P1/P2）的覆盖口；只有写了才透传，免得老 budget 的形状变
   const split = b.split === undefined ? Boolean(DEFAULT_BUDGET.split) : Boolean(b.split)
   const probe = b.probe === undefined ? Boolean(DEFAULT_BUDGET.probe) : Boolean(b.probe)
-  return Object.assign({ research, maxRounds, useCritic, userReview, resupply, split, probe }, b.exec && typeof b.exec === 'object' ? { exec: b.exec } : {})
+  const requireSnapshot = b.requireSnapshot === undefined ? true : Boolean(b.requireSnapshot)
+  return Object.assign({ research, maxRounds, useCritic, userReview, resupply, split, probe, requireSnapshot }, b.exec && typeof b.exec === 'object' ? { exec: b.exec } : {})
 }
 
 // ── 面板吐槽（user-interrupt.jsonl）的消费 ───────────────────────────────
@@ -496,6 +497,22 @@ export const checks = {
   verified(dir) {
     const v = readJson(j(dir, 'verify.json'))
     if (!v) return ['缺 verify.json（没验收）']
+    // 快照三件套**硬拦**（2026-11-18 教训：昨晚 mimo 余额耗尽、成果没存下来，无法复原）。
+    // 以前只写 verify.caveat 留痕 —— 留痕不解决问题，验收这一关必须挡住。
+    const out0 = []
+    const budgetV = getBudget(dir)
+    if (budgetV.requireSnapshot !== false) {
+      const rounds = j(dir, 'rounds')
+      let nums = []
+      try { nums = readdirSync(rounds).filter((f) => /^\d+\.json$/.test(f)).map((f) => String(Number(f.split('.')[0]))) } catch { nums = [] }
+      for (const r of [...new Set(nums)]) {
+        const missing = snapshotMissing(dir, Number(r))
+        if (missing.length) {
+          out0.push('r' + r + ' 快照不全（缺 ' + missing.join('、') + '）——没有快照 = 这版成果无法复原，先补：'
+            + 'node harness/snapshot.mjs --run ' + dir + ' --tag r' + r + ' --file <改过的源文件>...')
+        }
+      }
+    }
     // ㉞ 崩坏自检**优先于任何数值判据**：列进 verify.shots 的帧先证明没崩（洋红 / 纯色大块 / 全黑全白），
     // 崩了的帧再"接近目标"也是废图 —— 数值判据不许放行它。
     const crash = []
@@ -511,7 +528,7 @@ export const checks = {
       const r = crashCheck(file)
       if (r.fail) crash.push('崩坏自检不通过：' + name + ' → ' + r.reasons.join('；'))
     }
-    const out = crash
+    const out = [...out0, ...crash]
     if (v.runs !== true) out.push('没有确认能跑（编译/加载通过）')
     if (v.visible !== true) out.push('没有确认能看（有图或入口）')
 
