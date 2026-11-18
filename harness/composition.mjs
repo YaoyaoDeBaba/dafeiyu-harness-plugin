@@ -128,8 +128,10 @@ export function structureScalars(img) {
   }
 }
 
-export function profileFromFile(file, bins = 64) {
-  return rowProfile(decodePng(readFileSync(file)), bins)
+export function profileFromFile(file, bins = 64, topFrac = 1) {
+  // topFrac 必须一路传下去 —— 第三轮 A/B 就是这个参数在中间被丢掉，导致
+  // "preflight 记着 topFrac 0.45、value 却是整幅剖面"，掩膜化整轮空转（A 臂自己查出来的）。
+  return rowProfile(decodePng(readFileSync(file)), bins, topFrac)
 }
 
 export function scalarsFromFile(file) {
@@ -271,5 +273,37 @@ export function foamComponents(img, thr = 0.75) {
     foamShare: lum.length ? foam / lum.length : 0,
     foamMeanComp: comps ? total / comps : 0,
     foamMaxShare: total ? maxComp / total : 0,
+  }
+}
+
+
+/**
+ * 掩膜健康度（2026-11-18 第三轮 A/B 暴露）：主体掩膜是不是"只罩住一条亮带"。
+ * 现场：夜雷暴参考里，暗云与四角背景的通道差只有 0.088 < 0.10 阈值 —— **云根本不算主体**，
+ * 真正的"主体"是云底那条亮带。于是 topCoverage/centroidY/subjectFrac 量的不是云。
+ * 返回：maskFrac（主体占比）、rowBandMax（最集中的 20% 高度带里占了多少主体像素）、verdict。
+ */
+export function maskHealth(img) {
+  const { m, width, height } = maskOf(img)
+  let total = 0
+  const rows = new Float64Array(height)
+  for (let y = 0; y < height; y += 1) {
+    let s = 0
+    for (let x = 0; x < width; x += 1) s += m[y * width + x]
+    rows[y] = s
+    total += s
+  }
+  const band = Math.max(1, Math.round(height * 0.2))
+  let best = 0
+  for (let y0 = 0; y0 + band <= height; y0 += 1) {
+    let s = 0
+    for (let y = y0; y < y0 + band; y += 1) s += rows[y]
+    if (s > best) best = s
+  }
+  const rowBandMax = total ? best / total : 0
+  return {
+    maskFrac: width * height ? total / (width * height) : 0,
+    rowBandMax,
+    verdict: rowBandMax > 0.6 ? 'band-dominated' : 'ok',
   }
 }

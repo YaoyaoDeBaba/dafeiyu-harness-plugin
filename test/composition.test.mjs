@@ -327,3 +327,55 @@ test('⑮ rowProfile(topFrac)：只看画面上部时，下半部分的亮带不
   assert.ok(Math.max(...full) > 0.8, '整幅剖面里亮带必须显形，实测 max=' + Math.max(...full).toFixed(2))
   assert.ok(Math.max(...top) < 0.1, '只取上部时亮带应完全不计入，实测 max=' + Math.max(...top).toFixed(2))
 })
+
+test('⑯ profileFromFile 真的会传 topFrac（第三轮空转的那个 bug）', () => {
+  const W = 64, H = 64
+  const rgb = Buffer.alloc(W * H * 3)
+  for (let y = 0; y < H; y += 1) {
+    for (let x = 0; x < W; x += 1) {
+      const inBand = y > H * 0.6 && y < H * 0.78
+      const v = inBand ? 240 : 24
+      const i = (y * W + x) * 3
+      rgb[i] = v; rgb[i + 1] = v; rgb[i + 2] = v
+    }
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'sl-tf-'))
+  const f = join(dir, 'x.png')
+  writeFileSync(f, encodePng(W, H, rgb))
+  const full = profileFromFile(f, 8, 1)
+  const top = profileFromFile(f, 8, 0.45)
+  assert.ok(Math.max(...full) > 0.8, '整幅剖面应看到亮带')
+  assert.ok(Math.max(...top) < 0.1, 'topFrac=0.45 必须把亮带排除（否则参数没传进去）')
+})
+
+test('⑰ preflight --profile-top：写出的剖面必须真的是「只算云区」的那个（第三轮空转的回归）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sl-wire-'))
+  const refDir = join(dir, 'refs'); mkdirSync(refDir, { recursive: true })
+  const W = 96, H = 96
+  const frame = () => {
+    const rgb = Buffer.alloc(W * H * 3)
+    for (let y = 0; y < H; y += 1) for (let x = 0; x < W; x += 1) {
+      const inCloud = y < H * 0.35 && x > W * 0.25 && x < W * 0.75
+      const inBand = y > H * 0.62 && y < H * 0.7
+      const v = inCloud ? 190 : inBand ? 150 : 30
+      const i = (y * W + x) * 3
+      rgb[i] = v; rgb[i + 1] = v; rgb[i + 2] = v
+    }
+    return encodePng(W, H, rgb)
+  }
+  for (let k = 0; k < 3; k += 1) writeFileSync(join(refDir, 'r' + k + '.png'), frame())
+  const runDir = join(dir, 'run'); mkdirSync(runDir, { recursive: true })
+  writeFileSync(join(runDir, 'requirement.md'), '# x\n')
+  writeFileSync(join(runDir, 'budget.json'), JSON.stringify({ research: 'low', maxRounds: 1, useCritic: false, resupply: false, probe: false }))
+  spawnSync(process.execPath, [join(ROOT, 'harness', 'preflight.mjs'), '--run', runDir, '--ref', refDir, '--profile-top', '0.45'], { encoding: 'utf8' })
+  const rj = JSON.parse(readFileSync(join(runDir, 'research.json'), 'utf8'))
+  const prof = rj.extracted.find((e) => e.what === 'rowProfile')
+  assert.ok(prof, '必须写出 rowProfile 条目')
+  assert.equal(Number(prof.topFrac), 0.45, 'topFrac 必须记下来，实测 ' + prof.topFrac)
+  const img = decodePng(readFileSync(join(refDir, 'r0.png')))
+  const expectTop = rowProfile(img, 64, 0.45)
+  const expectFull = rowProfile(img, 64, 1)
+  const maxDiff = (a, b) => Math.max(...a.map((v, i2) => Math.abs(v - b[i2])))
+  assert.ok(maxDiff(prof.value, expectTop) < 1e-6, 'extracted 的 value 必须是「只算云区」的剖面（差 ' + maxDiff(prof.value, expectTop).toFixed(4) + '）')
+  assert.ok(maxDiff(prof.value, expectFull) > 0.05, '它必须与整幅剖面有区别，否则说明 topFrac 又没传进去')
+})
