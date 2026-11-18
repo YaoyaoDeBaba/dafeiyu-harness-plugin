@@ -4,6 +4,39 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.34.0（未发布）· 先验区间 + 执行员卡片 + 只许读票面文件（复盘 R2/S1/S2/S4）
+
+> 回灌上游原件：否。
+> 触发：用户肉眼结论「各种版本都不会画云，但这一轮电弧像模像样」。量化后确认：
+> 云掩膜内暗部占比我们 3.9% / 参考 25.5%，亮部 16.3% / 参考 2.0% —— **整幅指标全绿，肉眼一眼假**。
+> 复盘结论：理论没错、结构（参数与光学厚度）错了；而且判据里没有一条看「云内明暗结构」。
+
+### R2 领域先验区间（`harness/priors.json` + `checks.intent`）
+把「听到名字就知道大概怎么画」外置成表，先给 `volumetric-cloud` 一套：
+`sigma_m 0.02~0.15`、`ambient_frac 0.005~0.06`、`lightSteps 4~8`、`powder 0.4~0.8`、
+`cloudDarkFrac 0.20~0.34`、`cloudBrightFrac 0.005~0.06`（每条带 unit/why/source）。
+intent 写 `domain` 后：
+- 数值判据的 target **必须同时落在实测区间与先验区间**；破例要写 `priorException` 并说明理由；
+- **先验里每条判别量都必须有对应判据**，不测就写 `priorWaived` 说明为什么 —— 这一条专门治「判据缺项」。
+- 云内明暗两条判别量的量法已进 `composition.toneFractions` 与 `preflight`（`cloudDarkFrac/cloudBrightFrac/cloudMeanLuma`）。
+
+### S1 执行员卡片（≤1.5KB，随票内联）
+固定四段：**工作量契约**（variants/abFrames/上下文上限）· **允许读的文件**（读别的即越界）· **三条停止条件** ·
+**交活字段**（changes/shot/variants/abShots/readFiles/tasks）。
+有 `split.json` 时把窄票**逐条**写进卡片（id / goal / 验收 id / 只改哪些文件）。
+同时把 `exec` 票模板从 ~1084 字符压到 ~400（契约搬进卡片，票面只写「做什么」）。
+
+### S2 只许读票面声明的文件（可校验）
+`checks.executed` 要求 `readFiles[]`；每一项必须落在「窄票的 files/refs → plan 的 orders/files → intent 的图锚」里，越界即打回。
+
+### S4 验收实测进结果（治注意力摊薄）
+窄票的 `accept` 每一项都要在结果里给 `acceptEvidence:[{id, measured, how}]`；缺项或 `measured` 非数值即打回。
+
+### 判据
+`node --test` = **435 / 435**（新增 `test/priors-card.test.mjs` 8 例：先验区间/破例/缺判据/豁免、卡片四段与长度、越界读文件、缺验收实测）。
+
+---
+
 ## 0.33.1（未发布）· 掩膜锚到背景：结构指纹之前对「总量」完全免疫
 
 > 回灌上游原件：否。

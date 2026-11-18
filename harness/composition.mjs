@@ -172,6 +172,30 @@ export function calibrateMinCorr(profiles, margin = 0.05) {
   }
 }
 
+/**
+ * 云内明暗结构（2026-11-18 复盘新增）：掩膜内亮度低于/高于阈值的占比。
+ * 为什么单列：整幅 mean/p50 看不出"云是暗体还是灰雾"——实测我们 3.9% 暗部 vs 参考 25.5%，
+ * 整幅指标全绿，肉眼却一眼假。这两个数是「云像不像云」的主判别量。
+ */
+export function toneFractions(img, darkThr = 0.25, brightThr = 0.6) {
+  const { lum, width, height } = lumaOf(img)
+  const { m } = maskOf(img)
+  let n = 0, dark = 0, bright = 0, sum = 0
+  for (let i = 0; i < m.length; i += 1) {
+    if (!m[i]) continue
+    n += 1; sum += lum[i]
+    if (lum[i] < darkThr) dark += 1
+    if (lum[i] > brightThr) bright += 1
+  }
+  if (!n) return { cloudDarkFrac: 0, cloudBrightFrac: 0, cloudMeanLuma: 0, cloudPx: 0 }
+  return {
+    cloudDarkFrac: dark / n,
+    cloudBrightFrac: bright / n,
+    cloudMeanLuma: sum / n,
+    cloudPx: n,
+  }
+}
+
 /** 多帧聚合成一条参考剖面（逐桶取中位） */
 export function medianProfile(list) {
   if (!list.length) return []

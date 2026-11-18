@@ -210,9 +210,9 @@ test('⑮ 2.2-exec 出票自带契约：contextBudget / mustProduce / 票面写�
   const t = JSON.parse(readFileSync(join(dir, 'tickets', '2.2-exec-r1.json'), 'utf8'))
   assert.deepEqual(t.mustProduce, { variants: 3, abFrames: 1 })
   assert.deepEqual(t.contextBudget, { docs: 2, images: 1 })
-  assert.match(t.prompt, /本轮契约/)
+  assert.match(t.prompt, /执行员卡片/)
   assert.match(t.prompt, /至少 3 个变体/)
-  assert.match(t.prompt, /上下文上限/)
+  assert.match(t.prompt, /上下文：/)
 })
 
 test('⑯ 交活不带 variants[] → 被反早停闸挡住', () => {
@@ -243,6 +243,7 @@ test('⑱ 变体够 + A/B 帧够 → 放行', () => {
     changes: ['改了 A'], shot: 'shots/a.png',
     variants: [{ name: 'v1', shot: 'shots/v1.png' }, { name: 'v2', shot: 'shots/v2.png' }, { name: 'v3', shot: 'shots/v3.png' }],
     abShots: ['shots/ab_bite.png'],
+    readFiles: [],
   }))
   const r = run('done', '--run', dir, '--stage', '2.2-exec-r1')
   assert.equal(r.status, 0, r.stdout + r.stderr)
@@ -252,7 +253,7 @@ test('⑲ budget.exec 关掉下限 → 老形状的 round 文件仍能过（向�
   const dir = makeRun({ research: 'low', maxRounds: 1, useCritic: false, resupply: false, exec: { minVariants: 0, requireAB: false } })
   for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1']) signal(dir, id)
   mkdirSync(join(dir, 'rounds'), { recursive: true })
-  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['改了 A'], shot: 'shots/a.png' }))
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['改了 A'], shot: 'shots/a.png', readFiles: [] }))
   const r = run('done', '--run', dir, '--stage', '2.2-exec-r1')
   assert.equal(r.status, 0, r.stdout + r.stderr)
 })
@@ -364,9 +365,9 @@ test('㉘ 有 split.json 时：exec 票指向窄票，且结果必须覆盖每�
   assert.equal(r1.status, 1, r1.stdout)
   assert.match(r1.stdout, /窄票 T2 没有结果/)
   // 两张都交齐 → 通过
-  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['x'], shot: 'a.png', tasks: [
-    { id: 'T1', variants: [1, 2, 3], abShots: ['ab.png'] },
-    { id: 'T2', variants: [1, 2, 3], abShots: ['ab.png'] }
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['x'], shot: 'a.png', readFiles: [], tasks: [
+    { id: 'T1', variants: [1, 2, 3], abShots: ['ab.png'], acceptEvidence: [{ id: 'topCoverage', measured: 0.72, how: 'composition' }] },
+    { id: 'T2', variants: [1, 2, 3], abShots: ['ab.png'], acceptEvidence: [{ id: 'p99', measured: 0.70, how: 'ref-probe' }] }
   ] }))
   const r2 = run('done', '--run', dir, '--stage', '2.2-exec-r1')
   assert.equal(r2.status, 0, r2.stdout + r2.stderr)

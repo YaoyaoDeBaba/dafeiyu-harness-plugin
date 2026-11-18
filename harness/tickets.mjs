@@ -87,16 +87,11 @@ const ROUND = {
     'executor.model 写你打算用来干这一轮的具体模型名。',
     doneLine(dir, id)
   ].join('\n'),
+  // S3：票面字段化、去掉散文——契约与停止条件已经在上面的「执行员卡片」里，这里只写"做什么"
   exec: (dir, r, id) => [
-    '你是**执行者**。第 ' + r + ' 轮：按 ' + j(dir, 'split.json') + ' 的**窄票**干活（没有 split.json 就按 ' + j(dir, 'plan.json') + ' 的工单），结果写进 ' + j(dir, 'rounds', String(r).padStart(2, '0') + '.json') + '。',
-    '有 split.json 时：**每张窄票交一份结果**，写进 tasks:[{ id, variants:[{name,shot}], abShots:[], changes:[] }]（id 必须对上窄票 id）。',
-    '硬约束：只改工单允许的范围；不许动 research.json / intent.json / plan.json。',
-    '必须产出：shot 或 preview（人能看到）、changes[]（改了什么）、metrics（关键指标）。',
-    // A4：允许本轮内自迭代，但必须带停止条件（达到判据 / 用满 maxSelfIterations 默认 3 / 平台期：连续 2 轮无显著提升）
-    '自迭代有边界：最多自调 3 轮，满足任一停止条件就停（达标 / 用满预算 / 平台期）；停下**如实交**当前值 + 差多少 + 卡在哪。每轮留一行 ' + j(dir, 'rounds', 'r' + r, 'iters.md') + '。',
-    // A5：交活即快照三件套（缺了 pipeline 会写进 verify.caveat 留痕）
-    '交活前补快照三件套 ' + j(dir, 'rounds', 'r' + r, 'snapshot') + '：code/（本轮改过的源文件）、scene-params.json（组件字段 + 材质值）、params.md（旧值→新值→为什么）；手动快照：node harness/snapshot.mjs --run ' + dir + ' --tag <名字>。',
-    '交付自检（skills/selfloop/references/executor-brief.md）：贴完整帧 + node harness/crash-check.mjs <帧> + 每项判据一行实测 + 每完成一项立刻落盘 rounds。',
+    '你是**执行者**。第 ' + r + ' 轮：按 ' + j(dir, 'split.json') + ' 的窄票干活（没有就用 ' + j(dir, 'plan.json') + ' 的工单），结果写 ' + j(dir, 'rounds', String(r).padStart(2, '0') + '.json') + '。',
+    '有 split.json 时：**每张窄票一份结果** → tasks:[{ id, variants[], abShots[], acceptEvidence[], changes[] }]；id 必须对上。',
+    '交活前补快照：' + j(dir, 'rounds', 'r' + r, 'snapshot') + '/{code/, scene-params.json, params.md}（缺了只留痕不拦）。',
     doneLine(dir, id)
   ].join('\n'),
   verify: (dir, r, id) => [

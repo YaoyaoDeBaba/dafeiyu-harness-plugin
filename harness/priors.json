@@ -1,0 +1,59 @@
+{
+  "_说明": "领域先验区间：把「一听到名字就知道大概怎么画」外置成表。intent 里写 domain 后，数值判据的 target 必须同时落在实测区间与本表区间内（例外写 priorException）；本表里的每个键都必须有对应判据（否则用 priorWaived 写理由）。区间来自公开实现与实测，不追求普适，改前先跑一轮验证。",
+  "volumetric-cloud": {
+    "sigma_m": {
+      "range": [
+        0.02,
+        0.15
+      ],
+      "unit": "1/m",
+      "why": "积云消光系数:太小吃光不出暗部,太大一片死黑",
+      "source": "natural-disasters Clouds.js:322 (SIGMA=0.022)"
+    },
+    "ambient_frac": {
+      "range": [
+        0.005,
+        0.06
+      ],
+      "unit": "相对太阳",
+      "why": "夜间云里天光超过 6% 就会把暗部洗成灰雾",
+      "source": "Clouds.js:309-315"
+    },
+    "lightSteps": {
+      "range": [
+        4,
+        8
+      ],
+      "unit": "步",
+      "why": "少于 4 步遮挡不足(整团一起亮),多于 8 步性价比差",
+      "source": "Clouds.js:336"
+    },
+    "powder": {
+      "range": [
+        0.4,
+        0.8
+      ],
+      "unit": "0~1",
+      "why": "powder 让受光边读起来是实体而不是透明棉絮",
+      "source": "HZD 2015"
+    },
+    "cloudDarkFrac": {
+      "range": [
+        0.2,
+        0.34
+      ],
+      "unit": "云掩膜内<0.25 占比",
+      "why": "真实雷云的云体是暗的,只有裂缝亮;这一条是「云像不像云」的主判别量",
+      "source": "参考 24 帧实测 25.5%"
+    },
+    "cloudBrightFrac": {
+      "range": [
+        0.005,
+        0.06
+      ],
+      "unit": "云掩膜内>0.6 占比",
+      "why": "亮口只该是少数;超过 6% 就是「均匀发亮的雾」",
+      "source": "参考 24 帧实测 2.0%"
+    }
+  }
+}

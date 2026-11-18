@@ -34,7 +34,11 @@ const DEFAULT_BUDGET = { research: 'high', maxRounds: 1, useCritic: false, userR
 // 为什么加：A/B 实测里，两条臂都只拍 10~12 帧就交（预算 40），因为「多试几个想法」从来不是通过条件。
 // 模型会优先花预算在「离它最近的可测目标」上——那就把这个目标写进票面并**硬校验**。
 // budget.exec 可覆盖（minVariants: 0 / requireAB: false 可关掉）。
-const DEFAULT_EXEC = { minVariants: 3, requireAB: true, maxDocs: 2, maxImages: 1 }
+const DEFAULT_EXEC = { minVariants: 3, requireAB: true, maxDocs: 2, maxImages: 1, enforceReadFiles: true }
+// 领域先验区间（R2，2026-11-18）：把「听到名字就知道大概怎么画」外置成表，判据靶必须落在里面
+const PRIORS = (() => {
+  try { return JSON.parse(readFileSync(fileURLToPath(new URL('./priors.json', import.meta.url)), 'utf8')) } catch { return {} }
+})()
 const execRules = (budget) => Object.assign({}, DEFAULT_EXEC, (budget && budget.exec) || {})
 const TIER = { low: 0, mid: 1, high: 2, max: 3 }
 const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')) } catch { return null } }
@@ -311,6 +315,32 @@ export const checks = {
         out.push(id + '：' + why)
       }
     })
+
+    // ── 领域先验（R2，2026-11-18）：靶必须落在「合理量级」里，且先验里每条判别量都要有判据
+    const domain = String(i.domain || '')
+    const prior = domain && PRIORS[domain] ? PRIORS[domain] : null
+    if (prior) {
+      const waived = new Set((Array.isArray(i.priorWaived) ? i.priorWaived : []).map((x) => String((x && x.key) || x || '')))
+      const covered = new Set()
+      for (const c of i.criteria || []) {
+        const cid = c && c.id ? c.id : '(无id)'
+        const key = String((c && (c.metric || c.id)) || '')
+        if (!prior[key] || !Array.isArray(prior[key].range)) continue
+        covered.add(key)
+        if (String(c.kind || '') === 'profile' || Array.isArray(c.target)) continue
+        const t = Number(c.target)
+        const lo = Number(prior[key].range[0]), hi = Number(prior[key].range[1])
+        if (Number.isFinite(t) && (t < lo || t > hi) && !String(c.priorException || '').trim()) {
+          out.push(cid + '：target=' + t + ' 不在先验区间 [' + lo + ', ' + hi + ']（' + (prior[key].why || key)
+            + '）——要么改靶，要么写 priorException 说明为什么这次要破例')
+        }
+      }
+      const missing = Object.keys(prior).filter((k) => !covered.has(k) && !waived.has(k))
+      if (missing.length) {
+        out.push('先验里有判别量没有对应判据：' + missing.join('、')
+          + '（加上判据；真不测就写 priorWaived 说明为什么不测——这一条就是治「判据缺项」的）')
+      }
+    }
     return out
   },
   plan(dir) {
@@ -336,6 +366,16 @@ export const checks = {
     // 反早停硬闸（2026-11-18）：工作量下限。实测两条臂都只拍 10~12 帧就跑，
     // 因为「多试」从来没被校验过。这里把它变成通过条件（budget.exec 可关）。
     const rules = execRules(getBudget(dir))
+    // ── 上下文预算可校验（S2，2026-11-18）：执行员只许读票面声明的文件，交活时自报 readFiles[]
+    if (rules.enforceReadFiles !== false) {
+      const allow = allowedReadPaths(dir, last)
+      if (!Array.isArray(last.readFiles)) {
+        out.push('缺 readFiles[]：交活时列出你真读过的文件（票面声明之外的一律不许读）')
+      } else {
+        const bad = last.readFiles.map(String).filter((f) => f.trim() && !allow.some((a) => f === a || f.startsWith(a.replace(/[\\/]$/, '') + '/') || f.startsWith(a.replace(/[\\/]$/, '') + '\\')))
+        if (bad.length) out.push('读了票面之外的文件：' + bad.slice(0, 3).join('、') + (bad.length > 3 ? ' 等 ' + bad.length + ' 个' : '') + '（上下文预算要靠这个兜住）')
+      }
+    }
     // 有 split.json（拆窄票）时，工作量下限按**每张窄票**算，并要求结果覆盖所有票 id
     const split = readJson(j(dir, 'split.json'))
     const splitTasks = split && Array.isArray(split.tasks) ? split.tasks : []
@@ -353,6 +393,13 @@ export const checks = {
         if (rules.requireAB) {
           const ab = Array.isArray(got.abShots) ? got.abShots : []
           if (ab.length === 0) out.push('窄票 ' + tid + '：缺 abShots[]（至少 1 张单变量 A/B 判别帧）')
+        }
+        // S4：票面 accept 每一项都要有一条实测（治「注意力没覆盖完整需求」）
+        const accIds = (Array.isArray(st.accept) ? st.accept : []).map((a) => String((a && (a.id || a.metric)) || '')).filter(Boolean)
+        if (accIds.length) {
+          const ev = Array.isArray(got.acceptEvidence) ? got.acceptEvidence : []
+          const missing = accIds.filter((id) => !ev.some((e) => e && String(e.id) === id && Number.isFinite(Number(e.measured))))
+          if (missing.length) out.push('窄票 ' + tid + '：这些验收没给实测 acceptEvidence：' + missing.join('、'))
         }
       }
       if (splitTasks.length > 0) return out   // 拆了窄票就按窄票算，不再要求整轮级别的 variants
@@ -838,19 +885,51 @@ function hintsFor(dir, node) {
  * 所以票里必须写清「能读什么、必须交几个变体、怎么算没偷懒」——
  * 不写，模型就会拿预算去读文档、然后交 1 个变体回来（A/B 实测：12/40 张就交活）。
  */
-function contractLines(contract) {
+/**
+ * 执行员「允许读」的路径（S2）：窄票的 files+refs，其次 plan 的 orders[].files，最后 intent 的图锚。
+ * 空集合表示"票面没声明"，此时不拦（免得老 run 全被挡）。
+ */
+function allowedReadPaths(dir) {
+  const out = []
+  const sp = readJson(j(dir, 'split.json'))
+  if (sp && Array.isArray(sp.tasks)) {
+    for (const t of sp.tasks) {
+      for (const f of (Array.isArray(t && t.files) ? t.files : [])) out.push(String(f))
+      for (const r of (Array.isArray(t && t.refs) ? t.refs : [])) out.push(String(r))
+    }
+  }
+  const plan = readJson(j(dir, 'plan.json'))
+  if (plan && Array.isArray(plan.orders)) {
+    for (const o of plan.orders) for (const f of (Array.isArray(o && o.files) ? o.files : [])) out.push(String(f))
+  }
+  const it = readJson(j(dir, 'intent.json'))
+  if (it && Array.isArray(it.anchors)) for (const a of it.anchors) if (a && a.kind === 'image' && a.ref) out.push(String(a.ref))
+  return [...new Set(out.filter((x) => x.trim()))]
+}
+
+function contractLines(contract, extra) {
   if (!contract || !contract.mustProduce) return ''
   const mp = contract.mustProduce
   const cb = contract.contextBudget || {}
-  const lines = [
-    '【本轮契约·票面就是全部上下文，不必去读技能文档】',
-    '· 工作量下限：至少 ' + mp.variants + ' 个变体（每个都要抓帧，写进 variants[]）'
-      + (mp.abFrames ? '；另加 ' + mp.abFrames + ' 张单变量 A/B 判别帧（命名 *_ab_<变量>）' : ''),
-    '· 上下文上限：额外文档 ≤' + (cb.docs ?? 0) + ' 篇、参考图 ≤' + (cb.images ?? 0) + ' 张；交活时在 readDocs[] 里列出你真读过的文件',
-    '· 交活被挡的常见原因（都是自动校验）：缺 variants[]、变体不足、缺 abShots[]、changes 不是数组、没有 shot',
-    ''
-  ]
-  return lines.join('\n')
+  const ex = extra || {}
+  const L = []
+  L.push('【执行员卡片 · 票面就是全部上下文，不必去读技能文档】')
+  L.push('· 工作量：至少 ' + mp.variants + ' 个变体（每个都要抓帧，写 variants[]）'
+    + (mp.abFrames ? '；另加 ' + mp.abFrames + ' 张单变量 A/B 判别帧（*_ab_<变量>）' : ''))
+  L.push('· 上下文：额外文档 ≤' + (cb.docs ?? 0) + ' 篇、参考图 ≤' + (cb.images ?? 0) + ' 张；交活时用 readFiles[] 列出你真读过的文件')
+  if (Array.isArray(ex.allowed) && ex.allowed.length) L.push('· 允许读（读别的一律算越界）：' + ex.allowed.slice(0, 8).join(' · '))
+  L.push('· 停止条件（任一即停）：① 达标　② 用满自调轮次　③ 连续 2 轮无显著提升（主判据改善 <5% 或帧差 <2%）')
+  L.push('· 停下如实交：当前值 + 差多少 + 卡在哪个约束（禁止「已优化」）')
+  L.push('· 交活字段：changes[] / shot / variants[] / abShots[] / readFiles[]'
+    + (Array.isArray(ex.narrow) && ex.narrow.length ? ' / tasks[]（每张窄票一份，含 acceptEvidence[]）' : ''))
+  if (Array.isArray(ex.narrow) && ex.narrow.length) {
+    for (const t of ex.narrow) {
+      const acc = (Array.isArray(t.accept) ? t.accept : []).map((a) => a && (a.id || a.metric)).filter(Boolean).join('/')
+      L.push('· 窄票 ' + (t.id || '?') + '：' + String(t.goal || '') + (acc ? '（验收 ' + acc + '）' : '') + ' → 只改 ' + (Array.isArray(t.files) ? t.files.join('、') : '?'))
+    }
+  }
+  L.push('')
+  return L.join('\n')
 }
 
 function step(dir) {
@@ -875,13 +954,15 @@ function step(dir) {
     }
     const rules = execRules(getBudget(dir))
     const isExec = node.kind === 'worker' && String(node.id).startsWith('2.2-exec')
+    const splitDef = isExec ? readJson(j(dir, 'split.json')) : null
+    const narrow = splitDef && Array.isArray(splitDef.tasks) ? splitDef.tasks : []
     const contract = isExec
       ? {
           contextBudget: { docs: rules.maxDocs, images: rules.maxImages },
           mustProduce: { variants: rules.minVariants, abFrames: rules.requireAB ? 1 : 0 },
         }
       : {}
-    const ticket = { stage: node.id, kind: node.kind, title: node.title, check: node.check, ...(node.kind === 'manager' && hasForm(node.id) ? { form: j(dir, 'forms', node.id + '.json') } : {}), prompt: contractLines(contract) + ticketFor(dir, node), ...contract }
+    const ticket = { stage: node.id, kind: node.kind, title: node.title, check: node.check, ...(node.kind === 'manager' && hasForm(node.id) ? { form: j(dir, 'forms', node.id + '.json') } : {}), prompt: contractLines(contract, { allowed: isExec ? allowedReadPaths(dir) : [], narrow }) + ticketFor(dir, node), ...contract }
     mkdirSync(j(dir, TICKET_DIR), { recursive: true })
     touchActive(dir, node.id, node.kind)
     const p = j(dir, TICKET_DIR, node.id + '.json')

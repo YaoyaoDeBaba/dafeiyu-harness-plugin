@@ -18,7 +18,8 @@
 import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync, readdirSync } from 'node:fs'
 import { join, resolve, basename } from 'node:path'
 import { probeFile, summarize } from './ref-probe.mjs'
-import { profileFromFile, scalarsFromFile, medianProfile, calibrateMinCorr } from './composition.mjs'
+import { profileFromFile, scalarsFromFile, medianProfile, calibrateMinCorr, toneFractions } from './composition.mjs'
+import { decodePng } from './ref-probe.mjs'
 
 function arg(name, def) { const i = process.argv.indexOf('--' + name); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : def }
 
@@ -48,7 +49,12 @@ if (refArg && !checkOnly) {
   for (const f of files) {
     try { rows.push(probeFile(f, { top })) } catch { /* 跳过非 8bit/非 PNG */ }
     // 结构指纹（L2）：行剖面是 profile 型；质心/留白/bbox 是标量型
-    try { profiles.push(profileFromFile(f, 64)); structs.push(scalarsFromFile(f)) } catch { /* 解不了就跳过 */ }
+    try {
+      profiles.push(profileFromFile(f, 64))
+      const sc = scalarsFromFile(f)
+      Object.assign(sc, toneFractions(decodePng(readFileSync(f))))   // 云内明暗结构
+      structs.push(sc)
+    } catch { /* 解不了就跳过 */ }
   }
   if (rows.length) measured = { count: rows.length, sum: summarize(rows), sample: basename(files[0]), profiles, structs }
 }
@@ -82,7 +88,7 @@ if (measured && measured.profiles && measured.profiles.length) {
   const hitP = research.extracted.find((e) => e.what === 'rowProfile')
   if (hitP) Object.assign(hitP, prof); else research.extracted.push(prof)
 
-  const keys = ['centroidY', 'topCoverage', 'skyExposure', 'bboxAspect', 'subjectFrac']
+  const keys = ['centroidY', 'topCoverage', 'skyExposure', 'bboxAspect', 'subjectFrac', 'cloudDarkFrac', 'cloudBrightFrac', 'cloudMeanLuma']
   for (const k of keys) {
     const vals = measured.structs.map((s) => s[k]).filter((v) => Number.isFinite(v))
     if (!vals.length) continue
