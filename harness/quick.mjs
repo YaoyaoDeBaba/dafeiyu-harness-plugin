@@ -12,7 +12,7 @@
 //   1. 读 <run>/intent.json 的判据 + <run>/research.json 的实测带；
 //   2. 坐标扫描（一次只动一个参数），每次抓帧后立刻量测、算 err、写 <run>/trace.jsonl；
 //   3. err==0 或预算用完即停，把最优参数写 <run>/quick/best.json 与 <run>/verify.json。
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { probeFile } from './ref-probe.mjs'
@@ -37,7 +37,10 @@ const intent = JSON.parse(readFileSync(join(runDir, 'intent.json'), 'utf8'))
 const research = existsSync(join(runDir, 'research.json')) ? JSON.parse(readFileSync(join(runDir, 'research.json'), 'utf8')) : { extracted: [] }
 const band = new Map((research.extracted || []).filter((e) => e && e.what && Number.isFinite(e.min) && Number.isFinite(e.max)).map((e) => [e.what, [e.min, e.max]]))
 const refs = refDir && existsSync(refDir) ? readdirPng(refDir) : []
-const refProf = refs.length ? medianProfile(refs.map((f) => profileFromFile(f, 64))) : null
+// 参考侧 topFrac：第三轮起 rowProfile 只算云区（preflight --profile-top 0.45 会写进 extracted）
+const profEntry = (research.extracted || []).find((e) => e && e.what === 'rowProfile' && Array.isArray(e.value))
+const topFrac = profEntry && Number.isFinite(Number(profEntry.topFrac)) ? Number(profEntry.topFrac) : 1
+const refProf = refs.length ? medianProfile(refs.map((f) => profileFromFile(f, 64, topFrac))) : null
 function readdirPng(d) {
   const out = []
   const walk = (p) => {
@@ -73,7 +76,7 @@ function measure(file, criteria) {
   let err = 0
   for (const c of criteria) {
     if (c && c.kind === 'profile') {
-      const corr = refProf ? profileCorr(refProf, profileFromFile(file, 64)) : 0
+      const corr = refProf ? profileCorr(refProf, profileFromFile(file, 64, topFrac)) : 0
       m[c.metric || 'rowProfile'] = +corr.toFixed(4)
       err += Math.max(0, ((c.minCorr ?? 0.83) - corr) / (1 - (c.minCorr ?? 0.83)))
       continue
@@ -140,6 +143,51 @@ while (n < maxShots) {
     if (i >= 0 && i + 1 < vs.length) { state[k] = vs[i + 1]; advanced = true; break }
   }
   if (!advanced) break
+}
+// --sheet：把这一轮所有候选拼成一张联系表（用来"看过程"，不只是看终点）
+if (process.argv.includes('--sheet')) {
+  const FF = process.env.WEBCAPTURE_FFMPEG || 'C:/Users/htsd/ffmpeg/ffmpeg-9.0.2-essentials_build/bin/ffmpeg.exe'
+  const sheet = join(runDir, 'quick', 'sheet.png')
+  // Windows 上 ffmpeg 的 glob 输入不可用（"Function not implemented"），改用编号序列 + start_number
+  const r = spawnSync(FF, ['-y', '-framerate', '1', '-start_number', '1', '-i', join(shotsDir, 'q%02d.png'),
+    '-vf', 'scale=200:-1,tile=5x4:padding=4:margin=4', '-frames:v', '1', sheet], { encoding: 'utf8' })
+  if (existsSync(sheet)) console.log('[quick] 联系表 ' + sheet)
+  else console.log('[quick] 联系表失败：' + String(r.stderr || '').slice(-200))
+}
+// --flipbook：生成一个可点的"回看搜索过程"页面（帧 + err + 判据），用来给人看 selfloop 在干什么
+if (process.argv.includes('--flipbook')) {
+  const rows = existsSync(join(runDir, 'trace.jsonl'))
+    ? readFileSync(join(runDir, 'trace.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+    : []
+  const shotsRel = []
+  for (const r of rows) {
+    const name = 'q' + String(r.n).padStart(2, '0') + '.png'
+    shotsRel.push({ n: r.n, err: r.err, params: r.params, metrics: r.metrics, src: 'shots/' + name, has: existsSync(join(shotsDir, name)) })
+  }
+  const html = '<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>selfloop 搜索回放</title>'
+    + '<style>body{margin:0;background:#0b0e13;color:#c9d6e4;font:13px/1.5 ui-monospace,Consolas,monospace}'
+    + '#wrap{display:flex;gap:16px;padding:16px}img{width:420px;border:1px solid #223;border-radius:6px;background:#000}'
+    + '.side{flex:1}.k{color:#7f97ad}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #1b2432;padding:3px 6px;text-align:left;font-size:12px}'
+    + '.ok{color:#5ad469}.bad{color:#e5645f}button{background:#1a2534;color:#c9d6e4;border:1px solid #2b3a4d;border-radius:4px;padding:4px 10px;margin-right:6px;cursor:pointer}</style></head><body>'
+    + '<div id="wrap"><div><img id="f" src=""><div style="margin-top:8px"><button onclick="step(-1)">◀</button><button onclick="step(1)">▶</button>'
+    + '<button onclick="play()">▶▶ 播放</button> <span id="pos"></span></div></div><div class="side"><div id="info"></div>'
+    + '<table id="t"><thead><tr><th>#</th><th>err</th><th>dark</th><th>bright</th><th>corr</th><th>top</th><th>cy</th></tr></thead><tbody></tbody></table></div></div>'
+    + '<script>const rows=' + JSON.stringify(shotsRel) + ';let i=0,timer=null;'
+    + 'function render(){const r=rows[i];if(!r)return;document.getElementById("f").src=r.src;'
+    + 'document.getElementById("pos").textContent=(i+1)+" / "+rows.length+"   err="+r.err;'
+    + 'const m=r.metrics||{};document.getElementById("info").innerHTML="<div class=k>参数</div><div>"+JSON.stringify(r.params)+"</div>"'
+    + '+"<div class=k style=\"margin-top:8px\">判据</div><div>dark "+((m.cloudDarkFrac??0).toFixed(3))+" (带 .155~.295)</div>"'
+    + '+"<div>bright "+((m.cloudBrightFrac??0).toFixed(3))+" (带 .013~.071)</div><div>corr "+((m.rowProfile??0).toFixed(3))+" (>=0.83)</div>"'
+    + '+"<div>top "+((m.topCoverage??0).toFixed(3))+" (带 .669~.744)</div><div>cy "+((m.centroidY??0).toFixed(3))+" (带 .453~.502)</div>";'
+    + 'document.querySelectorAll("#t tbody tr").forEach((tr,j)=>tr.style.background=j===i?"#16202e":"");}'
+    + 'function step(d){i=Math.max(0,Math.min(rows.length-1,i+d));render()}'
+    + 'function play(){if(timer){clearInterval(timer);timer=null;return}timer=setInterval(()=>{if(i>=rows.length-1){clearInterval(timer);timer=null;return}step(1)},420)}'
+    + 'const tb=document.querySelector("#t tbody");rows.forEach((r,j)=>{const m=r.metrics||{};const tr=document.createElement("tr");'
+    + 'tr.innerHTML="<td>"+r.n+"</td><td class=\""+(r.err===0?"ok":(r.err>0.5?"bad":""))+"\">"+r.err.toFixed(3)+"</td><td>"'
+    + '+((m.cloudDarkFrac??0).toFixed(3))+"</td><td>"+((m.cloudBrightFrac??0).toFixed(3))+"</td><td>"+((m.rowProfile??0).toFixed(3))+"</td><td>"'
+    + '+((m.topCoverage??0).toFixed(3))+"</td><td>"+((m.centroidY??0).toFixed(3))+"</td>";tr.onclick=()=>{i=j;render()};tb.appendChild(tr)});render();</script></body></html>'
+  writeFileSync(join(runDir, 'quick', 'flipbook.html'), html, 'utf8')
+  console.log('[quick] 回放页 ' + join(runDir, 'quick', 'flipbook.html'))
 }
 const secs = Math.round((Date.now() - t0) / 1000)
 writeFileSync(join(runDir, 'quick', 'best.json'), JSON.stringify({ best, shots: n, secs, elapsed: secs }, null, 2), 'utf8')

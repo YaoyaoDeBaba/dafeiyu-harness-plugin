@@ -4,6 +4,24 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.41.1（未发布）· quick.mjs 三处修补（掩膜口径 / 联系表 / 回放页）
+
+> 回灌上游原件：否。三处都是第三轮 A/B 现场暴露的。
+
+### ① profile 判据没带 topFrac（**口径错**，最要紧）
+`quick.mjs` 量 C3 时用 `profileFromFile(f, 64)`，而第三轮口径是"只算画面上部 45%"。
+参考侧与候选侧都没传 topFrac —— 等于**换了把尺子量同一个靶**。现在从
+`research.extracted` 的 `rowProfile.topFrac` 取，两边同口径。
+
+### ② `--sheet`：Windows 上 ffmpeg 的 glob 输入不可用
+`-pattern_type glob -i '*.png'` 报 `Function not implemented`，改成编号序列
+`-start_number 1 -i q%02d.png`。
+
+### ③ `--flipbook`：生成可点的"搜索回放"页
+帧 + `err` + 六条判据并列，点表格跳帧、可自动播放 —— 给人看 selfloop 在干什么，而不是只看终点。
+
+---
+
 ## 0.41.0（未发布）· lite 模式：标准已给全时，把调研与二次转译整段跳过
 
 > 回灌上游原件：否。依据：两轮 A/B 里 A 臂的固定开销（1.3~1.9 + 观察员）在"标准已经定死"的
