@@ -4,6 +4,36 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.44.0（未发布）· UI 可靠性自检：停摆 / 真实原因 / 提交回执
+
+> 回灌上游原件：否。起因：下单前要求"别再出现 UI 显示陈旧状态、错误信息没用、提交无反馈、中途停摆没人发现"。
+
+### ① 停摆检测（`lib/routes.js` → `status.stageStall`）
+以前页面只会写「运行中 <节点>」——节点卡两小时也照样显示"运行中"。
+现在 `/state` 给：`{ stage, kind, openedAt, idleMs, limitMs, stuck }`。
+口径：取「节点打开时间 / 最近信号 / `log.jsonl` 的 mtime」里最新的那个当最后动静；
+阈值 `program 5min / worker 20min / manager 20min`，**人的节点不判**（等人不算卡）。
+
+### ② 最近失败的真实原因（`status.lastError`）
+扫 `stages/*.json`，取最近一条带 `status=failed` 或带 `error/message/why/blocked` 的记录：
+`{ stage, at, status, message }`（message 截 300 字）。UI 不再只能显示"失败了"。
+
+### ③ UI 渲染（`lib/client.js` 状态卡 + `ui/app.js` 查看器）
+- 卡住：`⛔ 卡在 2.2-exec-r1 47 分钟（阈值 20 分钟）—— 没人推进，去看看日志`；
+- 失败：`✖ 2.3-verify-r1：排列与参考不像：rowProfile 相关 0.540 < 下限 0.83`；
+- 严重时**指示灯转红**（原来只有子代理静默才转红）。
+
+### ④ 下单回执（已有能力，补上判据）
+`POST /start` 成功即返回 `runDir`+`run`，UI 可立刻切过去轮询；需求过短 `400 requirement-too-short`、
+同会话已有单 `409 session-busy`（这两条原来就有，现在有测试钉住）。
+
+### 判据
+`node --test` = **470 / 470**（新增 `test/ui-reliability.test.mjs` 5 例 + `client-render` 2 例：
+卡两小时必须 stuck、刚打开不许误报、失败必须带原因、下单必须带回执、需求太短必须 400、
+状态卡必须写出"卡在 N 分钟（阈值 M）"与真实错误）。
+
+---
+
 ## 0.43.1（未发布）· 阈值真正可切换：`--mask-auto` 一路走到底
 
 > 0.43.0 只把自适应阈值"算出来并告警"，量测仍用固定 0.10。这一版把它接通：

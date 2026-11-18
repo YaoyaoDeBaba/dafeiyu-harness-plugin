@@ -409,3 +409,29 @@ test('⑱ /start 请求体带 researchEffort / execEffort，缺省 max', () => {
   assert.equal(def.researchEffort, 'max', '调查努力程度默认应为 max')
   assert.equal(def.execEffort, 'max', '执行努力程度默认应为 max')
 })
+
+// ── 可靠性自检（2026-11-18）：停摆 / 最近错误必须写进状态卡 ──
+test('㊱ 节点卡住 → 状态卡写「卡在 <节点> N 分钟（阈值 M 分钟）」', () => {
+  const state = fixture({
+    status: Object.assign({}, fixture().status, {
+      stageStall: { stage: '2.2-exec-r1', kind: 'worker', idleMs: 47 * 60 * 1000, limitMs: 20 * 60 * 1000, stuck: true },
+    }),
+  })
+  const html = ui.statusCardHtml(state)
+  assert.match(html, /卡在/)
+  assert.match(html, /2\.2-exec-r1/)
+  assert.match(html, /47 分钟/)
+  assert.match(html, /阈值 20 分钟/)
+})
+
+test('㊲ 最近一次失败 → 状态卡带真实原因（不是只写"失败"）', () => {
+  const state = fixture({
+    status: Object.assign({}, fixture().status, {
+      stageStall: { stage: '2.3-verify-r1', kind: 'manager', idleMs: 1000, limitMs: 1200000, stuck: false },
+      lastError: { stage: '2.3-verify-r1', at: new Date().toISOString(), status: 'failed', message: '排列与参考不像：rowProfile 相关 0.540 < 下限 0.83' },
+    }),
+  })
+  const html = ui.statusCardHtml(state)
+  assert.match(html, /2\.3-verify-r1/)
+  assert.match(html, /rowProfile/)
+})

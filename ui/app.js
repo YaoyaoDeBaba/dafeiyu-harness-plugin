@@ -855,3 +855,18 @@ function wireControls() {
 wireControls();
 poll();
 setInterval(poll, 2000);
+
+
+// 2026-11-18 可靠性自检：停摆与最近错误的渲染（查看器用）
+function stallHtml(st) {
+  const s = (st && st.stageStall) || {};
+  const err = st && st.lastError;
+  let out = '';
+  if (s.stuck) {
+    const idle = Math.max(0, Math.round(Number(s.idleMs || 0) / 60000));
+    const lim = Number.isFinite(Number(s.limitMs)) ? Math.round(Number(s.limitMs) / 60000) : null;
+    out += '<div class="u-warn">⛔ 卡在 ' + (s.stage || '') + ' ' + idle + ' 分钟' + (lim !== null ? '（阈值 ' + lim + '）' : '') + '</div>';
+  }
+  if (err && err.message) out += '<div class="u-warn">✖ ' + (err.stage || '') + '：' + String(err.message).slice(0, 160) + '</div>';
+  return out;
+}
