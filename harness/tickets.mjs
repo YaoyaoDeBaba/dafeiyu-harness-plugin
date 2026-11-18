@@ -88,7 +88,8 @@ const ROUND = {
     doneLine(dir, id)
   ].join('\n'),
   exec: (dir, r, id) => [
-    '你是**执行者**。第 ' + r + ' 轮：按 ' + j(dir, 'plan.json') + ' 的工单干活，结果写进 ' + j(dir, 'rounds', String(r).padStart(2, '0') + '.json') + '。',
+    '你是**执行者**。第 ' + r + ' 轮：按 ' + j(dir, 'split.json') + ' 的**窄票**干活（没有 split.json 就按 ' + j(dir, 'plan.json') + ' 的工单），结果写进 ' + j(dir, 'rounds', String(r).padStart(2, '0') + '.json') + '。',
+    '有 split.json 时：**每张窄票交一份结果**，写进 tasks:[{ id, variants:[{name,shot}], abShots:[], changes:[] }]（id 必须对上窄票 id）。',
     '硬约束：只改工单允许的范围；不许动 research.json / intent.json / plan.json。',
     '必须产出：shot 或 preview（人能看到）、changes[]（改了什么）、metrics（关键指标）。',
     // A4：允许本轮内自迭代，但必须带停止条件（达到判据 / 用满 maxSelfIterations 默认 3 / 平台期：连续 2 轮无显著提升）
@@ -110,7 +111,21 @@ const ROUND = {
     '不合格就写不合格。',
     doneLine(dir, id)
   ].join('\n'),
+  split: (dir, r, id) => [
+    '你是**主Agent**。第 ' + r + ' 轮开工前：把 plan.json 的工单拆成**窄票**，写 ' + j(dir, 'split.json') + '。',
+    '每张窄票只带它自己的上下文：{ tasks:[{ id, goal, files[], refs[], accept:[{id,target,dir}], contextBudget:{docs,images} }] }。',
+    '硬要求：至少 2 张；每张的 files 互不相交（冲突面小才拆得动）；每条 accept 必须带 dir（lower/upper/two-sided）。',
+    '**不许**在窄票里写「怎么做」的教程——那是执行员自己的事；窄票只写「做什么 + 怎么算做完」。',
+    '会填 ' + j(dir, 'forms', id + '.json') + ' 的表（若存在）。',
+    doneLine(dir, id)
+  ].join('\n'),
   merge: (dir, r, id) => [
+    '你是**合并员**。第 ' + r + ' 轮：拿各张窄票的产物与验收表选优，写 ' + j(dir, 'merge.json') + '。',
+    '只看 rounds/' + String(r).padStart(2, '0') + '.json 的 tasks[] 与 verify.json 的实测，**不要读任何一方的代码**（会被各自的实现细节带跑）。',
+    '格式：{ chosen, why, evidence[] }；why 要说清「为什么是它，不是别的」。',
+    doneLine(dir, id)
+  ].join('\n'),
+  mergeReviews: (dir, r, id) => [
     '你是**主Agent**。把观察员的评审（review.json）与用户的意见（user-review.json）合并，写 ' + j(dir, 'review.merged.json') + '。',
     '格式：{ fromCritic:[{id,pass,evidence}], fromUser:[{point,severity,impact}], conflicts:[{about, critic, user, resolved, why}],',
     '        nextRoundOrders:[{id, task, done_when}] }。',
@@ -143,8 +158,9 @@ export function ticketFor(dir, node) {
   if (km) return ROUND.knowledge(dir, km[1], id)
   const am = id.match(/^2\.7-absorb-r(\d+)$/)
   if (am) return ROUND.absorb(dir, am[1], id)
-  const m = id.match(/^2\.(\d)-(\w+)-r(\d+)$/)
-  if (m && ROUND[m[2]]) return ROUND[m[2]](dir, m[3], id)
+  // 2.2a-split-r1 / 2.4m-merge-r1 这类带字母后缀的 id 也要命中（2026-11-18 修：此前落进「没有票模板」兜底）
+  const m = id.match(/^2\.(\d+)([a-z]?)-(\w+)-r(\d+)$/)
+  if (m && ROUND[m[3]]) return ROUND[m[3]](dir, m[4], id)
   if (id === '3.1-summarize') {
     return [
       '你是**主Agent**。写对用户的总结：' + j(dir, 'summary.json') + ' = { text, whatChanged, gaps[], next[] }。',

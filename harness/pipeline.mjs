@@ -321,6 +321,27 @@ export const checks = {
     // 反早停硬闸（2026-11-18）：工作量下限。实测两条臂都只拍 10~12 帧就跑，
     // 因为「多试」从来没被校验过。这里把它变成通过条件（budget.exec 可关）。
     const rules = execRules(getBudget(dir))
+    // 有 split.json（拆窄票）时，工作量下限按**每张窄票**算，并要求结果覆盖所有票 id
+    const split = readJson(j(dir, 'split.json'))
+    const splitTasks = split && Array.isArray(split.tasks) ? split.tasks : []
+    if (splitTasks.length > 0) {
+      const results = Array.isArray(last.tasks) ? last.tasks : []
+      if (results.length === 0) out.push('有 split.json 但 rounds/' + name + ' 缺 tasks[]（每张窄票都要交一份结果）')
+      for (const st of splitTasks) {
+        const tid = String((st && st.id) || '')
+        const got = results.find((x) => x && String(x.id) === tid)
+        if (!got) { out.push('窄票 ' + (tid || '(无id)') + ' 没有结果（tasks[] 里缺这一项）'); continue }
+        if (rules.minVariants > 0) {
+          const v = Array.isArray(got.variants) ? got.variants : []
+          if (v.length < rules.minVariants) out.push('窄票 ' + tid + '：变体只有 ' + v.length + ' 个，少于下限 ' + rules.minVariants)
+        }
+        if (rules.requireAB) {
+          const ab = Array.isArray(got.abShots) ? got.abShots : []
+          if (ab.length === 0) out.push('窄票 ' + tid + '：缺 abShots[]（至少 1 张单变量 A/B 判别帧）')
+        }
+      }
+      if (splitTasks.length > 0) return out   // 拆了窄票就按窄票算，不再要求整轮级别的 variants
+    }
     if (rules.minVariants > 0) {
       const variants = Array.isArray(last.variants) ? last.variants : null
       if (!variants) out.push('rounds/' + name + ' 缺 variants[]（本轮至少 ' + rules.minVariants + ' 个变体，每个写 name + 抓帧）')

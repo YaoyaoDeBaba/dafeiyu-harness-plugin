@@ -335,3 +335,39 @@ test('㉖ merge.json 缺 chosen / evidence → 卡住', () => {
   assert.match(r.stdout, /chosen/)
   assert.match(r.stdout, /evidence/)
 })
+
+
+// ───────────── ⑦ 拆窄票的票模板与结果覆盖（补结构漏洞）─────────────
+test('㉗ 2.2a-split / 2.4m-merge 有票模板（不许落进「没有票模板」兜底）', async () => {
+  const { ticketFor } = await import('../harness/tickets.mjs')
+  const a = ticketFor('X', { id: '2.2a-split-r1' })
+  const b = ticketFor('X', { id: '2.4m-merge-r1' })
+  assert.ok(!a.includes('没有票模板'), 'split 票缺模板：' + a.slice(0, 60))
+  assert.match(a, /split\.json/)
+  assert.ok(!b.includes('没有票模板'), 'merge 票缺模板：' + b.slice(0, 60))
+  assert.match(b, /merge\.json/)
+})
+
+test('㉘ 有 split.json 时：exec 票指向窄票，且结果必须覆盖每张票', () => {
+  const dir = makeRun({ research: 'low', maxRounds: 1, useCritic: false, resupply: false, split: true })
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1', '2.2a-split-r1']) signal(dir, id)
+  writeFileSync(join(dir, 'split.json'), JSON.stringify({ tasks: [
+    { id: 'T1', goal: '云剪影', files: ['a.js'], accept: [{ id: 'topCoverage', target: 0.72, dir: 'two-sided' }] },
+    { id: 'T2', goal: '闪电辉光', files: ['b.js'], accept: [{ id: 'p99', target: 0.70, dir: 'two-sided' }] }
+  ] }))
+  const stepOut = run('step', '--run', dir).stdout
+  assert.match(stepOut, /2\.2-exec-r1/)
+  mkdirSync(join(dir, 'rounds'), { recursive: true })
+  // 只交了一张票的结果 → 要挡住并点名缺哪张
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['x'], shot: 'a.png', tasks: [{ id: 'T1', variants: [1, 2, 3], abShots: ['ab.png'] }] }))
+  const r1 = run('done', '--run', dir, '--stage', '2.2-exec-r1')
+  assert.equal(r1.status, 1, r1.stdout)
+  assert.match(r1.stdout, /窄票 T2 没有结果/)
+  // 两张都交齐 → 通过
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['x'], shot: 'a.png', tasks: [
+    { id: 'T1', variants: [1, 2, 3], abShots: ['ab.png'] },
+    { id: 'T2', variants: [1, 2, 3], abShots: ['ab.png'] }
+  ] }))
+  const r2 = run('done', '--run', dir, '--stage', '2.2-exec-r1')
+  assert.equal(r2.status, 0, r2.stdout + r2.stderr)
+})
