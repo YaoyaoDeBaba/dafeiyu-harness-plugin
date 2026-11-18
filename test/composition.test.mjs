@@ -10,7 +10,7 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { readFileSync as readB } from 'node:fs'
 import { decodePng } from '../harness/ref-probe.mjs'
-import { profileFromFile, profileCorr, medianProfile, calibrateMinCorr, scalarsFromFile, speckleRatio, foamComponents } from '../harness/composition.mjs'
+import { profileFromFile, profileCorr, medianProfile, calibrateMinCorr, scalarsFromFile, speckleRatio, foamComponents, rowProfile } from '../harness/composition.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const PIPE = join(ROOT, 'harness', 'pipeline.mjs')
@@ -307,4 +307,23 @@ test('⑭ foamComponents 能分开「成片白沫」和「碎点」', () => {
   const f2 = foamComponents(decodePng(readFileSync(dust)))
   assert.ok(f1.foamMaxShare > 0.95, '整块白沫最大块占比应 >0.95，实测 ' + f1.foamMaxShare.toFixed(3))
   assert.ok(f2.foamMeanComp < 4, '碎点平均连通块应 <4，实测 ' + f2.foamMeanComp.toFixed(2))
+})
+
+test('⑮ rowProfile(topFrac)：只看画面上部时，下半部分的亮带不该再影响剖面', () => {
+  // 上部留空（纯背景），下半一条亮带 —— 正是"地平线加亮带把整幅剖面垫平"的形态
+  const W = 64, H = 64
+  const rgb = Buffer.alloc(W * H * 3)
+  for (let y = 0; y < H; y += 1) {
+    for (let x = 0; x < W; x += 1) {
+      const inBand = y > H * 0.6 && y < H * 0.78
+      const v = inBand ? 240 : 24
+      const i = (y * W + x) * 3
+      rgb[i] = v; rgb[i + 1] = v; rgb[i + 2] = v
+    }
+  }
+  const img = decodePng(encodePng(W, H, rgb))
+  const full = rowProfile(img, 8, 1)
+  const top = rowProfile(img, 8, 0.45)
+  assert.ok(Math.max(...full) > 0.8, '整幅剖面里亮带必须显形，实测 max=' + Math.max(...full).toFixed(2))
+  assert.ok(Math.max(...top) < 0.1, '只取上部时亮带应完全不计入，实测 max=' + Math.max(...top).toFixed(2))
 })

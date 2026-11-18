@@ -102,6 +102,20 @@ function capture(params, name) {
 function trace(row) { appendFileSync(join(runDir, 'trace.jsonl'), JSON.stringify(row) + '\n') }
 
 const criteria = (intent.criteria || []).filter(Boolean)
+// --next '{"sigma":0.07,"ambient":0.03}'：按诊断直接给一个候选，跑一帧就报结果。
+// 为什么要有：A 臂上一轮绕开了 quick.mjs，因为"固定顺序坐标扫描不能按诊断挑轴"。
+const nextJson = arg('next', '')
+if (nextJson) {
+  const it = intent.criteria || []
+  const cand = JSON.parse(nextJson)
+  const name = 'n' + String(Date.now() % 100000)
+  const file = capture(cand, name)
+  const { metrics, err } = measure(file, criteria)
+  trace({ n: 1, params: cand, metrics, err, note: 'quick --next' })
+  writeFileSync(join(runDir, 'quick', 'best.json'), JSON.stringify({ best: { err, params: cand, file }, shots: 1, mode: 'next' }, null, 2), 'utf8')
+  console.log('err=' + err + ' ' + JSON.stringify(metrics) + ' → ' + file)
+  process.exit(err === 0 ? 0 : 1)
+}
 const grid = JSON.parse(arg('params', '{}'))
 let state = {}
 for (const [k, vs] of Object.entries(grid)) state[k] = vs[0]

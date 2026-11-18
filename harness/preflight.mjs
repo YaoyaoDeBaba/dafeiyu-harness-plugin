@@ -18,6 +18,8 @@
 import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync, readdirSync } from 'node:fs'
 import { join, resolve, basename } from 'node:path'
 import { probeFile, summarize } from './ref-probe.mjs'
+function argVal(k, d) { const i = process.argv.indexOf('--' + k); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d }
+
 import { profileFromFile, scalarsFromFile, medianProfile, calibrateMinCorr, toneFractions, speckleRatio, foamComponents } from './composition.mjs'
 import { decodePng } from './ref-probe.mjs'
 
@@ -50,7 +52,7 @@ if (refArg && !checkOnly) {
     try { rows.push(probeFile(f, { top })) } catch { /* 跳过非 8bit/非 PNG */ }
     // 结构指纹（L2）：行剖面是 profile 型；质心/留白/bbox 是标量型
     try {
-      profiles.push(profileFromFile(f, 64))
+      profiles.push(profileFromFile(f, 64, Number(argVal('profile-top', '1'))))
       const sc = scalarsFromFile(f)
       const decoded = decodePng(readFileSync(f))
       Object.assign(sc, toneFractions(decoded))                      // 云内明暗结构
@@ -83,7 +85,7 @@ if (measured) {
 // 结构指纹：行剖面（profile 型）+ 质心/上部覆盖率/留白/bbox（标量型）
 if (measured && measured.profiles && measured.profiles.length) {
   const src = measured.count === 1 ? measured.sample : measured.count + ' 帧'
-  const prof = { what: 'rowProfile', kind: 'profile', value: medianProfile(measured.profiles), source: src }
+  const prof = { what: 'rowProfile', kind: 'profile', value: medianProfile(measured.profiles), source: src, topFrac: Number(argVal('profile-top', '1')) }
   if (measured.count === 1) prof.singleFrame = true
   // 阈值来自分布：留一法给一个 minCorr 建议值，写判据时直接抄（>=3 帧才算得出来）
   const cal = calibrateMinCorr(measured.profiles)

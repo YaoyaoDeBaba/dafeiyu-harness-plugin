@@ -69,21 +69,24 @@ function maskOf(img, thr = 0.10) {
  * 行覆盖率剖面（默认 64 桶）：每行「有多少比例是主体」。
  * 这是最能区分「一团紧凑主体」与「横贯画面的天花板」的量。
  */
-export function rowProfile(img, bins = 64) {
+export function rowProfile(img, bins = 64, topFrac = 1) {
   const { m, width, height } = maskOf(img)
-  const rows = new Float64Array(height)
-  for (let y = 0; y < height; y += 1) {
+  // topFrac<1 时只取画面上部（云区）。原因：整幅剖面可以被"地平线亮带 / 地面雾"垫平，
+  // 那样 0.9 的相关并不代表云摆得像参考。第二轮 A/B 里 B 臂就是这么拿到 0.958 的。
+  const y1All = Math.max(1, Math.round(height * Math.max(0.05, Math.min(1, topFrac))))
+  const rows = new Float64Array(y1All)
+  for (let y = 0; y < y1All; y += 1) {
     let s = 0
     for (let x = 0; x < width; x += 1) s += m[y * width + x]
     rows[y] = s / width
   }
   const out = new Array(bins).fill(0)
   for (let b = 0; b < bins; b += 1) {
-    const y0 = Math.floor((b * height) / bins)
-    const y1 = Math.max(y0 + 1, Math.floor(((b + 1) * height) / bins))
+    const y0 = Math.floor((b * y1All) / bins)
+    const y1 = Math.max(y0 + 1, Math.floor(((b + 1) * y1All) / bins))
     let s = 0
-    for (let y = y0; y < y1 && y < height; y += 1) s += rows[y]
-    out[b] = s / (Math.min(y1, height) - y0)
+    for (let y = y0; y < y1 && y < y1All; y += 1) s += rows[y]
+    out[b] = s / (Math.min(y1, y1All) - y0)
   }
   return out
 }

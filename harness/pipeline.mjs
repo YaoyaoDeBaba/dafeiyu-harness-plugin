@@ -24,7 +24,7 @@ import { hasForm, writeBlankForm, checkForm } from './forms.mjs'
 import { missingPieces as snapshotMissing } from './snapshot.mjs'
 import { crashCheck } from './crash-check.mjs'
 import { capabilityPrecheck } from './intent.mjs'
-import { profileFromFile, profileCorr, medianProfile, scalarsFromFile, toneFractions } from './composition.mjs'
+import { profileFromFile, profileCorr, medianProfile, scalarsFromFile, toneFractions, rowProfile } from './composition.mjs'
 import { probeFile, decodePng } from './ref-probe.mjs'
 
 const STAGE_DIR = 'stages'
@@ -545,11 +545,13 @@ export const checks = {
       const provided = v.profiles && typeof v.profiles === 'object' ? v.profiles : {}
       const shot = (Array.isArray(v.shots) ? v.shots : []).map(String).find((x) => x.trim())
       let imageProfile = null
+      let imageShot = null
       const needImage = profCrit.some((c) => String(c.metric || c.id) === 'rowProfile' && !Array.isArray(provided.rowProfile))
       if (needImage) {
         if (!shot) out.push('有 rowProfile 判据但没有 verify.shots[0]，也没在 verify.profiles 里给剖面：无法量结构')
         else {
           const file = isAbsolute(shot) ? shot : j(dir, shot)
+          imageShot = file
           try { imageProfile = profileFromFile(file, 64) } catch (e) { out.push('结构指纹：读不了 ' + shot + '（' + (e && e.message) + '）') }
         }
       }
@@ -557,7 +559,9 @@ export const checks = {
         const metric = String(c.metric || c.id)
         const ref = (rj.extracted || []).find((e) => e && e.what === metric && Array.isArray(e.value))
         if (!ref) continue
-        const candProf = Array.isArray(provided[metric]) ? provided[metric] : (metric === 'rowProfile' ? imageProfile : null)
+        const topFrac = Number.isFinite(Number(ref.topFrac)) ? Number(ref.topFrac) : 1
+        const candProf = Array.isArray(provided[metric]) ? provided[metric]
+          : (metric === 'rowProfile' && imageShot ? profileFromFile(imageShot, 64, topFrac) : null)
         if (!Array.isArray(candProf)) { out.push('结构指纹 ' + metric + '：既没在 verify.profiles 里给，也不是可自动抽取的 rowProfile'); continue }
         const corr = profileCorr(ref.value, candProf)
         // 与 checks.intent 同口径：没写 minCorr 就用留一法建议值
