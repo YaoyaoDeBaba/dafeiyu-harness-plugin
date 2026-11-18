@@ -134,8 +134,8 @@ test('⑦ 读了票面之外的文件 → 交活被挡（S2）', () => {
   const mk = (readFiles) => writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify(Object.assign({}, base, {
     readFiles,
     tasks: [
-      { id: 'T1', variants: [1, 2, 3], abShots: ['ab.png'], acceptEvidence: [{ id: 'a', measured: 1 }] },
-      { id: 'T2', variants: [1, 2, 3], abShots: ['ab.png'], acceptEvidence: [{ id: 'b', measured: 1 }] },
+      { id: 'T1', variants: [{ name: 'b', isBaseline: true, shot: 'a.png' }, { name: '1', shot: 'a.png' }, { name: '2', shot: 'a.png' }], abShots: ['ab.png'], acceptEvidence: [{ id: 'a', measured: 1 }] },
+      { id: 'T2', variants: [{ name: 'b', isBaseline: true, shot: 'a.png' }, { name: '1', shot: 'a.png' }, { name: '2', shot: 'a.png' }], abShots: ['ab.png'], acceptEvidence: [{ id: 'b', measured: 1 }] },
     ],
   })))
   mk(['src/cloud.js', 'src/secret.sh'])
@@ -164,8 +164,8 @@ test('⑧ 窄票的验收没给实测 → 挡住（S4）', () => {
   writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({
     changes: ['x'], shot: 'a.png', readFiles: [],
     tasks: [
-      { id: 'T1', variants: [1, 2, 3], abShots: ['ab.png'] },
-      { id: 'T2', variants: [1, 2, 3], abShots: ['ab.png'], acceptEvidence: [{ id: 'b', measured: 1 }] },
+      { id: 'T1', variants: [{ name: 'b', isBaseline: true, shot: 'a.png' }, { name: '1', shot: 'a.png' }, { name: '2', shot: 'a.png' }], abShots: ['ab.png'] },
+      { id: 'T2', variants: [{ name: 'b', isBaseline: true, shot: 'a.png' }, { name: '1', shot: 'a.png' }, { name: '2', shot: 'a.png' }], abShots: ['ab.png'], acceptEvidence: [{ id: 'b', measured: 1 }] },
     ],
   }))
   const r = run('done', '--run', dir, '--stage', '2.2-exec-r1')

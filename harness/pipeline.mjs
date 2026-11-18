@@ -34,7 +34,7 @@ const DEFAULT_BUDGET = { research: 'high', maxRounds: 1, useCritic: false, userR
 // 为什么加：A/B 实测里，两条臂都只拍 10~12 帧就交（预算 40），因为「多试几个想法」从来不是通过条件。
 // 模型会优先花预算在「离它最近的可测目标」上——那就把这个目标写进票面并**硬校验**。
 // budget.exec 可覆盖（minVariants: 0 / requireAB: false 可关掉）。
-const DEFAULT_EXEC = { minVariants: 3, requireAB: true, maxDocs: 2, maxImages: 1, enforceReadFiles: true }
+const DEFAULT_EXEC = { minVariants: 3, requireAB: true, maxDocs: 2, maxImages: 1, enforceReadFiles: true, requireBaseline: true }
 // 领域先验区间（R2，2026-11-18）：把「听到名字就知道大概怎么画」外置成表，判据靶必须落在里面
 const PRIORS = (() => {
   try { return JSON.parse(readFileSync(fileURLToPath(new URL('./priors.json', import.meta.url)), 'utf8')) } catch { return {} }
@@ -230,6 +230,11 @@ export const checks = {
     if (!existsSync(refs) || readdirSync(refs).length === 0) out.push('refs/ 是空的（没有多模态参考）')
     return out
   },
+  /**
+   * R1（2026-11-18）：调研必须交「可落地配方」——不是文献搬运。
+   * 实测教训：知道"体积云/raymarch"这些名字不等于会调；云做到暗部 3.9%（参考 25.5%），
+   * 整幅指标全绿。所以 tier≥2 时要求 recipe{steps,params,antiPatterns}，且 source 能 grep 到。
+   */
   researchTier(dir) {
     const b = getBudget(dir)
     const r = readJson(j(dir, 'research.json'))
@@ -247,6 +252,43 @@ export const checks = {
     if (TIER[b.research] >= 2 && ver.length < 1) out.push('要至少 1 条 kind=opensource/paper')
     if (TIER[b.research] >= 1 && used.length < 1) out.push('至少 1 条 used=true（调研要改变做法）')
     if (noWhy.length > 0) out.push('有 ' + noWhy.length + ' 条 used=true 没写 usedFor')
+
+    // 配方校验（tier≥2）
+    if (TIER[b.research] >= 2) {
+      const used = f.filter((x) => x && x.used === true)
+      const withRecipe = used.filter((x) => x && x.recipe && typeof x.recipe === 'object')
+      const okParams = withRecipe.filter((x) => {
+        const p = (x.recipe && x.recipe.params) || {}
+        const keys = Object.keys(p)
+        return (Array.isArray(x.recipe.steps) && x.recipe.steps.length >= 2)
+          && keys.length >= 3
+          && keys.every((k) => {
+            const v = p[k] || {}
+            return Array.isArray(v.range) && v.range.length === 2
+              && Number.isFinite(Number(v.range[0])) && Number.isFinite(Number(v.range[1]))
+              && String(v.unit || '').trim() && String(v.source || '').trim()
+          })
+      })
+      if (withRecipe.length === 0) out.push('没人为实现类 findings 写 recipe（steps / params / antiPatterns）——只写"用了什么"帮不了"调对"')
+      else if (okParams.length === 0) out.push('没有一条 recipe 合格：需要 steps[]≥2 且 params 里 ≥3 个带 range/unit/source 的区间')
+      const withAnti = used.filter((x) => x && x.recipe && Array.isArray(x.recipe.antiPatterns) && x.recipe.antiPatterns.length > 0)
+      if (withAnti.length === 0) out.push('没有一条 recipe 写反例 antiPatterns（症状 → 病因）——这正是"一动手就露馅"的那部分')
+      // discriminators 必须是可测的键（在 priors 或 extracted 里存在）
+      const domain = String((readJson(j(dir, 'intent.json')) || {}).domain || '')
+      const priorKeys = domain && PRIORS[domain] ? Object.keys(PRIORS[domain]) : []
+      const extKeys = (Array.isArray(r.extracted) ? r.extracted : []).map((e) => String(e && e.what))
+      const measurable = new Set([...priorKeys, ...extKeys])
+      const badDisc = []
+      for (const x of used) {
+        const dis = x && x.recipe && Array.isArray(x.recipe.discriminators) ? x.recipe.discriminators : []
+        for (const d of dis) {
+          const key = String(d && (d.key || d.id || d))
+          if (!key) continue
+          if (measurable.size && !measurable.has(key)) badDisc.push(key)
+        }
+      }
+      if (badDisc.length) out.push('recipe 里的判别量不可测（不在 priors 也不在 extracted）：' + [...new Set(badDisc)].join('、'))
+    }
     return out
   },
   absorbed(dir) {
@@ -389,6 +431,9 @@ export const checks = {
         if (rules.minVariants > 0) {
           const v = Array.isArray(got.variants) ? got.variants : []
           if (v.length < rules.minVariants) out.push('窄票 ' + tid + '：变体只有 ' + v.length + ' 个，少于下限 ' + rules.minVariants)
+          if (rules.requireBaseline !== false && v.length && !v.some((x) => x && x.isBaseline === true)) {
+            out.push('窄票 ' + tid + '：变体里没有 isBaseline:true（先照参考默认参数跑一遍当锚点）')
+          }
         }
         if (rules.requireAB) {
           const ab = Array.isArray(got.abShots) ? got.abShots : []
@@ -412,6 +457,10 @@ export const checks = {
       } else {
         const noShot = variants.filter((v) => !v || !(v.shot || v.png))
         if (noShot.length) out.push(noShot.length + ' 个变体没写抓帧（variants[].shot）')
+        // R5：必须有一个「照参考默认参数」的 baseline——否则全是相对自己错误区间的漂移
+        if (rules.requireBaseline !== false && !variants.some((v) => v && v.isBaseline === true)) {
+          out.push('variants 里没有一个 isBaseline:true 的变体（照参考实现的默认参数先跑一遍，再谈偏移）')
+        }
       }
     }
     if (rules.requireAB) {
@@ -491,7 +540,22 @@ export const checks = {
       if (!t || !String(t.goal || '').trim()) out.push(id + '：缺 goal（这张票要改哪一块、算做完是什么）')
       if (!Array.isArray(t && t.files) || t.files.length === 0) out.push(id + '：缺 files[]（只许动这几个文件，冲突面才小）')
       const accept = Array.isArray(t && t.accept) ? t.accept : []
-      if (accept.length === 0) out.push(id + '：缺 accept[]（这张票自己的验收，1~3 条）')
+      if (accept.length === 0) out.push(id + '：缺 accept[]（这张票自己的验收，1~2 条）')
+      else if (accept.length > 2) out.push(id + '：accept 有 ' + accept.length + ' 条——一张票超过 2 个目标，注意力必然摊薄（拆票而不是加目标）')
+      const itIds = (() => {
+        const it = readJson(j(dir, 'intent.json'))
+        const set = new Set()
+        for (const c of (it && Array.isArray(it.criteria) ? it.criteria : [])) {
+          if (!c) continue
+          if (c.id) set.add(String(c.id))
+          if (c.metric) set.add(String(c.metric))
+        }
+        return set
+      })()
+      for (const c of accept) {
+        const cid = String((c && (c.id || c.metric)) || '')
+        if (critIdSetCheck(itIds, cid) === false) out.push(id + '：验收 ' + cid + ' 不在 intent.criteria 里（窄票只能引用判据，不许自己另立目标）')
+      }
       accept.forEach((c) => {
         if (!c || !c.id) out.push(id + '：有验收项没写 id')
         else if (String(c.kind || '') !== 'profile' && !['lower', 'upper', 'two-sided'].includes(String(c.dir || ''))) out.push(id + '：验收 ' + c.id + ' 缺 dir（lower/upper/two-sided）')
@@ -905,6 +969,12 @@ function allowedReadPaths(dir) {
   const it = readJson(j(dir, 'intent.json'))
   if (it && Array.isArray(it.anchors)) for (const a of it.anchors) if (a && a.kind === 'image' && a.ref) out.push(String(a.ref))
   return [...new Set(out.filter((x) => x.trim()))]
+}
+
+/** 窄票的验收只能引用 intent 里已存在的判据（记 id，也记 metric 名）；intent 没判据时不拦 */
+function critIdSetCheck(set, cid) {
+  if (!set || set.size === 0) return true
+  return set.has(cid)
 }
 
 function contractLines(contract, extra) {

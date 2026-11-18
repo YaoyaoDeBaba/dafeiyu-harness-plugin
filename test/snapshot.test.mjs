@@ -43,7 +43,7 @@ function reachedExec(dir) {
     shot: 'shots/r1.png',
     changes: [{ path: 'Assets/Cloud.cs' }],
     params: [{ name: 'cloudCoverage', from: 0.6, to: 0.88, why: '参考片更厚' }],
-    variants: [{ name: 'v1', shot: 'shots/r1.png' }, { name: 'v2', shot: 'shots/r1.png' }, { name: 'v3', shot: 'shots/r1.png' }],
+    variants: [{ name: 'baseline', shot: 'shots/r1.png', isBaseline: true }, { name: 'v2', shot: 'shots/r1.png' }, { name: 'v3', shot: 'shots/r1.png' }],
     abShots: ['shots/r1.png'],
     readFiles: [],
   }))

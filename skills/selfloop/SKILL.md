@@ -50,7 +50,9 @@ node harness/pipeline.mjs step  --run <run>                     # exit 10 = 出�
 node harness/pipeline.mjs done  --stage <id> --run <run>        # 交活：不合格会卡住并说清缺什么
 ```
 
-调研最低线：≥2 条带真实 URL 的 findings、≥1 条 `opensource`/`paper`、每条写 `used` + `usedFor`。
+调研最低线：≥2 条带真实 URL 的 findings、≥1 条 `opensource`/`paper`、每条写 `used` + `usedFor`；
+**tier≥2 还要交可落地配方**（`recipe{steps, params{range/unit/source}, discriminators, antiPatterns}`）。
+先查现成配方：`node harness/recipe.mjs search <关键词>`（库里 $DSH_HOME/.dsh/refcode/<topic>/recipes.md）。
 
 ## 索引（按需查，别从头读）
 

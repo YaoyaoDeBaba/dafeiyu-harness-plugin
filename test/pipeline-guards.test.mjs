@@ -241,7 +241,7 @@ test('⑱ 变体够 + A/B 帧够 → 放行', () => {
   mkdirSync(join(dir, 'rounds'), { recursive: true })
   writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({
     changes: ['改了 A'], shot: 'shots/a.png',
-    variants: [{ name: 'v1', shot: 'shots/v1.png' }, { name: 'v2', shot: 'shots/v2.png' }, { name: 'v3', shot: 'shots/v3.png' }],
+    variants: [{ name: 'baseline', shot: 'shots/v1.png', isBaseline: true }, { name: 'v2', shot: 'shots/v2.png' }, { name: 'v3', shot: 'shots/v3.png' }],
     abShots: ['shots/ab_bite.png'],
     readFiles: [],
   }))
@@ -360,14 +360,14 @@ test('㉘ 有 split.json 时：exec 票指向窄票，且结果必须覆盖每�
   assert.match(stepOut, /2\.2-exec-r1/)
   mkdirSync(join(dir, 'rounds'), { recursive: true })
   // 只交了一张票的结果 → 要挡住并点名缺哪张
-  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['x'], shot: 'a.png', tasks: [{ id: 'T1', variants: [1, 2, 3], abShots: ['ab.png'] }] }))
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['x'], shot: 'a.png', tasks: [{ id: 'T1', variants: [{ name: 'b', isBaseline: true, shot: 'a.png' }, { name: '1', shot: 'a.png' }, { name: '2', shot: 'a.png' }], abShots: ['ab.png'] }] }))
   const r1 = run('done', '--run', dir, '--stage', '2.2-exec-r1')
   assert.equal(r1.status, 1, r1.stdout)
   assert.match(r1.stdout, /窄票 T2 没有结果/)
   // 两张都交齐 → 通过
   writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['x'], shot: 'a.png', readFiles: [], tasks: [
-    { id: 'T1', variants: [1, 2, 3], abShots: ['ab.png'], acceptEvidence: [{ id: 'topCoverage', measured: 0.72, how: 'composition' }] },
-    { id: 'T2', variants: [1, 2, 3], abShots: ['ab.png'], acceptEvidence: [{ id: 'p99', measured: 0.70, how: 'ref-probe' }] }
+    { id: 'T1', variants: [{ name: 'b', isBaseline: true, shot: 'a.png' }, { name: '1', shot: 'a.png' }, { name: '2', shot: 'a.png' }], abShots: ['ab.png'], acceptEvidence: [{ id: 'topCoverage', measured: 0.72, how: 'composition' }] },
+    { id: 'T2', variants: [{ name: 'b', isBaseline: true, shot: 'a.png' }, { name: '1', shot: 'a.png' }, { name: '2', shot: 'a.png' }], abShots: ['ab.png'], acceptEvidence: [{ id: 'p99', measured: 0.70, how: 'ref-probe' }] }
   ] }))
   const r2 = run('done', '--run', dir, '--stage', '2.2-exec-r1')
   assert.equal(r2.status, 0, r2.stdout + r2.stderr)

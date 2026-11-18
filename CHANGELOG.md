@@ -4,6 +4,34 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.35.0（未发布）· 可落地配方 + 抄一遍基线 + 配方库检索（复盘 R1/R4/R5/S5）
+
+> 回灌上游原件：否。承接 0.34.0 的「先验 + 卡片」，把复盘里剩下的四条也落完。
+
+### R1 调研必须交「可落地配方」（tier≥2 强制）
+findings 里 `used:true` 的条目要带 `recipe`：
+`steps[]`（≥2）＋ `params{}`（≥3 个键，每个带 `range:[lo,hi]` / `unit` / `source`）＋ `antiPatterns[{symptom,cause}]`；
+`discriminators` 里的键必须**可测**（在 priors 或 extracted 里存在）。
+这一条治的是复盘里那句「理论都懂，一动手就露馅」——只写"用了什么算法"没用，要写"参数落在什么量级、什么症状对应什么病因"。
+
+### R4 配方库 + 检索（`harness/recipe.mjs`）
+`list` / `search <词>` / `show <topic>`，库根 `$DSH_HOME/.dsh/refcode/<topic>/recipes.md`。
+已写入第一份真配方 `volumetric-cloud/recipes.md`：骨架 5 步 + 4 个参数区间 + 4 条判别量 + 5 条反例（含"云像均匀发亮的雾 = sigma 太小 + ambient 太高"）。
+
+### R5 「抄一遍」基线变体
+`checks.executed`（含窄票）要求 variants 里有一个 `isBaseline:true`——照参考实现的默认参数先跑一遍当锚点，
+后面的变体才是"相对参考的偏移"，而不是在自己错误区间里漂。`budget.exec.requireBaseline:false` 可关。
+
+### S5 拆票再收紧
+`checks.split`：每张窄票 `accept` **≤2 条**；且每条必须是 `intent.criteria` 里已有的判据（id 或 metric），
+不许在票面上另立目标。
+
+### 判据
+`node --test` = **442 / 442**（新增 `test/recipe.test.mjs` 7 例：无配方被挡 / 合格配方放行 / 判别量不可测被挡 /
+低预算不强制 / 缺 baseline 被挡 / 有 baseline 放行 / 配方库 CLI 三命令）。
+
+---
+
 ## 0.34.0（未发布）· 先验区间 + 执行员卡片 + 只许读票面文件（复盘 R2/S1/S2/S4）
 
 > 回灌上游原件：否。
