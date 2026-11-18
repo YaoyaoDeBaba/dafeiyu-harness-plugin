@@ -435,3 +435,19 @@ test('㊲ 最近一次失败 → 状态卡带真实原因（不是只写"失败"
   assert.match(html, /2\.3-verify-r1/)
   assert.match(html, /rowProfile/)
 })
+
+// ── 下单失败要说人话（2026-11-18：原来把错误码直接甩出来）──
+test('㊳ 下单失败的错误码都翻成人话，且带下一步怎么做', () => {
+  const busy = ui.startErrorText('session-busy')
+  assert.match(busy, /已经有一单在跑/)
+  assert.match(busy, /等它结束|停掉/)
+  const short = ui.startErrorText('requirement-too-short')
+  assert.match(short, /需求太短/)
+  assert.match(short, /什么算做完/)
+  const ext = ui.startErrorText('ref-ext-rejected: .psd')
+  assert.match(ext, /不支持/)
+  assert.match(ext, /\.psd/)
+  const unknown = ui.startErrorText('weird-code')
+  assert.match(unknown, /weird-code/)      // 未知码也要原样带出来，别吞
+  assert.match(unknown, /发给肥鱼/)
+})

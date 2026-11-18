@@ -1068,6 +1068,19 @@ function ensureMode() {
   return modeEl
 }
 
+/** 下单失败时的错误码 → 人话（2026-11-18：原来直接把 'session-busy' 这种码甩给人看） */
+function startErrorText(code) {
+  const raw = String(code || '').trim()
+  if (!raw) return '下单失败：宿主没有说明原因（看看日志里有没有 error 行）'
+  if (raw === 'session-busy') return '这个会话已经有一单在跑（下拉里能看到「进行中」那一单）——等它结束，或者先把那单停掉'
+  if (raw === 'requirement-too-short') return '需求太短：再写几句「要什么 + 什么算做完」（至少 8 个字）'
+  if (raw === 'bad-name') return '名字不合法：不能带路径分隔符，也别用 . 或 .. 这类名字'
+  if (raw.startsWith('ref-ext-rejected')) return '参考文件类型不支持：' + raw.split(':')[1].trim() + '（图片用 png/jpg/webp，视频先抽帧）'
+  if (raw === 'BODY_TOO_LARGE') return '参考文件太大，超出单次上传上限：换小一点的图，或先压一下'
+  if (raw === 'bad-json') return '提交内容不是合法 JSON（多半是前端拼错了），重开一次下单框再试'
+  return '下单失败：' + raw + '（把这条发给肥鱼，能直接定位）'
+}
+
 /** 下单框 html（纯函数，测试直接拿它断言模型下拉存在） */
 function modeHtml(state) {
   const models = (state && state.models) || {}
@@ -1208,7 +1221,7 @@ async function submitMode() {
     await refresh()
     flash('已下单：' + (r.data.run || '') + (refs.length ? '（' + refs.length + ' 个参考）' : '') + (gifSkipped ? ' · GIF 未能拆帧，可能量不了' : ''))
   } else {
-    flash('下单失败：' + ((r.data && r.data.error) || r.status))
+    flash(startErrorText((r.data && r.data.error) || r.status))
   }
 }
 
@@ -1307,6 +1320,7 @@ exports.__ui = {
   buildStartBody: buildStartBody,
   parseModel: parseModel,
   modelEfforts: modelEfforts,
+  startErrorText: startErrorText,
   setModeForm: function (patch) { Object.assign(modeForm, patch || {}) },
   modeForm: function () { return Object.assign({}, modeForm) },
   groupRounds: groupRounds,
