@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { withParam } from '../harness/liveness-core.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const PIPE = join(ROOT, 'harness', 'pipeline.mjs')
@@ -119,4 +120,25 @@ test('⑥ budget.probe=false → 不要求活性扫描（老 run 退路）', () 
   const dir = makeRun({ budget: { probe: false } })
   const r = run('done', '--run', dir, '--stage', '2.1-plan-r1')
   assert.equal(r.status, 0, r.stdout + r.stderr)
+})
+
+test('⑦ withParam：同名键替换而不是追加（追加会让 URLSearchParams 取首个 = 参数白改）', () => {
+  assert.equal(withParam('a=1&b=2', 'a', '9'), 'a=9&b=2')
+  assert.equal(withParam('a=1', 'c', '3'), 'a=1&c=3')
+  assert.equal(withParam('', 'a', '1'), 'a=1')
+})
+
+test('⑧ capture 支持 argv 数组（字符串走 shell 时查询串里的 & 会被吞掉）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sl-argv-'))
+  const cap = fakeCapture(dir)
+  const probe = join(dir, 'probe.json')
+  writeFileSync(probe, JSON.stringify({
+    capture: [process.execPath, cap, '--out', '{out}', '--query', '{params}'],
+    baseline: 'live=0',
+    params: { liveParam: ['live=0', 'live=1'] },
+  }))
+  const r = live('--run', dir, '--probe', probe)
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+  const out = JSON.parse(readFileSync(join(dir, 'params-liveness.json'), 'utf8'))
+  assert.equal(out.params[0].status, 'live')
 })

@@ -19,6 +19,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { probeFile } from './ref-probe.mjs'
+import { withParam, classifyStatus } from './liveness-core.mjs'
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d }
 const runDir = arg('run', '')
@@ -27,13 +28,23 @@ if (!runDir || !probePath) { console.error('用法: node harness/liveness.mjs --
 
 const probe = JSON.parse(readFileSync(probePath, 'utf8'))
 if (!probe.capture || !probe.baseline || !probe.params) { console.error('probe.json 需要 capture / baseline / params'); process.exit(2) }
+if (typeof probe.capture === 'string') {
+  // 字符串形式会走 shell，而 shell 会把查询串里的 & 当命令分隔符 → 只有第一个参数生效（所有轴都"没反应"）。
+  console.warn('[liveness][warn] capture 是字符串：查询串里的 & 可能被 shell 吞掉。建议改成 argv 数组，见 probe.example.json')
+}
 const shotsDir = resolve(runDir, arg('shots', 'shots/liveness'))
 mkdirSync(shotsDir, { recursive: true })
 
 function capture(params, name) {
   const out = join(shotsDir, name + '.png')
-  const cmd = String(probe.capture).replace(/\{out\}/g, out).replace(/\{params\}/g, params)
-  const r = spawnSync(cmd, { shell: true, encoding: 'utf8' })
+  const fill = (x) => String(x).replace(/\{out\}/g, out).replace(/\{params\}/g, params)
+  let r
+  if (Array.isArray(probe.capture)) {
+    const argv = probe.capture.map(fill)
+    r = spawnSync(argv[0], argv.slice(1), { encoding: 'utf8' })
+  } else {
+    r = spawnSync(fill(probe.capture), { shell: true, encoding: 'utf8' })
+  }
   if (!existsSync(out)) return { ok: false, out, err: (r.stderr || r.stdout || '').slice(0, 200) }
   const buf = readFileSync(out)
   const sha = createHash('sha256').update(buf).digest('hex').slice(0, 16)
@@ -47,14 +58,12 @@ if (!base.ok) { console.error('baseline 抓帧失败：' + base.err); process.ex
 
 const results = []
 for (const [name, [lo, hi]] of Object.entries(probe.params)) {
-  const left = capture(probe.baseline + '&' + name + '=' + lo, name + '_lo')
-  const right = capture(probe.baseline + '&' + name + '=' + hi, name + '_hi')
+  const left = capture(withParam(probe.baseline, name, lo), name + '_lo')
+  const right = capture(withParam(probe.baseline, name, hi), name + '_hi')
   const shaChanged = [left.sha !== base.sha, right.sha !== base.sha]
   const lumaDiff = [left.luma, right.luma].map((v) => (v == null || base.luma == null ? null : Math.abs(v - base.luma)))
   const maxLuma = Math.max(...lumaDiff.map((v) => (v == null ? 0 : v)))
-  let status = 'live'
-  if (!shaChanged[0] && !shaChanged[1]) status = 'dead'
-  else if (maxLuma !== 0 && maxLuma < 0.004) status = 'weak'
+  const status = classifyStatus(shaChanged, maxLuma)
   results.push({ name, range: [lo, hi], status, evidence: { sha: [left.sha, right.sha], baseSha: base.sha, shaChanged, lumaDiff, maxLuma } })
   console.log(name.padEnd(14) + ' ' + status.padEnd(5) + '  sha变化=' + shaChanged.join('/') + '  maxLumaDiff=' + maxLuma.toFixed(4))
 }
