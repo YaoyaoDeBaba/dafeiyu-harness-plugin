@@ -638,6 +638,32 @@ export const checks = {
         }
       }
     }
+    // ── 判据必须可量（2026-11-18 用户点破的洞）：
+    // intent 里写 `metric: "horizonSagPx"` 这种没有内置量法的东西时，以前 verify 会**静默跳过**，
+    // 于是"一条都量不了"也照样过闸 —— 这就是"走 selfloop，却连做完的标准都达不到"。
+    // 现在：既不是 profile、也不在量测表、又没在 verify.profiles 里给提取器 → 直接挡。
+    {
+      const intentC = readJson(j(dir, 'intent.json')) || {}
+      const providedP = v.profiles && typeof v.profiles === 'object' ? v.profiles : {}
+      for (const c of (Array.isArray(intentC.criteria) ? intentC.criteria : [])) {
+        if (!c || !c.id) continue
+        const metric = String(c.metric || '')
+        const isProfile = String(c.kind || '') === 'profile'
+        if (c.manual === true) continue                    // 人工判据：走 verify.manualSignoff
+        if (isProfile) continue                            // profile 有独立分支
+        if (metric && MEASURE_V[metric]) continue           // 内置量法
+        if (metric && Array.isArray(providedP[metric])) continue  // 自带提取器
+        out.push('判据 ' + String(c.id) + ' 没法量：metric=' + (metric || '(空)') +
+          ' 既没有内置量法、也没在 verify.profiles 里给提取器 → 这条判据无法验收，不许通过')
+      }
+      if (Array.isArray(intentC.criteria)) {
+        const manualIds = intentC.criteria.filter((c) => c && c.manual === true).map((c) => String(c.id))
+        const signed = Array.isArray(v.manualSignoff) ? v.manualSignoff.map(String) : []
+        const missingManual = manualIds.filter((id) => !signed.includes(id))
+        if (missingManual.length) out.push('人工判据还没签字：' + missingManual.join('、') + '（verify.manualSignoff 里写上谁判的）')
+      }
+    }
+
     return out
   },
   // 拆分票（P3，2026-11-18）：把一个大工单派成 N 张窄票，每张自带上下文与验收。

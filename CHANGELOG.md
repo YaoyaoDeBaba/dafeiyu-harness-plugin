@@ -4,6 +4,25 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.46.0（未发布）· 判据必须可量：量不了的判据不许过闸
+
+> 回灌上游原件：否。用户点破：「走 selfloop 的需求，居然连"做完"的标准都达不到」。
+> 查下来是**闸的洞**：intent 里写 `metric: "horizonSagPx"` 这种没有内置量法的指标时，
+> `2.3-verify` 会**静默跳过** —— 于是"一条都量不了"照样过，完成标准形同虚设。
+
+### 修法
+`checks.verified` 逐条核 intent.criteria：
+- 有 `kind:profile` → 走 profile 分支；
+- 有内置量法（composition / ref-probe 那套）→ 正常；
+- 在 `verify.profiles[metric]` 里给了提取器 → 正常（任意领域自带量法）；
+- **都没有 → 直接挡**：「判据 C2 没法量：metric=horizonSagPx 既没有内置量法、也没在 verify.profiles 里给提取器」；
+- 观感类判据必须显式写 `manual: true`，并在 `verify.manualSignoff` 里写**谁判的**，否则挡。
+
+### 判据
+`node --test` = **482 / 482**（新增 ⑰ 无量法判据被挡、⑱ 人工判据必须签字）。
+
+---
+
 ## 0.45.2（未发布）· 跨对话串单的根因：sessionKey 返回空串
 
 > 回灌上游原件：否。用户第二次反馈"跨对话的问题也还在"。查清根因在客户端：

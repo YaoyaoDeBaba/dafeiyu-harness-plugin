@@ -320,3 +320,58 @@ test('⑯ 写 maskAccepted 承认风险 → 放行', () => {
   const r = run('done', '--run', dir, '--stage', '1.10-translate3')
   assert.equal(r.status, 0, r.stdout + r.stderr)
 })
+
+// ── 判据必须可量（用户点破：走 selfloop 却连"做完"的标准都达不到）──
+test('⑰ 判据没有量法 → 2.3 必须挡（以前静默跳过）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sl-unmeasurable-'))
+  for (const d of ['stages', 'rounds', 'forms']) mkdirSync(join(dir, d), { recursive: true })
+  const snap = join(dir, 'rounds', 'r1', 'snapshot')
+  mkdirSync(join(snap, 'code'), { recursive: true })
+  writeFileSync(join(snap, 'scene-params.json'), '{}'); writeFileSync(join(snap, 'params.md'), '# s\n'); writeFileSync(join(snap, 'code', 'a.js'), '//\n')
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['x'], shot: 'a.png' }))
+  writeFileSync(join(dir, 'requirement.md'), '# r\n')
+  writeFileSync(join(dir, 'budget.json'), JSON.stringify({ research: 'low', maxRounds: 1, useCritic: false, resupply: false, probe: false }))
+  writeFileSync(join(dir, 'research.json'), JSON.stringify({ findings: [], extracted: [] }))
+  // 判据用了根本没有量法的指标名
+  writeFileSync(join(dir, 'intent.json'), JSON.stringify({ restate: 'r', confirmed: true, anchors: [{ kind: 'image', ref: 'x', why: 'x' }],
+    criteria: [{ id: 'C1', metric: 'horizonSagPx', target: 1, dir: 'upper' }] }))
+  writeFileSync(join(dir, 'forms', '2.3-verify-r1.json'), JSON.stringify({ stage: '2.3-verify-r1', fields: [
+    { id: 'runsEvidence', type: 'text', value: 'ok' }, { id: 'visibleEvidence', type: 'text', value: 'ok' },
+    { id: 'caveat', type: 'list', value: ['无'] }, { id: 'notVerified', type: 'list', value: ['无'] }] }))
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1', '2.2-exec-r1']) {
+    writeFileSync(join(dir, 'stages', id + '.json'), JSON.stringify({ stage: id, status: 'done' }))
+  }
+  const shot = synthPng(join(dir, 'shot.png'))
+  writeFileSync(join(dir, 'verify.json'), JSON.stringify({ runs: true, visible: true, shots: [shot] }))
+  const r = run('done', '--run', dir, '--stage', '2.3-verify-r1')
+  assert.equal(r.status, 1, '量不了的判据必须挡住：' + r.stdout)
+  assert.match(r.stdout, /没法量/)
+})
+
+test('⑱ 人工判据要签字（manual + verify.manualSignoff）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sl-manual-'))
+  for (const d of ['stages', 'rounds', 'forms']) mkdirSync(join(dir, d), { recursive: true })
+  const snap = join(dir, 'rounds', 'r1', 'snapshot')
+  mkdirSync(join(snap, 'code'), { recursive: true })
+  writeFileSync(join(snap, 'scene-params.json'), '{}'); writeFileSync(join(snap, 'params.md'), '# s\n'); writeFileSync(join(snap, 'code', 'a.js'), '//\n')
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ changes: ['x'], shot: 'a.png' }))
+  writeFileSync(join(dir, 'requirement.md'), '# r\n')
+  writeFileSync(join(dir, 'budget.json'), JSON.stringify({ research: 'low', maxRounds: 1, useCritic: false, resupply: false, probe: false }))
+  writeFileSync(join(dir, 'research.json'), JSON.stringify({ findings: [], extracted: [] }))
+  writeFileSync(join(dir, 'intent.json'), JSON.stringify({ restate: 'r', confirmed: true, anchors: [{ kind: 'image', ref: 'x', why: 'x' }],
+    criteria: [{ id: 'C1', manual: true, what: '观感是否像 3A' }] }))
+  writeFileSync(join(dir, 'forms', '2.3-verify-r1.json'), JSON.stringify({ stage: '2.3-verify-r1', fields: [
+    { id: 'runsEvidence', type: 'text', value: 'ok' }, { id: 'visibleEvidence', type: 'text', value: 'ok' },
+    { id: 'caveat', type: 'list', value: ['无'] }, { id: 'notVerified', type: 'list', value: ['无'] }] }))
+  for (const id of ['1.1-preflight', '1.2-translate1', '1.6-gate', '1.7-absorb', '1.8-translate2', '1.9-confirm', '1.10-translate3', '2.1-plan-r1', '2.2-exec-r1']) {
+    writeFileSync(join(dir, 'stages', id + '.json'), JSON.stringify({ stage: id, status: 'done' }))
+  }
+  const shot = synthPng(join(dir, 'shot.png'))
+  writeFileSync(join(dir, 'verify.json'), JSON.stringify({ runs: true, visible: true, shots: [shot] }))
+  const r1 = run('done', '--run', dir, '--stage', '2.3-verify-r1')
+  assert.equal(r1.status, 1)
+  assert.match(r1.stdout, /人工判据还没签字/)
+  writeFileSync(join(dir, 'verify.json'), JSON.stringify({ runs: true, visible: true, shots: [shot], manualSignoff: ['C1'] }))
+  const r2 = run('done', '--run', dir, '--stage', '2.3-verify-r1')
+  assert.equal(r2.status, 0, r2.stdout + r2.stderr)
+})
