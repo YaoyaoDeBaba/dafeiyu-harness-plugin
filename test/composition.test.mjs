@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { readFileSync as readB } from 'node:fs'
-import { profileFromFile, profileCorr, medianProfile, calibrateMinCorr } from '../harness/composition.mjs'
+import { profileFromFile, profileCorr, medianProfile, calibrateMinCorr, scalarsFromFile } from '../harness/composition.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const PIPE = join(ROOT, 'harness', 'pipeline.mjs')
@@ -219,3 +219,39 @@ test('⑩ profile 判据不写 minCorr → 自动用留一法建议值（能过�
   const r = run('done', '--run', dir, '--stage', '2.3-verify-r1')
   assert.equal(r.status, 0, r.stdout + r.stderr)
 })
+
+
+// ───────── 掩膜必须锚在背景上（否则对"总量"免疫，本轮实验翻车的地方）─────────
+function frameWithBand(w, h, bandFrac, bright = 200) {
+  const rgb = Buffer.alloc(w * h * 3)
+  const y0 = Math.floor(h * 0.05), y1 = Math.floor(h * (0.05 + bandFrac * 0.9))
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const inBand = y >= y0 && y < y1
+      const v = inBand ? bright : 30
+      const i = (y * w + x) * 3
+      rgb[i] = v; rgb[i + 1] = v; rgb[i + 2] = v + 8
+    }
+  }
+  return encodePng(w, h, rgb)
+}
+
+test('⑪ 掩膜锚在背景上：主体占比 20% vs 60% 必须量出明显差别', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sl-mask-'))
+  const small = join(dir, 'small.png'), big = join(dir, 'big.png')
+  writeFileSync(small, frameWithBand(64, 64, 0.2))
+  writeFileSync(big, frameWithBand(64, 64, 0.6))
+  const s1 = scalarsFromFile(small), s2 = scalarsFromFile(big)
+  assert.ok(s2.subjectFrac - s1.subjectFrac > 0.3, '主体占比要明显不同：' + s1.subjectFrac.toFixed(3) + ' vs ' + s2.subjectFrac.toFixed(3))
+  assert.ok(s2.topCoverage - s1.topCoverage > 0.2, '上部覆盖率也要跟着变（旧的分位掩膜在这里是恒等的）')
+})
+
+test('⑫ 与 ref-probe 的 topCoverage 同口径（同一张图，两者差 < 0.03）', async () => {
+  const { probeFile } = await import('../harness/ref-probe.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'sl-mask2-'))
+  const f = join(dir, 'x.png')
+  writeFileSync(f, syntheticFrame())
+  const a = probeFile(f).topCoverage
+  const b = scalarsFromFile(f).topCoverage
+  assert.ok(Math.abs(a - b) < 0.03, 'ref-probe=' + a.toFixed(3) + ' composition=' + b.toFixed(3))
+});

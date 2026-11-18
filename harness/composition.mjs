@@ -17,11 +17,13 @@ const LUM = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b
 function lumaOf(img) {
   const { width, height, channels, data } = img
   const out = new Float64Array(width * height)
+  const rgb = new Float64Array(width * height * 3)
   for (let i = 0, p = 0; i < out.length; i += 1, p += channels) {
     const r = data[p], g = channels >= 3 ? data[p + 1] : r, b = channels >= 3 ? data[p + 2] : r
     out[i] = LUM(r, g, b) / 255
+    rgb[i * 3] = r / 255; rgb[i * 3 + 1] = g / 255; rgb[i * 3 + 2] = b / 255
   }
-  return { lum: out, width, height }
+  return { lum: out, rgb, width, height }
 }
 
 function quantile(arr, q) {
@@ -32,12 +34,34 @@ function quantile(arr, q) {
   return a[lo] + (a[hi] - a[lo]) * (pos - lo)
 }
 
-/** 主体掩膜：亮度高于自身 55% 分位（相对阈值，不受整体曝光影响） */
-function maskOf(img) {
-  const { lum, width, height } = lumaOf(img)
-  const thr = quantile(lum, 0.55)
+/**
+ * 主体掩膜：**相对背景**（四角 8×8 中位色）的通道差 > thr，与 ref-probe 的 topCoverage 同口径。
+ *
+ * 为什么不用「自身分位」：分位掩膜恒选出固定比例像素，对"总量"完全免疫——
+ * 实测翻车过：云团半径 1800→1400、coverage 0.34→0.30，topCoverage 只从 0.726 动到 0.717。
+ * 结构指纹要抓的是「排列 + 多少」，所以掩膜必须锚在背景上，而不是锚在自己的直方图上。
+ */
+function maskOf(img, thr = 0.10) {
+  const { lum, width, height, rgb } = lumaOf(img)
+  const corners = []
+  const push = (cx, cy) => {
+    for (let y = cy; y < Math.min(cy + 8, height); y += 1) {
+      for (let x = cx; x < Math.min(cx + 8, width); x += 1) corners.push(rgb[(y * width + x) * 3], rgb[(y * width + x) * 3 + 1], rgb[(y * width + x) * 3 + 2])
+    }
+  }
+  push(0, 0); push(Math.max(0, width - 8), 0); push(0, Math.max(0, height - 8)); push(Math.max(0, width - 8), Math.max(0, height - 8))
+  const med = (ch) => {
+    const arr = []
+    for (let i = ch; i < corners.length; i += 3) arr.push(corners[i])
+    arr.sort((a, b) => a - b)
+    return arr.length ? arr[Math.floor(arr.length / 2)] : 0
+  }
+  const br = med(0), bg = med(1), bb = med(2)
   const m = new Uint8Array(width * height)
-  for (let i = 0; i < m.length; i += 1) m[i] = lum[i] > thr ? 1 : 0
+  for (let i = 0; i < m.length; i += 1) {
+    const r = rgb[i * 3], g = rgb[i * 3 + 1], b = rgb[i * 3 + 2]
+    m[i] = Math.abs(r - br) + Math.abs(g - bg) + Math.abs(b - bb) > thr ? 1 : 0
+  }
   return { m, width, height }
 }
 
