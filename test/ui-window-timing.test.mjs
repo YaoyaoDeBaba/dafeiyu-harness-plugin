@@ -29,32 +29,50 @@ async function boot(dir) {
 }
 const win = async (port) => (await fetch('http://127.0.0.1:' + port + ROUTES.window)).json()
 
-test('第一轮 2.2 还没产出 → 窗口不开', async () => {
+test('第一轮 2.2 还没产出 → 窗口不开（交付前任何站都不开）', async () => {
   const s = await boot(fixture())
   try {
     const w = await win(s.port)
     assert.equal(w.open, false)
-    assert.equal(w.reason, 'waiting-first-result')
+    assert.equal(w.reason, 'waiting-first-delivery')
   } finally { await s.close() }
 })
 
-test('第一轮执行产出落地 → 窗口开', async () => {
+test('第一轮执行产出落地 → 还在执行站不开窗；推进到 2.3 才开', async () => {
   const dir = fixture()
   mkdirSync(join(dir, 'rounds', 'r1'), { recursive: true })
   writeFileSync(join(dir, 'rounds', 'r1', 'plan.json'), JSON.stringify({ orders: [] }))
-  const s = await boot(dir)
+  let s = await boot(dir)
   try {
     const w = await win(s.port)
-    assert.equal(w.open, true)
-    assert.equal(w.reason, 'worker')
+    assert.equal(w.open, false, '执行站不弹吐槽')
+    assert.equal(w.reason, 'not-vent-stage')
+  } finally { await s.close() }
+  // 推进：2.1/2.2 done → 当前站 2.3-verify
+  writeFileSync(join(dir, 'stages', '2.1-plan-r1.json'), JSON.stringify({ stage: '2.1-plan-r1', status: 'done' }))
+  writeFileSync(join(dir, 'stages', '2.2-exec-r1.json'), JSON.stringify({ stage: '2.2-exec-r1', status: 'done' }))
+  writeFileSync(join(dir, 'active.json'), JSON.stringify({ stage: '2.3-verify-r1', openedAt: new Date().toISOString() }))
+  s = await boot(dir)
+  try {
+    const w = await win(s.port)
+    assert.equal(w.open, true, '到验收站才弹')
   } finally { await s.close() }
 })
 
-test('老订单有 rounds/01.json 也算已出结果', async () => {
+test('老订单有 rounds/01.json：交付算数，但仍要复盘站才开窗', async () => {
   const dir = fixture()
   mkdirSync(join(dir, 'rounds'), { recursive: true })
   writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ stage: '2.2-exec-r1' }))
-  const s = await boot(dir)
+  let s = await boot(dir)
+  try {
+    const w = await win(s.port)
+    assert.equal(w.open, false, '交付算数 ≠ 立刻开窗')
+    assert.equal(w.reason, 'not-vent-stage')
+  } finally { await s.close() }
+  writeFileSync(join(dir, 'stages', '2.1-plan-r1.json'), JSON.stringify({ stage: '2.1-plan-r1', status: 'done' }))
+  writeFileSync(join(dir, 'stages', '2.2-exec-r1.json'), JSON.stringify({ stage: '2.2-exec-r1', status: 'done' }))
+  writeFileSync(join(dir, 'active.json'), JSON.stringify({ stage: '2.3-verify-r1', openedAt: new Date().toISOString() }))
+  s = await boot(dir)
   try {
     const w = await win(s.port)
     assert.equal(w.open, true)

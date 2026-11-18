@@ -114,3 +114,73 @@ test('④ 需求太短 → 400 且说明是哪条（不能让用户猜）', asyn
     assert.equal(body.error, 'requirement-too-short', '要给出具体原因码：' + JSON.stringify(body))
   } finally { await s.close() }
 })
+
+/* ───────── 用户反复提的三条（2026-11-18 夜） ───────── */
+
+test('① 首轮执行交付之前，任何阶段都不开吐槽窗口', async () => {
+  // 只有 1.x 的 done、没有任何 rounds 产物 → 即使当前是 manager/human 也不开窗
+  const dir = makeRun('r-vent-early', {
+    stages: { '1.1-preflight': { status: 'done' } },
+    active: { stage: '1.2-translate1', openedAt: new Date().toISOString() },
+  })
+  const s = await boot(dir)
+  try {
+    const st = await stateOf(s.port)
+    assert.equal(st.status.windowOpen, false, '交付前不该开窗：' + JSON.stringify(st.status))
+    assert.equal(st.orderState !== 'vent', true, '订单状态也不该是来吐槽：' + st.orderState)
+  } finally { await s.close() }
+})
+
+test('①b 首轮交付之后、且在看东西的站（2.3/2.4/2.5）才开窗', async () => {
+  const dir = makeRun('r-vent-after', {
+    stages: {
+      '1.1-preflight': { status: 'done' }, '1.2-translate1': { status: 'done' }, '1.3-research-env': { status: 'done' },
+      '1.6-gate': { status: 'done' }, '1.7-absorb': { status: 'done' }, '1.8-translate2': { status: 'done' },
+      '1.9-confirm': { status: 'done' }, '1.10-translate3': { status: 'done' },
+      '2.1-plan-r1': { status: 'done' }, '2.2-exec-r1': { status: 'done' },
+    },
+    active: { stage: '2.3-verify-r1', openedAt: new Date().toISOString() },
+    budget: { useCritic: true },
+  })
+  mkdirSync(join(dir, 'rounds', 'r1'), { recursive: true })
+  writeFileSync(join(dir, 'rounds', 'r1', 'verify.json'), JSON.stringify({ runs: true, visible: true }))
+  const s = await boot(dir)
+  try {
+    const st = await stateOf(s.port)
+    assert.equal(st.status.windowOpen, true, '交付后应当开窗：' + JSON.stringify(st.status))
+  } finally { await s.close() }
+})
+
+test('② 会话隔离：A 对话的单不会出现在 B 对话，B 未下单就是没有单', async () => {
+  const dirA = makeRun('r-sess-a', { stages: { '1.1-preflight': { status: 'done' } } })
+  const { writePointer } = await import('../lib/active-run.js')
+  writePointer(dirA, { cmd: 'test' }, 'sess-A')
+  const s = await boot(undefined)
+  try {
+    const a = await fetch('http://127.0.0.1:' + s.port + ROUTES.state + '?session=sess-A').then((r) => r.json())
+    assert.equal(a.ok, true, 'A 对话应看到自己的单：' + JSON.stringify(a).slice(0, 120))
+    const b = await fetch('http://127.0.0.1:' + s.port + ROUTES.state + '?session=sess-B')
+    assert.equal(b.status, 404, 'B 对话没下单就该 404（不许回落到最近 run），实际 ' + b.status)
+  } finally { await s.close() }
+})
+
+test('③ 程序驱动的流转信号：/state 带 upstream / canAdvance / wakeEvents', async () => {
+  const dir = makeRun('r-flow', {
+    stages: { '1.1-preflight': { status: 'done' } },
+    active: { stage: '1.2-translate1', openedAt: new Date().toISOString() },
+  })
+  // 模拟 driver 写下的信号
+  writeFileSync(join(dir, 'signals.json'), JSON.stringify({
+    stage: '1.2-translate1', upstream: true, upstreamMissing: [], artifact: false,
+    artifactProblems: ['缺 intent.draft1.json'], canAdvance: false, at: new Date().toISOString(),
+  }))
+  writeFileSync(join(dir, 'wake.jsonl'), JSON.stringify({ stage: '1.2-translate1', wake: '等当前节点交付' }) + '\n')
+  const s = await boot(dir)
+  try {
+    const st = await stateOf(s.port)
+    assert.ok(st.status.flow, 'state.status.flow 必须存在（UI 画信号灯）')
+    assert.equal(st.status.flow.upstream, true, '上游交付信号')
+    assert.equal(st.status.flow.canAdvance, false, '当前还不可流转')
+    assert.equal(st.status.flow.wakeEvents, 1, '唤醒事件计数')
+  } finally { await s.close() }
+})

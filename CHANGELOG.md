@@ -4,6 +4,37 @@
 > 这个文件是 0.3.4 起才有的；0.3.0~0.3.3 的条目是事后补的，按 git 提交信息还原。
 
 
+## 0.45.0（未发布）· 用户反复提的三条（吐槽时机 / 会话隔离 / 程序驱动流转）
+
+> 回灌上游原件：否。这三条被拖了很久，今天按原话落地。
+
+### ① 吐槽窗口只在「首轮执行交付之后 + 看东西的站」出现
+以前只在 `2.2-exec-r1` 那一站判，1.x / 2.1 的 manager/human 站照样开窗 —— 这就是"过早出现"。
+现在两道门：
+- `hasFirstDelivery(dir)`：`rounds/01.json` 或 `rounds/r1/*.json` 或 exec 的 done 信号，缺一个就是没交付；
+- 交付之后也只允许 `2.3 / 2.4 / 2.5`（验收/评审/决策）与人工站开窗，执行中间不弹。
+未满足 → `windowOpen:false`，reason 分别是 `waiting-first-delivery` / `not-vent-stage`。
+
+### ② 每个顶层对话一个「肥鱼接单」实例，互不影响
+- `readPointer(sessionKey)`：带会话时**只读该会话的指针**，不再回落到全局指针；
+- `resolveRunDir`：带会话却没指针 = 这个对话还没下单 → 返回空（面板显示"还没下单"），
+  不再回落到"最近被动过的 run"（以前 A 对话能看到 B 对话、甚至我自己的实验单）；
+- `writePointer`：带会话时不覆盖全局指针。
+
+### ③ 程序驱动流转 + 透明信号灯
+新增 `harness/driver.mjs`：
+- 与 pipeline 同源拿节点表与 `checks`（不另立一套判据）；
+- 每个 run 算三件事：**上游是否齐全 / 当前产物是否齐全 / 能否流转**；
+- `--auto` 时直接替 agent 调 `pipeline done`（程序驱动，不靠自觉）；否则写 `wake.jsonl`（"该谁动了"）；
+- 每轮写 `<run>/signals.json`；`/state` 把它以 `status.flow` 暴露：
+  `{stage, upstream, upstreamMissing, artifact, canAdvance, autoAdvanced, wakeEvents}`；
+- 面板加信号灯：`● 上游交付 ● 可流转 ● 已唤醒 N 次`。
+
+### 判据
+`node --test` = **476 / 476**（新增：交付前不开窗 / 交付后仅在复盘站开窗 / 会话隔离 404 / flow 三项 / 信号灯渲染）。
+
+---
+
 ## 0.44.1（未发布）· 下单失败要说人话
 
 > 回灌上游原件：否。自检发现：`/start` 回了 `session-busy` / `requirement-too-short` /

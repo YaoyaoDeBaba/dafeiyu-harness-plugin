@@ -16,7 +16,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { probeFile } from './ref-probe.mjs'
-import { profileFromFile, profileCorr, medianProfile, scalarsFromFile, toneFractions } from './composition.mjs'
+import { profileFromFile, profileCorr, medianProfile, scalarsFromFile, toneFractions, speckleRatio, foamComponents } from './composition.mjs'
 import { decodePng } from './ref-probe.mjs'
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d }
@@ -69,6 +69,10 @@ const MEASURERS = {
   p99: (f) => probeFile(f).p99,
   glowFrac: (f) => probeFile(f).glowFrac,
   brightFrac: (f) => probeFile(f).brightFrac,
+  speckleRatio: (f) => speckleRatio(decodePng(readFileSync(f))),
+  foamShare: (f) => foamComponents(decodePng(readFileSync(f))).foamShare,
+  foamMaxShare: (f) => foamComponents(decodePng(readFileSync(f))).foamMaxShare,
+  foamMeanComp: (f) => foamComponents(decodePng(readFileSync(f))).foamMeanComp,
 }
 
 function measure(file, criteria) {

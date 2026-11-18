@@ -71,7 +71,8 @@ test('主 Agent 正在做（有 active.json）→ 来吐槽；全部 done → �
   const s1 = await boot(dir)
   try {
     const body = await stateOf(s1.port)
-    assert.equal(body.orderState, 'vent', '主 Agent 处理中应算「来吐槽」')
+    // 新契约（用户第 1 条）：没到「首轮交付 + 复盘站」不许弹吐槽，处理中就是 running
+    assert.equal(body.orderState, 'running', '主 Agent 处理中（未交付）应算「运行中」')
   } finally { await s1.close() }
 
   // 没有 active.json 的 manager 站：窗口是关的，状态回落到 running（用户此刻无事可做）

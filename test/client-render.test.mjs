@@ -451,3 +451,15 @@ test('㊳ 下单失败的错误码都翻成人话，且带下一步怎么做', (
   assert.match(unknown, /weird-code/)      // 未知码也要原样带出来，别吞
   assert.match(unknown, /发给肥鱼/)
 })
+
+test('㊴ 流转信号灯：上游/可流转/唤醒次数都要显示（用户第 3 条）', () => {
+  const state = fixture({
+    status: Object.assign({}, fixture().status, {
+      flow: { stage: '2.3-verify-r1', upstream: true, upstreamMissing: [], artifact: false, canAdvance: false, wakeEvents: 3, at: new Date().toISOString() },
+    }),
+  })
+  const html = ui.statusCardHtml(state)
+  assert.match(html, /上游交付/)
+  assert.match(html, /可流转/)
+  assert.match(html, /已唤醒 3 次/)
+})

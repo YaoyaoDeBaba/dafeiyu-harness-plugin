@@ -83,7 +83,7 @@ test('GET /state 返回流程态与三块摘要', async () => {
   }
 })
 
-test('GET /window：worker 站未交活 → 开', async () => {
+test('GET /window：worker 站未交活 → 关（交付前不弹吐槽）', async () => {
   const dir = fixture()
   // 1.1 是 program、1.2 是 manager，要让当前站落到 worker（1.3 调查员c）
   writeFileSync(join(dir, 'stages', '1.2-translate1.json'), JSON.stringify({ stage: '1.2-translate1', status: 'done' }))
@@ -91,22 +91,22 @@ test('GET /window：worker 站未交活 → 开', async () => {
   const s = await boot(dir)
   try {
     const { body } = await get(s.port, ROUTES.window)
-    assert.equal(body.open, true)
+    assert.equal(body.open, false, '交付前 worker 站不弹吐槽')
+    assert.equal(body.reason, 'waiting-first-delivery')
     assert.equal(body.stage, '1.3-research-env')
-    assert.equal(body.reason, 'worker')
   } finally {
     await s.close()
   }
 })
 
-test('GET /window：主 Agent 正在做（有 active.json）→ 也开', async () => {
+test('GET /window：主 Agent 在做但还没交付 → 关', async () => {
   const dir = fixture()
   writeFileSync(join(dir, 'active.json'), JSON.stringify({ stage: '1.2-translate1', openedAt: new Date().toISOString() }))
   const s = await boot(dir)
   try {
     const { body } = await get(s.port, ROUTES.window)
-    assert.equal(body.open, true)
-    assert.equal(body.reason, 'manager')
+    assert.equal(body.open, false, '未交付时 manager 站也不弹')
+    assert.equal(body.reason, 'waiting-first-delivery')
     assert.equal(body.stage, '1.2-translate1')
   } finally {
     await s.close()
@@ -145,10 +145,18 @@ test('写接口没有 x-selfloop 头 → 403', async () => {
 
 test('POST /interrupt：窗口开 → 200 且落盘', async () => {
   const dir = fixture()
-  writeFileSync(join(dir, 'stages', '1.2-translate1.json'), JSON.stringify({ stage: '1.2-translate1', status: 'done' }))
-  writeFileSync(join(dir, 'tickets', '1.3-research-env.json'), JSON.stringify({ stage: '1.3-research-env' }))
+  // 新契约：要"已交付 + 站在复盘位"才开窗 → 把夹具推到 2.3-verify
+  mkdirSync(join(dir, 'rounds'), { recursive: true })
+  writeFileSync(join(dir, 'rounds', '01.json'), JSON.stringify({ stage: '2.2-exec-r1' }))
   const s = await boot(dir)
   try {
+    // 把 2.3 之前的节点全部标 done（节点表随 research 档位变，别硬编码）
+    const meta = await get(s.port, ROUTES.state)
+    for (const n of meta.body.nodes) {
+      if (String(n.id).startsWith('2.3')) break
+      writeFileSync(join(dir, 'stages', n.id + '.json'), JSON.stringify({ stage: n.id, status: 'done' }))
+    }
+    writeFileSync(join(dir, 'active.json'), JSON.stringify({ stage: '2.3-verify-r1', openedAt: new Date().toISOString() }))
     const { status, body } = await post(s.port, ROUTES.interrupt, { text: '电弧像纸带' }, { 'x-selfloop': '1' })
     assert.equal(status, 200)
     assert.equal(body.expired, false)
@@ -156,7 +164,7 @@ test('POST /interrupt：窗口开 → 200 且落盘', async () => {
     assert.equal(lines.length, 1)
     const rec = JSON.parse(lines[0])
     assert.equal(rec.text, '电弧像纸带')
-    assert.equal(rec.stage, '1.3-research-env')
+    assert.equal(rec.stage, '2.3-verify-r1')
     assert.equal(rec.expired, false)
   } finally {
     await s.close()
